@@ -5,7 +5,8 @@
   "private": true,
   "scripts": {
     "test": "bun test",
-    "test:engine-kernel": "bun test tests/engine"
+    "test:engine-kernel": "bun test tests/engine",
+    "test:retrieval": "bun test tests/engine/retrieval.test.ts"
   },
   "devDependencies": {
     "@types/bun": "latest"
