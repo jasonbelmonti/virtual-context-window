@@ -133,6 +133,20 @@
   - `7aae0a6` (Phase 1 kernel implementation and deterministic test suite freeze point).
 - Handoff note: Phase 2 (`Memory and Retrieval Core`) is authorized to begin against stable Phase 1 kernel interfaces.
 
+## Phase 2 Sign-off
+- Date: 2026-02-13
+- Status: PASS
+- Checklist summary:
+  - Implemented symbol persistence and deterministic retrieval core (`InMemorySymbolStore`, `DefaultRetrievalPlanner`, `DefaultContextPackComposer`).
+  - Implemented lexical + hybrid retrieval paths with deterministic reranking and confidence-gate split (`focused` / `recall` / `rejected`).
+  - Implemented budget-aware context pack composition with ordered sections: `SYMBOL INDEX`, `FOCUSED MEMORY`, `SEMANTIC RECALL`.
+  - Phase 2 required commands passed: `bun test`, `bun run test:retrieval`, `bun run test:context-pack`.
+  - Required grep anchors passed: `SYMBOL INDEX|FOCUSED MEMORY|SEMANTIC RECALL` and `searchWithOptions|confidenceGate|enforceBudget` in `src/`.
+- Ambiguities resolved during Phase 2: none.
+- Freeze commit SHA reference:
+  - `f281ada` (Phase 2 retrieval hardening and diagnostics consistency freeze point).
+- Handoff note: Phase 3 (`Write Path Hardening and Output Hygiene`) is authorized to begin.
+
 ## Template for New ADRs
 ```md
 ## ADR-XXX: <title>
