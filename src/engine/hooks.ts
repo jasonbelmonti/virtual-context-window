@@ -30,7 +30,7 @@ export type ContextPackDiagnostics = {
   trustedRefIdsUsed: number;
 };
 
-export type ContextPackOutput = {
+export type ContextPackInjectionOutput = {
   contextPackText: string;
   diagnostics: ContextPackDiagnostics;
 };
@@ -44,7 +44,7 @@ export type ContextPackInjectorInput = {
 
 export type ContextPackInjectorHook = (
   input: ContextPackInjectorInput,
-) => ContextPackOutput | Promise<ContextPackOutput>;
+) => ContextPackInjectionOutput | Promise<ContextPackInjectionOutput>;
 
 export type ParsedControlChannel = {
   cleanText: string;
@@ -116,7 +116,7 @@ export function defaultQueryBuilder(input: QueryBuilderInput): QueryBuilderOutpu
 
 export function defaultContextPackInjector(
   input: ContextPackInjectorInput,
-): ContextPackOutput {
+): ContextPackInjectionOutput {
   return {
     contextPackText: "",
     diagnostics: {
