@@ -265,3 +265,57 @@ test("retrieval hooks respect trusted symbol refs only when enabled", async () =
   expect(trusted.contextPackText).toContain("SENTINEL_TRUSTED_CONTENT");
   expect(trusted.diagnostics.trustedRefIdsUsed).toBe(1);
 });
+
+test("trusted symbol refs resolve from raw request text even when query text is normalized", async () => {
+  const store = new InMemorySymbolStore({ now: () => 1000 });
+  await store.upsert("thread-trusted-raw", {
+    symbolId: "sym_trusted",
+    summary: "Trusted summary",
+    content: "SENTINEL_TRUSTED_CONTENT",
+  });
+
+  const planner: RetrievalPlanner = {
+    buildQuery() {
+      return {
+        queryText: "normalized release query",
+        queryTokens: ["normalized", "release", "query"],
+        turnsUsed: 1,
+      };
+    },
+    async selectCandidates() {
+      return [];
+    },
+    rerank(candidates) {
+      return candidates;
+    },
+    confidenceGate() {
+      return { focused: [], recall: [], rejected: [] };
+    },
+  };
+
+  const hooks = createRetrievalHooks({ store, planner });
+  const request: {
+    threadId: string;
+    messages: Array<{ role: "user"; content: string }>;
+  } = {
+    threadId: "thread-trusted-raw",
+    messages: [{ role: "user", content: "Use ⟦S:sym_trusted⟧ for answer." }],
+  };
+  const query = await hooks.queryBuilder({
+    messages: request.messages,
+    trustedSymbolRefsEnabled: true,
+  });
+
+  expect(query.queryText).toBe("normalized release query");
+  expect(query.queryText).not.toContain("⟦S:sym_trusted⟧");
+
+  const trusted = await hooks.contextPackInjector({
+    threadId: "thread-trusted-raw",
+    request,
+    query,
+    trustedSymbolRefsEnabled: true,
+  });
+
+  expect(trusted.contextPackText).toContain("SENTINEL_TRUSTED_CONTENT");
+  expect(trusted.diagnostics.trustedRefIdsUsed).toBe(1);
+});

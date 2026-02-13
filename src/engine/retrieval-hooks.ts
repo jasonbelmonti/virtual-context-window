@@ -34,10 +34,10 @@ export type RetrievalHooksOptions = {
   failOnRetrievalError?: boolean;
 };
 
-function extractTrustedSymbolRefIds(queryText: string): string[] {
+function extractTrustedSymbolRefIds(text: string): string[] {
   const ids: string[] = [];
   const seen = new Set<string>();
-  for (const match of queryText.matchAll(TRUSTED_SYMBOL_REF_REGEX)) {
+  for (const match of text.matchAll(TRUSTED_SYMBOL_REF_REGEX)) {
     const symbolId = match[1];
     if (!symbolId || seen.has(symbolId)) {
       continue;
@@ -46,6 +46,16 @@ function extractTrustedSymbolRefIds(queryText: string): string[] {
     ids.push(symbolId);
   }
   return ids;
+}
+
+function extractTrustedSymbolRefIdsFromRequest(request: {
+  messages: Array<{ role: string; content: string }>;
+}): string[] {
+  const userText = request.messages
+    .filter((message) => message.role === "user")
+    .map((message) => message.content)
+    .join("\n");
+  return extractTrustedSymbolRefIds(userText);
 }
 
 export function createRetrievalHooks(options: RetrievalHooksOptions): {
@@ -67,14 +77,19 @@ export function createRetrievalHooks(options: RetrievalHooksOptions): {
 
   return {
     queryBuilder: ({ messages }) => planner.buildQuery(messages),
-    contextPackInjector: async ({ threadId, query, trustedSymbolRefsEnabled }) => {
+    contextPackInjector: async ({
+      threadId,
+      request,
+      query,
+      trustedSymbolRefsEnabled,
+    }) => {
       try {
         const rankedCandidates = await planner.selectCandidates(threadId, query);
         const gated = planner.confidenceGate(rankedCandidates);
         const symbolIndexList = await options.store.list(threadId);
 
         const trustedRefIds = trustedSymbolRefsEnabled
-          ? extractTrustedSymbolRefIds(query.queryText)
+          ? extractTrustedSymbolRefIdsFromRequest(request)
           : [];
 
         const trustedFocusedMemories = (
