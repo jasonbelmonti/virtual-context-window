@@ -6,7 +6,7 @@
   "scripts": {
     "test": "bun test",
     "test:engine-kernel": "bun test tests/engine",
-    "test:retrieval": "bun test tests/engine/retrieval.test.ts",
+    "test:retrieval": "bun test tests/engine/retrieval.test.ts tests/engine/retrieval-hooks.test.ts",
     "test:context-pack": "bun test tests/engine/context-pack.test.ts"
   },
   "devDependencies": {
