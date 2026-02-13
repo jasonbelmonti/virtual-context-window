@@ -130,7 +130,7 @@
   - Phase 1 required commands passed: `bun test`, `bun run test:engine-kernel`, `rg` checks for `generationCallCount` and identity/trust symbols in `src/`.
 - Ambiguities resolved during Phase 1: none.
 - Freeze commit SHA reference:
-  - `PENDING_PHASE1_FREEZE_COMMIT` (update after committing this Phase 1 implementation set).
+  - `7aae0a6` (Phase 1 kernel implementation and deterministic test suite freeze point).
 - Handoff note: Phase 2 (`Memory and Retrieval Core`) is authorized to begin against stable Phase 1 kernel interfaces.
 
 ## Template for New ADRs
