@@ -1,5 +1,6 @@
 import type {
   ParseOutcome,
+  RetrievalStrategy,
   VirtualContextMessage,
   VirtualContextTurnRequest,
 } from "./contracts";
@@ -22,6 +23,8 @@ export type QueryBuilderHook = (
 export type ContextPackDiagnostics = {
   historyTurnsUsed: number;
   retrievalQueryChars: number;
+  retrievalStrategy: RetrievalStrategy;
+  retrievalDegraded: boolean;
   lexicalCandidateCount: number;
   vectorCandidateCount: number;
   rerankedCandidateCount: number;
@@ -122,6 +125,8 @@ export function defaultContextPackInjector(
     diagnostics: {
       historyTurnsUsed: input.query.turnsUsed,
       retrievalQueryChars: input.query.queryText.length,
+      retrievalStrategy: "lexical_v1",
+      retrievalDegraded: false,
       lexicalCandidateCount: 0,
       vectorCandidateCount: 0,
       rerankedCandidateCount: 0,

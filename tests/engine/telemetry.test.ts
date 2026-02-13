@@ -47,6 +47,8 @@ test("emits pre and post telemetry with deterministic timing fields", async () =
 
   expect(response.diagnostics.preModelMs).toBe(10);
   expect(response.diagnostics.postModelMs).toBe(10);
+  expect(response.diagnostics.retrievalStrategy).toBe("lexical_v1");
+  expect(response.diagnostics.retrievalDegraded).toBe(false);
   expect(events.length).toBe(2);
 
   const pre = events[0];
@@ -59,6 +61,8 @@ test("emits pre and post telemetry with deterministic timing fields", async () =
     expect(pre.threadId).toBe("thread-telemetry");
     expect(pre.durationMs).toBe(10);
     expect(pre.timestamp).toBe(1000);
+    expect(pre.retrievalStrategy).toBe("lexical_v1");
+    expect(pre.retrievalDegraded).toBe(false);
     expect(pre.trustedSymbolRefsEnabled).toBe(false);
   }
 

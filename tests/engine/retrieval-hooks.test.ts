@@ -75,6 +75,8 @@ test("createRetrievalHooks builds context pack text and diagnostics", async () =
   expect(injected.contextPackText).toContain("SYMBOL INDEX");
   expect(injected.contextPackText).toContain("FOCUSED MEMORY");
   expect(injected.contextPackText).toContain("SEMANTIC RECALL");
+  expect(injected.diagnostics.retrievalStrategy).toBe("lexical_v1");
+  expect(injected.diagnostics.retrievalDegraded).toBe(false);
   expect(injected.diagnostics.focusedInjectedCount).toBe(1);
   expect(injected.diagnostics.recallInjectedCount).toBe(1);
 });
@@ -113,6 +115,31 @@ test("engine can run with retrieval hooks and inject non-empty context pack", as
   expect(assistantReceivedContextPack).toContain("SYMBOL INDEX");
   expect(response.contextPackText).toBe(assistantReceivedContextPack);
   expect(response.diagnostics.generationCallCount).toBe(1);
+  expect(response.diagnostics.retrievalStrategy).toBe("lexical_v1");
+  expect(response.diagnostics.retrievalDegraded).toBe(false);
+});
+
+test("engine diagnostics reflect retrieval strategy from hooks when unset in engine options", async () => {
+  const store = new InMemorySymbolStore({ now: () => 1000 });
+  await store.upsert("thread-engine-hybrid", {
+    symbolId: "sym_1",
+    summary: "Hybrid summary",
+    content: "semantic memory content",
+  });
+
+  const hooks = createRetrievalHooks({ store, strategy: "hybrid_v2" });
+  const engine = createVirtualContextEngine({
+    assistantGenerate: async () => "ok",
+    hooks,
+  });
+
+  const response = await engine.processTurn({
+    threadId: "thread-engine-hybrid",
+    messages: [{ role: "user", content: "semantic memory" }],
+  });
+
+  expect(response.diagnostics.retrievalStrategy).toBe("hybrid_v2");
+  expect(response.diagnostics.retrievalDegraded).toBe(false);
 });
 
 test("retrieval hooks fail open with empty context when planner throws", async () => {
@@ -156,6 +183,8 @@ test("retrieval hooks fail open with empty context when planner throws", async (
   });
 
   expect(injected.contextPackText).toBe("");
+  expect(injected.diagnostics.retrievalStrategy).toBe("lexical_v1");
+  expect(injected.diagnostics.retrievalDegraded).toBe(true);
   expect(injected.diagnostics.rerankedCandidateCount).toBe(0);
   expect(injected.diagnostics.focusedInjectedCount).toBe(0);
   expect(injected.diagnostics.recallInjectedCount).toBe(0);
@@ -261,8 +290,10 @@ test("retrieval hooks respect trusted symbol refs only when enabled", async () =
   });
 
   expect(untrusted.contextPackText).not.toContain("SENTINEL_TRUSTED_CONTENT");
+  expect(untrusted.diagnostics.retrievalDegraded).toBe(false);
   expect(untrusted.diagnostics.trustedRefIdsUsed).toBe(0);
   expect(trusted.contextPackText).toContain("SENTINEL_TRUSTED_CONTENT");
+  expect(trusted.diagnostics.retrievalDegraded).toBe(false);
   expect(trusted.diagnostics.trustedRefIdsUsed).toBe(1);
 });
 
@@ -317,5 +348,6 @@ test("trusted symbol refs resolve from raw request text even when query text is 
   });
 
   expect(trusted.contextPackText).toContain("SENTINEL_TRUSTED_CONTENT");
+  expect(trusted.diagnostics.retrievalDegraded).toBe(false);
   expect(trusted.diagnostics.trustedRefIdsUsed).toBe(1);
 });

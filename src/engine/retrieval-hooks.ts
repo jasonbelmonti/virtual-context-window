@@ -178,6 +178,8 @@ export function createRetrievalHooks(options: RetrievalHooksOptions): {
           diagnostics: {
             historyTurnsUsed: query.turnsUsed,
             retrievalQueryChars: query.queryText.length,
+            retrievalStrategy: strategy,
+            retrievalDegraded: false,
             lexicalCandidateCount: rankedCandidates.filter(
               (candidate) => candidate.lexicalScore > 0,
             ).length,
@@ -200,6 +202,8 @@ export function createRetrievalHooks(options: RetrievalHooksOptions): {
           diagnostics: {
             historyTurnsUsed: query.turnsUsed,
             retrievalQueryChars: query.queryText.length,
+            retrievalStrategy: strategy,
+            retrievalDegraded: true,
             lexicalCandidateCount: 0,
             vectorCandidateCount: 0,
             rerankedCandidateCount: 0,

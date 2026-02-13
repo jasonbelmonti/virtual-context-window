@@ -36,6 +36,8 @@ test("trustedSymbolRefs defaults to false and explicit true propagates", async (
           diagnostics: {
             historyTurnsUsed: 1,
             retrievalQueryChars: 1,
+            retrievalStrategy: "lexical_v1",
+            retrievalDegraded: false,
             lexicalCandidateCount: 0,
             vectorCandidateCount: 0,
             rerankedCandidateCount: 0,

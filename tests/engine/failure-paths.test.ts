@@ -111,6 +111,9 @@ test("assistant generation failure still emits post telemetry before throwing", 
 
   expect(pre?.type).toBe("pre_model");
   expect(post?.type).toBe("post_model");
+  if (pre?.type === "pre_model") {
+    expect(pre.retrievalDegraded).toBe(false);
+  }
 
   if (post?.type === "post_model") {
     expect(post.assistantTextChars).toBe(0);

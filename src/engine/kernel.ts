@@ -101,7 +101,7 @@ export function createVirtualContextEngine(
 ): VirtualContextEngine {
   const now = options.now ?? defaultNow;
   const clock = options.clock ?? defaultClock;
-  const retrievalStrategy = options.retrievalStrategy ?? "lexical_v1";
+  const configuredRetrievalStrategy = options.retrievalStrategy;
 
   const queryBuilder = options.hooks?.queryBuilder ?? defaultQueryBuilder;
   const contextPackInjector =
@@ -140,6 +140,11 @@ export function createVirtualContextEngine(
         query,
         trustedSymbolRefsEnabled,
       });
+      const retrievalStrategy =
+        contextPack.diagnostics.retrievalStrategy ??
+        configuredRetrievalStrategy ??
+        "lexical_v1";
+      const retrievalDegraded = contextPack.diagnostics.retrievalDegraded ?? false;
 
       const preModelMs = clock() - preModelStart;
 
@@ -152,6 +157,7 @@ export function createVirtualContextEngine(
         userTextChars: getLastUserText(request).length,
         contextPackChars: contextPack.contextPackText.length,
         retrievalStrategy,
+        retrievalDegraded,
         historyTurnsUsed: contextPack.diagnostics.historyTurnsUsed,
         retrievalQueryChars: contextPack.diagnostics.retrievalQueryChars,
         lexicalCandidateCount: contextPack.diagnostics.lexicalCandidateCount,
@@ -260,6 +266,7 @@ export function createVirtualContextEngine(
           preModelMs,
           postModelMs,
           retrievalStrategy,
+          retrievalDegraded,
         },
       };
     },

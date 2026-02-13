@@ -23,6 +23,7 @@ export type VirtualContextTurnResponse = {
     preModelMs: number;
     postModelMs: number;
     retrievalStrategy: RetrievalStrategy;
+    retrievalDegraded: boolean;
   };
 };
 
@@ -56,6 +57,7 @@ export type PreModelTelemetry = {
   recallInjectedCount: number;
   trustedSymbolRefsEnabled: boolean;
   trustedRefIdsUsed: number;
+  retrievalDegraded: boolean;
 };
 
 export type PostModelTelemetry = {
