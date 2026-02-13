@@ -156,6 +156,19 @@
   - `f281ada` (Phase 2 retrieval hardening and diagnostics consistency freeze point).
 - Handoff note: Phase 3 (`Write Path Hardening and Output Hygiene`) is authorized to begin.
 
+## Phase 3 Sign-off
+- Date: 2026-02-13
+- Status: PASS
+- Checklist summary:
+  - Strict trailing control parser implemented with deterministic outcomes for valid, non-trailing, malformed JSON, and schema-invalid payloads.
+  - Write-path event policy implemented with bounded limits, best-effort apply semantics, chunked upsert metadata, and failure accounting.
+  - Output hygiene scrub implemented for control artifact and symbol-token echo removal with scrub telemetry counts.
+  - Phase 3 required commands passed: `bun test`, `bun run test:parser`, `bun run test:write-path`, `rg` checks for parse outcomes and scrub counters in `src/`.
+- Ambiguities resolved during Phase 3: none.
+- Freeze commit SHA reference:
+  - `0a1269c` (Phase 3 write-path hardening implementation and contract parity backfill).
+- Handoff note: Phase 4 (`Validation and Gate Orchestration`) is authorized to begin.
+
 ## Template for New ADRs
 ```md
 ## ADR-XXX: <title>
