@@ -166,7 +166,7 @@
   - Phase 3 required commands passed: `bun test`, `bun run test:parser`, `bun run test:write-path`, `rg` checks for parse outcomes and scrub counters in `src/`.
 - Ambiguities resolved during Phase 3: none.
 - Freeze commit SHA reference:
-  - `0a1269c` (Phase 3 write-path hardening implementation and contract parity backfill).
+  - `b4e3388` (Phase 3 write-path hardening plus post-review sanitizer/parser stabilization).
 - Handoff note: Phase 4 (`Validation and Gate Orchestration`) is authorized to begin.
 
 ## Template for New ADRs
