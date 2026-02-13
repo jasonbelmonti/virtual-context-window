@@ -106,6 +106,15 @@
 - Rejected alternatives:
   - Aggressive top-k regardless of confidence: rejected due to context dilution.
 
+## ADR-013: Surface Retrieval Degradation Explicitly in Runtime Diagnostics
+- Date: 2026-02-13
+- Status: Accepted
+- Decision: Keep `retrievalDegraded` in runtime turn diagnostics and pre-model telemetry, and reconcile docs to match shipped behavior.
+- Rationale: Operational triage requires distinguishing normal empty retrieval from fail-open degraded retrieval.
+- Rejected alternatives:
+  - Silent fail-open without degraded signal: rejected as operationally ambiguous.
+  - Revert runtime field to preserve old docs: rejected because it hides useful reliability context.
+
 ## Phase 0 Sign-off
 - Date: 2026-02-13
 - Status: PASS

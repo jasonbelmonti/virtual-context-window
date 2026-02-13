@@ -70,6 +70,10 @@ test("emits pre and post telemetry with deterministic timing fields", async () =
     expect(post.threadId).toBe("thread-telemetry");
     expect(post.durationMs).toBe(10);
     expect(post.timestamp).toBe(2000);
+    expect(post.parsedEventCount).toBe(0);
+    expect(post.eventsAccepted).toBe(0);
+    expect(post.eventsRejected).toBe(0);
+    expect(post.writeFailures).toBe(0);
     expect(post.parseOutcome).toBe("no_control_block");
     expect(post.parseAttempted).toBe(false);
   }

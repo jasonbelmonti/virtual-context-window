@@ -1,6 +1,7 @@
 import type {
-  ParseOutcome,
+  ParsedControlChannel,
   RetrievalStrategy,
+  UpsertSymbolEvent,
   VirtualContextMessage,
   VirtualContextTurnRequest,
 } from "./contracts";
@@ -49,18 +50,22 @@ export type ContextPackInjectorHook = (
   input: ContextPackInjectorInput,
 ) => ContextPackInjectionOutput | Promise<ContextPackInjectionOutput>;
 
-export type ParsedControlChannel = {
-  cleanText: string;
-  hadControlChannel: boolean;
-  parseOutcome: ParseOutcome;
-  parseAttempted: boolean;
-  parseSucceeded: boolean;
-  schemaValid: boolean;
-  parsedEventCount: number;
+export type SymbolEventApplyOutput = {
   eventsAccepted: number;
   eventsRejected: number;
   writeFailures: number;
 };
+
+export type SymbolEventApplyInput = {
+  threadId: string;
+  request: VirtualContextTurnRequest;
+  trustedSymbolRefsEnabled: boolean;
+  events: UpsertSymbolEvent[];
+};
+
+export type SymbolEventApplierHook = (
+  input: SymbolEventApplyInput,
+) => SymbolEventApplyOutput | Promise<SymbolEventApplyOutput>;
 
 export type ControlParserHook = (
   assistantText: string,
@@ -142,12 +147,19 @@ export function defaultControlParser(
 ): ParsedControlChannel {
   return {
     cleanText: assistantText,
+    events: [],
     hadControlChannel: false,
     parseOutcome: "no_control_block",
     parseAttempted: false,
     parseSucceeded: false,
     schemaValid: false,
-    parsedEventCount: 0,
+  };
+}
+
+export function defaultSymbolEventApplier(
+  _input: SymbolEventApplyInput,
+): SymbolEventApplyOutput {
+  return {
     eventsAccepted: 0,
     eventsRejected: 0,
     writeFailures: 0,

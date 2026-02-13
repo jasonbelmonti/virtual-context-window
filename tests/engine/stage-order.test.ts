@@ -31,6 +31,7 @@ test("pipeline stages execute in deterministic order", async () => {
     "EmitPreTelemetry",
     "InvokeAssistant",
     "ParseControl",
+    "ApplySymbolEvents",
     "SanitizeOutput",
     "EmitPostTelemetry",
     "ReturnResponse",

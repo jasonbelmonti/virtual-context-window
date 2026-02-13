@@ -41,7 +41,8 @@ Use parity+ thresholds from `TEST_MATRIX.md` for mechanism and task-quality metr
   "focusedInjectedCount": 0,
   "recallInjectedCount": 0,
   "trustedSymbolRefsEnabled": false,
-  "trustedRefIdsUsed": 0
+  "trustedRefIdsUsed": 0,
+  "retrievalDegraded": false
 }
 ```
 
