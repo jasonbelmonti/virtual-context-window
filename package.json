@@ -3,6 +3,10 @@
   "module": "index.ts",
   "type": "module",
   "private": true,
+  "scripts": {
+    "test": "bun test",
+    "test:engine-kernel": "bun test tests/engine"
+  },
   "devDependencies": {
     "@types/bun": "latest"
   },

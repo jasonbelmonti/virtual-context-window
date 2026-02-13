@@ -120,6 +120,19 @@
   - `2b7b74f` (root commit freezing initial docs and Phase 0 sign-off baseline).
 - Handoff note: Phase 1 (`Engine Kernel`) is authorized to begin using the frozen contracts and runbooks.
 
+## Phase 1 Sign-off
+- Date: 2026-02-13
+- Status: PASS
+- Checklist summary:
+  - `VirtualContextEngine` kernel implemented in `src/engine/` with strict one-call guard and deterministic hook seams.
+  - Identity and trust resolution implemented (`resolveThreadIdentity`, `resolveTrustedSymbolRefs`) with explicit missing-identity contract error.
+  - Deterministic engine-kernel tests added for identity, one-call invariants, stage ordering, telemetry, and trust gating.
+  - Phase 1 required commands passed: `bun test`, `bun run test:engine-kernel`, `rg` checks for `generationCallCount` and identity/trust symbols in `src/`.
+- Ambiguities resolved during Phase 1: none.
+- Freeze commit SHA reference:
+  - `PENDING_PHASE1_FREEZE_COMMIT` (update after committing this Phase 1 implementation set).
+- Handoff note: Phase 2 (`Memory and Retrieval Core`) is authorized to begin against stable Phase 1 kernel interfaces.
+
 ## Template for New ADRs
 ```md
 ## ADR-XXX: <title>
