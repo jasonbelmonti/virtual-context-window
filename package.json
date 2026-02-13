@@ -9,7 +9,12 @@
     "test:retrieval": "bun test tests/engine/retrieval.test.ts tests/engine/retrieval-hooks.test.ts",
     "test:context-pack": "bun test tests/engine/context-pack.test.ts",
     "test:parser": "bun test tests/engine/parser.test.ts",
-    "test:write-path": "bun test tests/engine/write-path.test.ts"
+    "test:write-path": "bun test tests/engine/write-path.test.ts",
+    "validate:quick": "bun run scripts/validate-quick.ts",
+    "validate:quick:live": "bun run scripts/validate-quick-live.ts",
+    "validate:stability": "bun run scripts/validate-stability.ts",
+    "validate:production": "bun run scripts/validate-production.ts",
+    "validate:baseline-v2": "bun run scripts/validate-baseline-v2.ts"
   },
   "devDependencies": {
     "@types/bun": "latest"

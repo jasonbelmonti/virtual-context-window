@@ -115,6 +115,15 @@
   - Silent fail-open without degraded signal: rejected as operationally ambiguous.
   - Revert runtime field to preserve old docs: rejected because it hides useful reliability context.
 
+## ADR-014: Phase 4 Gate Drift and Live Validation Strictness
+- Date: 2026-02-13
+- Status: Accepted
+- Decision: Lock drift envelope at `5` percentage points for rate metrics and `15%` max regression for latency p95 comparisons; lock live validation behavior to hybrid strictness (`validate:quick:live` allows fallback with warning, `validate:production` requires configured/reachable provider).
+- Rationale: Keeps release gating objective while preserving developer velocity in non-production smoke paths.
+- Rejected alternatives:
+  - Strict live provider requirement for all live commands: rejected due local/dev friction.
+  - Unlimited drift tolerance: rejected due weak regression protection.
+
 ## Phase 0 Sign-off
 - Date: 2026-02-13
 - Status: PASS
@@ -168,6 +177,27 @@
 - Freeze commit SHA reference:
   - `b4e3388` (Phase 3 write-path hardening plus post-review sanitizer/parser stabilization).
 - Handoff note: Phase 4 (`Validation and Gate Orchestration`) is authorized to begin.
+
+## Phase 4 Sign-off
+- Date: 2026-02-13
+- Status: PASS
+- Checklist summary:
+  - Implemented Phase 4 validation subsystem (`src/validation/`) with S01-S13 catalog, deterministic/live runners, KPI aggregation, Wilson CI95, threshold evaluation, drift checks, and baseline-v2 gate orchestration.
+  - Added run commands and wrappers: `validate:quick`, `validate:quick:live`, `validate:stability`, `validate:production`, `validate:baseline-v2`.
+  - Added required run artifacts per validation run (`summary.md`, `metrics.json`, `scenario_results.jsonl`) and baseline gate artifacts (`gate.md`, `gate.json`).
+  - Added deterministic validation test suite under `tests/validation/` covering catalog completeness, CI math, thresholds, drift, runner behavior, pair selection, recompute consistency, and baseline gate semantics.
+  - Phase 4 command gate executed:
+    - `bun test`
+    - `bun run validate:quick`
+    - `bun run validate:quick:live`
+    - `bun run validate:stability`
+    - `VCW_OLLAMA_MODEL=deepseek-r1:1.5b VCW_OLLAMA_BASE_URL=http://127.0.0.1:11434 bun run validate:production`
+    - `bun run validate:baseline-v2`
+- Ambiguities resolved during Phase 4:
+  - Locked drift and live strictness defaults in ADR-014.
+- Freeze commit SHA reference:
+  - `TBD` (set to the Phase 4 freeze commit SHA at commit time).
+- Handoff note: Phase 5 (`MVP Stabilization and Ops Readiness`) is authorized to begin with baseline-v2 gate artifacts as input.
 
 ## Template for New ADRs
 ```md
