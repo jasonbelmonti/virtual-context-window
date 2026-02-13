@@ -2,6 +2,7 @@ import { expect, test } from "bun:test";
 import {
   DefaultRetrievalPlanner,
   InMemorySymbolStore,
+  type SymbolStore,
   type RetrievalCandidate,
 } from "../../src/engine";
 
@@ -150,23 +151,74 @@ test("confidenceGate splits focused, recall, rejected using thresholds", () => {
   ]);
 });
 
-test("hybrid strategy can use vector scoring for rerank influence", async () => {
+test("confidenceGate keeps focused overflow candidates in recall, not rejected", () => {
+  const store = new InMemorySymbolStore();
+  const planner = new DefaultRetrievalPlanner({
+    store,
+    focusedMin: 0.8,
+    recallMin: 0.2,
+    focusedTopK: 1,
+    recallTopK: 2,
+  });
+
+  const candidates: RetrievalCandidate[] = [
+    {
+      symbolId: "sym_high_a",
+      lexicalScore: 0.9,
+      vectorScore: 0,
+      recencyScore: 0.8,
+      fusedScore: 0.95,
+    },
+    {
+      symbolId: "sym_high_b",
+      lexicalScore: 0.85,
+      vectorScore: 0,
+      recencyScore: 0.7,
+      fusedScore: 0.9,
+    },
+    {
+      symbolId: "sym_low",
+      lexicalScore: 0.3,
+      vectorScore: 0,
+      recencyScore: 0.2,
+      fusedScore: 0.25,
+    },
+  ];
+
+  const gated = planner.confidenceGate(candidates);
+  expect(gated.focused.map((candidate) => candidate.symbolId)).toEqual([
+    "sym_high_a",
+  ]);
+  expect(gated.recall.map((candidate) => candidate.symbolId)).toEqual([
+    "sym_high_b",
+    "sym_low",
+  ]);
+  expect(gated.rejected).toEqual([]);
+});
+
+test("hybrid strategy can rank vector-only matches without lexical overlap", async () => {
   const store = new InMemorySymbolStore({ now: () => 1000 });
   await store.upsert("thread-r2", {
     symbolId: "sym_low_vector",
-    summary: "hybrid memory",
-    content: "release guardrails",
+    summary: "memory alpha",
+    content: "incident escalation protocol",
   });
   await store.upsert("thread-r2", {
     symbolId: "sym_high_vector",
-    summary: "hybrid memory",
-    content: "release guardrails",
+    summary: "memory beta",
+    content: "financial planning checklist",
   });
 
+  const fallbackStore: SymbolStore = {
+    upsert: store.upsert.bind(store),
+    get: store.get.bind(store),
+    list: store.list.bind(store),
+    search: store.search.bind(store),
+  };
+
   const planner = new DefaultRetrievalPlanner({
-    store,
+    store: fallbackStore,
     strategy: "hybrid_v2",
-    queryEmbeddingProvider: async () => [0.1, 0.2, 0.3],
     vectorScorer: (record) => (record.symbolId === "sym_high_vector" ? 1 : 0.1),
   });
 
@@ -175,5 +227,6 @@ test("hybrid strategy can use vector scoring for rerank influence", async () => 
 
   expect(candidates.length).toBe(2);
   expect(candidates[0]?.symbolId).toBe("sym_high_vector");
+  expect(candidates.every((candidate) => candidate.lexicalScore === 0)).toBe(true);
   expect(candidates[0]?.vectorScore).toBeGreaterThan(candidates[1]?.vectorScore ?? 0);
 });

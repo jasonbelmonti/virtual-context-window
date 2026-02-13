@@ -114,3 +114,154 @@ test("engine can run with retrieval hooks and inject non-empty context pack", as
   expect(response.contextPackText).toBe(assistantReceivedContextPack);
   expect(response.diagnostics.generationCallCount).toBe(1);
 });
+
+test("retrieval hooks fail open with empty context when planner throws", async () => {
+  const store = new InMemorySymbolStore();
+  const planner: RetrievalPlanner = {
+    buildQuery() {
+      return {
+        queryText: "query",
+        queryTokens: ["query"],
+        turnsUsed: 1,
+      };
+    },
+    async selectCandidates() {
+      throw new Error("provider timeout");
+    },
+    rerank(candidates) {
+      return candidates;
+    },
+    confidenceGate() {
+      return {
+        focused: [],
+        recall: [],
+        rejected: [],
+      };
+    },
+  };
+
+  const hooks = createRetrievalHooks({ store, planner });
+  const query = await hooks.queryBuilder({
+    messages: [{ role: "user", content: "query" }],
+    trustedSymbolRefsEnabled: false,
+  });
+  const injected = await hooks.contextPackInjector({
+    threadId: "thread-fail-open",
+    request: {
+      threadId: "thread-fail-open",
+      messages: [{ role: "user", content: "query" }],
+    },
+    query,
+    trustedSymbolRefsEnabled: false,
+  });
+
+  expect(injected.contextPackText).toBe("");
+  expect(injected.diagnostics.rerankedCandidateCount).toBe(0);
+  expect(injected.diagnostics.focusedInjectedCount).toBe(0);
+  expect(injected.diagnostics.recallInjectedCount).toBe(0);
+});
+
+test("retrieval hooks can fail fast when configured", async () => {
+  const store = new InMemorySymbolStore();
+  const planner: RetrievalPlanner = {
+    buildQuery() {
+      return {
+        queryText: "query",
+        queryTokens: ["query"],
+        turnsUsed: 1,
+      };
+    },
+    async selectCandidates() {
+      throw new Error("provider timeout");
+    },
+    rerank(candidates) {
+      return candidates;
+    },
+    confidenceGate() {
+      return {
+        focused: [],
+        recall: [],
+        rejected: [],
+      };
+    },
+  };
+
+  const hooks = createRetrievalHooks({
+    store,
+    planner,
+    failOnRetrievalError: true,
+  });
+  const query = await hooks.queryBuilder({
+    messages: [{ role: "user", content: "query" }],
+    trustedSymbolRefsEnabled: false,
+  });
+
+  await expect(
+    hooks.contextPackInjector({
+      threadId: "thread-fail-fast",
+      request: {
+        threadId: "thread-fail-fast",
+        messages: [{ role: "user", content: "query" }],
+      },
+      query,
+      trustedSymbolRefsEnabled: false,
+    }),
+  ).rejects.toThrow("provider timeout");
+});
+
+test("retrieval hooks respect trusted symbol refs only when enabled", async () => {
+  const store = new InMemorySymbolStore({ now: () => 1000 });
+  await store.upsert("thread-trusted", {
+    symbolId: "sym_trusted",
+    summary: "Trusted summary",
+    content: "SENTINEL_TRUSTED_CONTENT",
+  });
+
+  const planner: RetrievalPlanner = {
+    buildQuery(messages) {
+      const queryText =
+        messages.findLast((message) => message.role === "user")?.content ?? "";
+      return { queryText, queryTokens: ["release"], turnsUsed: 1 };
+    },
+    async selectCandidates() {
+      return [];
+    },
+    rerank(candidates) {
+      return candidates;
+    },
+    confidenceGate() {
+      return { focused: [], recall: [], rejected: [] };
+    },
+  };
+
+  const hooks = createRetrievalHooks({ store, planner });
+  const query = await hooks.queryBuilder({
+    messages: [{ role: "user", content: "Use ⟦S:sym_trusted⟧ for answer." }],
+    trustedSymbolRefsEnabled: true,
+  });
+
+  const untrusted = await hooks.contextPackInjector({
+    threadId: "thread-trusted",
+    request: {
+      threadId: "thread-trusted",
+      messages: [{ role: "user", content: "Use ⟦S:sym_trusted⟧ for answer." }],
+    },
+    query,
+    trustedSymbolRefsEnabled: false,
+  });
+
+  const trusted = await hooks.contextPackInjector({
+    threadId: "thread-trusted",
+    request: {
+      threadId: "thread-trusted",
+      messages: [{ role: "user", content: "Use ⟦S:sym_trusted⟧ for answer." }],
+    },
+    query,
+    trustedSymbolRefsEnabled: true,
+  });
+
+  expect(untrusted.contextPackText).not.toContain("SENTINEL_TRUSTED_CONTENT");
+  expect(untrusted.diagnostics.trustedRefIdsUsed).toBe(0);
+  expect(trusted.contextPackText).toContain("SENTINEL_TRUSTED_CONTENT");
+  expect(trusted.diagnostics.trustedRefIdsUsed).toBe(1);
+});

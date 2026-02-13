@@ -39,6 +39,55 @@ function recencyScore(updatedAt: number, maxUpdatedAt: number): number {
   return updatedAt / maxUpdatedAt;
 }
 
+function hashToken(token: string): number {
+  let hash = 2166136261;
+  for (let index = 0; index < token.length; index += 1) {
+    hash ^= token.charCodeAt(index)!;
+    hash = Math.imul(hash, 16777619);
+  }
+  return hash >>> 0;
+}
+
+function buildTokenVector(text: string, dimension: number): number[] {
+  const vector = new Array<number>(dimension).fill(0);
+  if (dimension <= 0) {
+    return vector;
+  }
+
+  for (const token of tokenize(text)) {
+    const hash = hashToken(token);
+    const bucket = hash % dimension;
+    const sign = (hash & 1) === 0 ? 1 : -1;
+    const current = vector[bucket] ?? 0;
+    vector[bucket] = current + sign;
+  }
+
+  return vector;
+}
+
+function cosineSimilarity(left: number[], right: number[]): number {
+  if (left.length === 0 || right.length === 0 || left.length !== right.length) {
+    return 0;
+  }
+
+  let dot = 0;
+  let leftNorm = 0;
+  let rightNorm = 0;
+  for (let index = 0; index < left.length; index += 1) {
+    const l = left[index] ?? 0;
+    const r = right[index] ?? 0;
+    dot += l * r;
+    leftNorm += l * l;
+    rightNorm += r * r;
+  }
+
+  if (leftNorm === 0 || rightNorm === 0) {
+    return 0;
+  }
+
+  return dot / (Math.sqrt(leftNorm) * Math.sqrt(rightNorm));
+}
+
 export class InMemorySymbolStore implements SymbolStore {
   private readonly threads: Map<string, StoredThread> = new Map();
   private sequence = 0;
@@ -168,7 +217,16 @@ export class InMemorySymbolStore implements SymbolStore {
       const lexical = overlapScore(queryTokens, contentTokens);
       const vector =
         options.strategy === "hybrid_v2" && options.queryEmbedding?.length
-          ? lexical
+          ? Math.max(
+              0,
+              cosineSimilarity(
+                buildTokenVector(
+                  `${record.summary} ${record.content}`,
+                  options.queryEmbedding.length,
+                ),
+                options.queryEmbedding,
+              ),
+            )
           : 0;
       const recency = recencyScore(record.updatedAt, maxUpdatedAt);
       const fused =
@@ -188,6 +246,9 @@ export class InMemorySymbolStore implements SymbolStore {
       .sort((left, right) => {
         if (right.fused !== left.fused) {
           return right.fused - left.fused;
+        }
+        if (right.recency !== left.recency) {
+          return right.recency - left.recency;
         }
         return left.symbolId.localeCompare(right.symbolId);
       });

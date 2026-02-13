@@ -63,6 +63,72 @@ function recencyScore(updatedAt: number, maxUpdatedAt: number): number {
   return updatedAt / maxUpdatedAt;
 }
 
+function hashToken(token: string): number {
+  let hash = 2166136261;
+  for (let index = 0; index < token.length; index += 1) {
+    hash ^= token.charCodeAt(index)!;
+    hash = Math.imul(hash, 16777619);
+  }
+  return hash >>> 0;
+}
+
+function buildTokenVector(text: string, dimension: number): number[] {
+  const vector = new Array<number>(dimension).fill(0);
+  if (dimension <= 0) {
+    return vector;
+  }
+
+  for (const token of tokenize(text)) {
+    const hash = hashToken(token);
+    const bucket = hash % dimension;
+    const sign = (hash & 1) === 0 ? 1 : -1;
+    const current = vector[bucket] ?? 0;
+    vector[bucket] = current + sign;
+  }
+
+  return vector;
+}
+
+function cosineSimilarity(left: number[], right: number[]): number {
+  if (left.length === 0 || right.length === 0 || left.length !== right.length) {
+    return 0;
+  }
+
+  let dot = 0;
+  let leftNorm = 0;
+  let rightNorm = 0;
+  for (let index = 0; index < left.length; index += 1) {
+    const l = left[index] ?? 0;
+    const r = right[index] ?? 0;
+    dot += l * r;
+    leftNorm += l * l;
+    rightNorm += r * r;
+  }
+
+  if (leftNorm === 0 || rightNorm === 0) {
+    return 0;
+  }
+
+  return dot / (Math.sqrt(leftNorm) * Math.sqrt(rightNorm));
+}
+
+function defaultVectorSimilarity(
+  record: SymbolRecord,
+  queryEmbedding?: number[],
+): number {
+  if (!queryEmbedding?.length) {
+    return 0;
+  }
+
+  return Math.max(
+    0,
+    cosineSimilarity(
+      buildTokenVector(`${record.summary} ${record.content}`, queryEmbedding.length),
+      queryEmbedding,
+    ),
+  );
+}
+
 export type RetrievalPlannerOptions = {
   store: SymbolStore;
   strategy?: RetrievalStrategy;
@@ -112,7 +178,10 @@ export class DefaultRetrievalPlanner implements RetrievalPlanner {
     this.focusedTopK = options.focusedTopK ?? DEFAULT_FOCUSED_TOP_K;
     this.recallTopK = options.recallTopK ?? DEFAULT_RECALL_TOP_K;
     this.queryEmbeddingProvider = options.queryEmbeddingProvider;
-    this.vectorScorer = options.vectorScorer ?? (() => 0);
+    this.vectorScorer =
+      options.vectorScorer ??
+      ((record, _query, queryEmbedding) =>
+        defaultVectorSimilarity(record, queryEmbedding));
 
     const base =
       this.strategy === "hybrid_v2"
@@ -218,7 +287,6 @@ export class DefaultRetrievalPlanner implements RetrievalPlanner {
       .filter(
         (candidate) =>
           candidate.fusedScore >= this.recallMin &&
-          candidate.fusedScore < this.focusedMin &&
           !focusedIds.has(candidate.symbolId),
       )
       .slice(0, this.recallTopK);
@@ -251,6 +319,11 @@ export class DefaultRetrievalPlanner implements RetrievalPlanner {
       );
 
       return result.ids;
+    }
+
+    if (this.strategy === "hybrid_v2") {
+      const listed = await this.store.list(threadId);
+      return listed.slice(0, this.candidatePoolLimit).map((item) => item.symbolId);
     }
 
     return this.store.search(threadId, query.queryText, this.candidatePoolLimit);
