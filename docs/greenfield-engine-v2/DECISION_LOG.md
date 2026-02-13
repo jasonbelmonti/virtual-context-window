@@ -117,7 +117,7 @@
   - `RISK_REGISTER.md` required anchors validated (`R-001`, `R-012`, rollback trigger column present).
 - Ambiguities resolved during Phase 0: none.
 - Freeze commit SHA reference:
-  - `PENDING_NO_HEAD` (`git rev-parse --short HEAD` failed with `fatal: Needed a single revision` because the repository has no commits yet).
+  - `2b7b74f` (root commit freezing initial docs and Phase 0 sign-off baseline).
 - Handoff note: Phase 1 (`Engine Kernel`) is authorized to begin using the frozen contracts and runbooks.
 
 ## Template for New ADRs
