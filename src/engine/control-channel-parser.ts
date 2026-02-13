@@ -7,8 +7,8 @@ import type {
 
 const OPEN_CONTROL_TAG = "<symbolic_control>";
 const CLOSE_CONTROL_TAG = "</symbolic_control>";
-const CONTROL_BLOCK_REGEX =
-  /<symbolic_control>([\s\S]*?)<\/symbolic_control>/gu;
+const PREFIX_WRAPPER_REGEX =
+  /<symbolic_control>[\s\S]*?<\/symbolic_control>/u;
 
 const ALLOWED_EVENT_KEYS = new Set([
   "type",
@@ -26,10 +26,10 @@ const ALLOWED_KIND_VALUES = new Set<SymbolRecordKind>([
   "note",
 ]);
 
-type ControlBlockMatch = {
-  start: number;
-  end: number;
-  payload: string;
+type SelectedTrailingBlock = {
+  openIndex: number;
+  closeIndex: number;
+  parsedPayload?: unknown;
 };
 
 function isObjectRecord(value: unknown): value is Record<string, unknown> {
@@ -40,26 +40,21 @@ function containsControlTags(text: string): boolean {
   return text.includes(OPEN_CONTROL_TAG) || text.includes(CLOSE_CONTROL_TAG);
 }
 
-function findControlBlockMatches(text: string): ControlBlockMatch[] {
-  const matches: ControlBlockMatch[] = [];
-  for (const match of text.matchAll(CONTROL_BLOCK_REGEX)) {
-    const fullMatch = match[0];
-    if (!fullMatch) {
-      continue;
+function findTagIndices(text: string, tag: string): number[] {
+  const indices: number[] = [];
+  let fromIndex = 0;
+
+  while (fromIndex <= text.length) {
+    const index = text.indexOf(tag, fromIndex);
+    if (index < 0) {
+      break;
     }
 
-    const index = match.index;
-    if (index === undefined) {
-      continue;
-    }
-
-    matches.push({
-      start: index,
-      end: index + fullMatch.length,
-      payload: match[1] ?? "",
-    });
+    indices.push(index);
+    fromIndex = index + tag.length;
   }
-  return matches;
+
+  return indices;
 }
 
 function parseUpsertEvents(payload: unknown): UpsertSymbolEvent[] | null {
@@ -163,20 +158,71 @@ function defaultNoControlResult(
   };
 }
 
+function selectTrailingBlock(assistantText: string):
+  | { type: "none" }
+  | { type: "non_trailing" }
+  | { type: "selected"; block: SelectedTrailingBlock } {
+  const closeIndices = findTagIndices(assistantText, CLOSE_CONTROL_TAG);
+  if (closeIndices.length === 0) {
+    return { type: "none" };
+  }
+
+  const lastClose = closeIndices[closeIndices.length - 1]!;
+  const suffix = assistantText.slice(lastClose + CLOSE_CONTROL_TAG.length);
+  if (suffix.trim().length > 0) {
+    return { type: "non_trailing" };
+  }
+
+  const openIndices = findTagIndices(assistantText, OPEN_CONTROL_TAG).filter(
+    (index) => index < lastClose,
+  );
+  if (openIndices.length === 0) {
+    return { type: "none" };
+  }
+
+  for (let i = openIndices.length - 1; i >= 0; i -= 1) {
+    const openIndex = openIndices[i]!;
+    const payload = assistantText.slice(openIndex + OPEN_CONTROL_TAG.length, lastClose);
+
+    try {
+      const parsedPayload = JSON.parse(payload);
+      const prefix = assistantText.slice(0, openIndex);
+      if (PREFIX_WRAPPER_REGEX.test(prefix)) {
+        return { type: "non_trailing" };
+      }
+
+      return {
+        type: "selected",
+        block: {
+          openIndex,
+          closeIndex: lastClose,
+          parsedPayload,
+        },
+      };
+    } catch {
+      continue;
+    }
+  }
+
+  return {
+    type: "selected",
+    block: {
+      openIndex: openIndices[0]!,
+      closeIndex: lastClose,
+    },
+  };
+}
+
 export class StrictControlChannelParser implements ControlChannelParser {
   parseTrailing(assistantText: string): ParsedControlChannel {
     const hadControlChannel = containsControlTags(assistantText);
-    const matches = findControlBlockMatches(assistantText);
+    const selection = selectTrailingBlock(assistantText);
 
-    if (matches.length === 0) {
+    if (selection.type === "none") {
       return defaultNoControlResult(assistantText, hadControlChannel);
     }
 
-    const trailingMatches = matches.filter(
-      (match) => assistantText.slice(match.end).trim().length === 0,
-    );
-
-    if (trailingMatches.length !== 1 || matches.length !== 1) {
+    if (selection.type === "non_trailing") {
       return {
         cleanText: assistantText,
         events: [],
@@ -188,13 +234,12 @@ export class StrictControlChannelParser implements ControlChannelParser {
       };
     }
 
-    const trailingMatch = trailingMatches[0]!;
-    const cleanText = stripTrailingControlBlock(assistantText, trailingMatch.start);
+    const cleanText = stripTrailingControlBlock(
+      assistantText,
+      selection.block.openIndex,
+    );
 
-    let payload: unknown;
-    try {
-      payload = JSON.parse(trailingMatch.payload);
-    } catch {
+    if (selection.block.parsedPayload === undefined) {
       return {
         cleanText,
         events: [],
@@ -206,7 +251,7 @@ export class StrictControlChannelParser implements ControlChannelParser {
       };
     }
 
-    const events = parseUpsertEvents(payload);
+    const events = parseUpsertEvents(selection.block.parsedPayload);
     if (!events) {
       return {
         cleanText,

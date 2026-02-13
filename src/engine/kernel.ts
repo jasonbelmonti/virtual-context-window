@@ -27,6 +27,7 @@ import {
   type SymbolEventApplierHook,
   type SymbolEventApplyOutput,
 } from "./hooks";
+import { strictOutputSanitizer } from "./output-sanitizer";
 
 export type EngineStage =
   | "ResolveIdentity"
@@ -249,7 +250,7 @@ export function createVirtualContextEngine(
             trustedSymbolRefsEnabled,
           });
         } catch {
-          sanitized = defaultOutputSanitizer({
+          sanitized = await strictOutputSanitizer({
             cleanText: parsedControl.cleanText,
             trustedSymbolRefsEnabled,
           });

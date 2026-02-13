@@ -56,7 +56,8 @@ test("sanitizer hook failure is fail-open with parsed clean text fallback", asyn
     },
     hooks: {
       controlParser: () => ({
-        cleanText: "clean from parser",
+        cleanText:
+          "clean from parser <symbolic_control>{\"symbol_events\":[]}</symbolic_control> ⟦S:sym_a⟧",
         events: [
           {
             type: "upsert_symbol",
@@ -78,7 +79,7 @@ test("sanitizer hook failure is fail-open with parsed clean text fallback", asyn
 
   const response = await engine.processTurn(makeRequest());
 
-  expect(response.content).toBe("clean from parser");
+  expect(response.content).toBe("clean from parser  ");
   expect(response.rawModelContent).toBe("assistant raw response");
 
   const post = events.find((event) => event.type === "post_model");
@@ -89,8 +90,8 @@ test("sanitizer hook failure is fail-open with parsed clean text fallback", asyn
     expect(post.eventsAccepted).toBe(0);
     expect(post.eventsRejected).toBe(0);
     expect(post.writeFailures).toBe(0);
-    expect(post.scrubbedControlLeakCount).toBe(0);
-    expect(post.scrubbedSymbolEchoCount).toBe(0);
+    expect(post.scrubbedControlLeakCount).toBe(1);
+    expect(post.scrubbedSymbolEchoCount).toBe(1);
   }
 });
 

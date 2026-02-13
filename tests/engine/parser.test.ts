@@ -100,3 +100,20 @@ test("orphan control tag still marks hadControlChannel true", () => {
   expect(parsed.parseAttempted).toBe(false);
   expect(parsed.hadControlChannel).toBe(true);
 });
+
+test("valid payload content may include literal closing control tag text", () => {
+  const input =
+    "Answer<symbolic_control>{\"symbol_events\":[{\"type\":\"upsert_symbol\",\"content\":\"literal </symbolic_control> token\"}]}</symbolic_control>";
+
+  const parsed = parser.parseTrailing(input);
+
+  expect(parsed.parseOutcome).toBe("control_channel_valid");
+  expect(parsed.parseSucceeded).toBe(true);
+  expect(parsed.schemaValid).toBe(true);
+  expect(parsed.events).toEqual([
+    {
+      type: "upsert_symbol",
+      content: "literal </symbolic_control> token",
+    },
+  ]);
+});
