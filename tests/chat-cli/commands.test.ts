@@ -12,6 +12,11 @@ test("parseSlashCommand parses supported commands", () => {
     command: { type: "trace", action: "on" },
   });
 
+  expect(parseSlashCommand("/trace raw")).toEqual({
+    ok: true,
+    command: { type: "trace", action: "raw" },
+  });
+
   expect(parseSlashCommand("/symbols 5")).toEqual({
     ok: true,
     command: { type: "symbols", limit: 5 },
@@ -26,6 +31,11 @@ test("parseSlashCommand parses supported commands", () => {
     ok: true,
     command: { type: "thread", threadId: "abc" },
   });
+
+  expect(parseSlashCommand("/remember this is important")).toEqual({
+    ok: true,
+    command: { type: "remember", content: "this is important" },
+  });
 });
 
 test("parseSlashCommand returns useful errors for invalid input", () => {
@@ -38,7 +48,7 @@ test("parseSlashCommand returns useful errors for invalid input", () => {
   const invalidTrace = parseSlashCommand("/trace maybe");
   expect(invalidTrace).toEqual({
     ok: false,
-    error: "usage: /trace on|off|view",
+    error: "usage: /trace on|off|view|raw",
   });
 
   const invalidLimit = parseSlashCommand("/symbols nope");
@@ -46,11 +56,18 @@ test("parseSlashCommand returns useful errors for invalid input", () => {
     ok: false,
     error: "usage: /symbols [positive-limit]",
   });
+
+  const invalidRemember = parseSlashCommand("/remember");
+  expect(invalidRemember).toEqual({
+    ok: false,
+    error: "usage: /remember <text>",
+  });
 });
 
 test("formatHelpText includes all command anchors", () => {
   const help = formatHelpText();
-  expect(help).toContain("/trace on|off|view");
+  expect(help).toContain("/trace on|off|view|raw");
+  expect(help).toContain("/remember <text>");
   expect(help).toContain("/symbols [limit]");
   expect(help).toContain("/quit");
 });

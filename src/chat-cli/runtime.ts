@@ -6,12 +6,21 @@ import {
 } from "../engine";
 import type {
   EngineStage,
+  SymbolRecord,
   TelemetryEvent,
   VirtualContextEngine,
   VirtualContextMessage,
 } from "../engine";
 import type { AssistantGenerateFn } from "../engine";
-import { createLangChainAssistantGenerate } from "../integrations/langchain";
+import {
+  createLangChainAssistantGenerate,
+  resolveWriteIntentFromMetadata,
+} from "../integrations/langchain";
+import type {
+  LangChainAssistantResultMetadata,
+  WriteIntentMode,
+  WriteToolSchemaVersion,
+} from "../integrations/langchain";
 import type {
   ChatCliCommand,
   ChatCliStateView,
@@ -53,13 +62,28 @@ function summarizeDeterministically(text: string, maxChars = 80): string {
   return `${normalized.slice(0, maxChars - 3)}...`;
 }
 
+function parseWriteIntentModeFromMetadata(
+  metadata: Record<string, unknown> | undefined,
+): WriteIntentMode {
+  return resolveWriteIntentFromMetadata({
+    messages: [],
+    metadata,
+  });
+}
+
 export function createMockAssistantGenerate(): AssistantGenerateFn {
   return async (input) => {
     const lastUserText = getLastUserMessage(input.request.messages).trim();
     const rememberPrefix = /^remember\s*:\s*/iu;
+    const writeIntentMode = parseWriteIntentModeFromMetadata(
+      input.request.metadata as Record<string, unknown> | undefined,
+    );
+    const strictWriteIntent = writeIntentMode === "strict";
 
-    if (rememberPrefix.test(lastUserText)) {
-      const content = lastUserText.replace(rememberPrefix, "").trim();
+    if (rememberPrefix.test(lastUserText) || strictWriteIntent) {
+      const content = rememberPrefix.test(lastUserText)
+        ? lastUserText.replace(rememberPrefix, "").trim()
+        : lastUserText;
       const payload = {
         symbol_events: [
           {
@@ -99,6 +123,10 @@ function classifyRuntimeError(error: unknown): string {
       return "timeout_or_latency";
     }
 
+    if (message.includes("write_intent_protocol_violation")) {
+      return "contract_violation";
+    }
+
     return "runtime_failure";
   }
 
@@ -124,6 +152,10 @@ export class ChatCliRuntime {
   private threadId: string;
   private activeStages: EngineStage[] | null = null;
   private activeTelemetry: TelemetryEvent[] | null = null;
+  private activeWriteIntentMode: WriteIntentMode = "none";
+  private activeWriteToolSchemaVersion: WriteToolSchemaVersion = "v1";
+  private activeAssistantMetadata: LangChainAssistantResultMetadata | null = null;
+  private lastAssistantMetadata: LangChainAssistantResultMetadata | null = null;
   private lastTrace: ChatTurnTrace | null = null;
 
   constructor(options: ChatCliRuntimeOptions = {}) {
@@ -145,6 +177,9 @@ export class ChatCliRuntime {
 
     return createLangChainAssistantGenerate({
       env: this.options.env,
+      onResultMetadata: (metadata) => {
+        this.activeAssistantMetadata = metadata;
+      },
     });
   }
 
@@ -189,6 +224,20 @@ export class ChatCliRuntime {
     return created;
   }
 
+  private deriveFallbackWriteIntentSatisfied(
+    writeIntentMode: WriteIntentMode,
+    rawModelContent: string,
+  ): boolean {
+    if (writeIntentMode !== "strict") {
+      return true;
+    }
+
+    return (
+      rawModelContent.includes("<symbolic_control>") &&
+      rawModelContent.includes("</symbolic_control>")
+    );
+  }
+
   private buildTrace(response: {
     content: string;
     rawModelContent: string;
@@ -200,19 +249,54 @@ export class ChatCliRuntime {
       retrievalStrategy: "lexical_v1" | "hybrid_v2";
       retrievalDegraded: boolean;
     };
-  }): ChatTurnTrace {
-    return {
+  }): Promise<ChatTurnTrace> {
+    const metadata = this.lastAssistantMetadata;
+    const writeIntentMode = metadata?.writeIntentMode ?? this.activeWriteIntentMode;
+    return this.collectSymbolTableSnapshot(this.threadId).then((symbolTable) => ({
       threadId: this.threadId,
       stages: this.activeStages ?? [],
       telemetry: this.activeTelemetry ?? [],
+      symbolTable,
       contextPackText: response.contextPackText,
       rawModelContent: response.rawModelContent,
       visibleContent: response.content,
+      writeIntent: {
+        mode: writeIntentMode,
+        transport: metadata?.writeTransport ?? "plain_text",
+        satisfied:
+          metadata?.writeIntentSatisfied ??
+          this.deriveFallbackWriteIntentSatisfied(
+            writeIntentMode,
+            response.rawModelContent,
+          ),
+        toolCallDetected: metadata?.toolCallDetected ?? false,
+        schemaVersion:
+          metadata?.writeToolSchemaVersion ?? this.activeWriteToolSchemaVersion,
+      },
       diagnostics: response.diagnostics,
-    };
+    }));
   }
 
-  async processUserMessage(userInput: string): Promise<ChatTurnResult> {
+  private async collectSymbolTableSnapshot(threadId: string): Promise<SymbolRecord[]> {
+    const listed = await this.store.list(threadId);
+    const records: SymbolRecord[] = [];
+
+    for (const item of listed) {
+      const record = await this.store.get(threadId, item.symbolId);
+      if (!record) {
+        continue;
+      }
+
+      records.push(record);
+    }
+
+    return records;
+  }
+
+  async processUserMessage(
+    userInput: string,
+    options?: { writeIntentMode?: WriteIntentMode },
+  ): Promise<ChatTurnResult> {
     const text = userInput.trim();
     if (text.length === 0) {
       throw new Error("empty_user_message");
@@ -220,21 +304,35 @@ export class ChatCliRuntime {
 
     const thread = this.getOrCreateThread(this.threadId);
     const requestMessages = [...thread.messages, { role: "user" as const, content: text }];
+    const writeIntentMode = options?.writeIntentMode ?? "none";
+    const metadata =
+      writeIntentMode === "strict"
+        ? {
+            writeIntent: {
+              mode: "strict",
+            },
+          }
+        : undefined;
 
     this.activeStages = [];
     this.activeTelemetry = [];
+    this.activeWriteIntentMode = writeIntentMode;
+    this.activeWriteToolSchemaVersion = "v1";
+    this.activeAssistantMetadata = null;
 
     try {
       const response = await this.engine.processTurn({
         threadId: this.threadId,
         trustedSymbolRefs: this.trustedSymbolRefs,
         messages: requestMessages,
+        metadata,
       });
+      this.lastAssistantMetadata = this.activeAssistantMetadata;
 
       thread.messages.push({ role: "user", content: text });
       thread.messages.push({ role: "assistant", content: response.content });
 
-      const trace = this.buildTrace(response);
+      const trace = await this.buildTrace(response);
       this.lastTrace = trace;
 
       return {
@@ -244,6 +342,8 @@ export class ChatCliRuntime {
     } finally {
       this.activeStages = null;
       this.activeTelemetry = null;
+      this.activeWriteIntentMode = "none";
+      this.activeAssistantMetadata = null;
     }
   }
 
@@ -253,6 +353,21 @@ export class ChatCliRuntime {
         return { output: formatHelpText() };
 
       case "trace":
+        if (command.action === "raw") {
+          if (!this.lastTrace) {
+            return {
+              output: "No raw output available yet.",
+            };
+          }
+
+          return {
+            output: [
+              "--- Raw Model Output ---",
+              this.lastTrace.rawModelContent || "(empty)",
+            ].join("\n"),
+          };
+        }
+
         if (command.action === "view") {
           if (!this.lastTrace) {
             return {
@@ -269,6 +384,16 @@ export class ChatCliRuntime {
         return {
           output: `trace=${this.traceEnabled ? "on" : "off"}`,
         };
+
+      case "remember": {
+        const turn = await this.processUserMessage(command.content, {
+          writeIntentMode: "strict",
+        });
+        return {
+          output: turn.content,
+          turn,
+        };
+      }
 
       case "state": {
         const state = this.getState();
@@ -338,6 +463,7 @@ export class ChatCliRuntime {
         this.store = new InMemorySymbolStore();
         this.engine = this.createEngine();
         this.lastTrace = null;
+        this.lastAssistantMetadata = null;
         this.getOrCreateThread(this.threadId);
         return {
           output: "Cleared in-memory sessions and symbol store.",

@@ -1,4 +1,19 @@
+import type { VirtualContextTurnRequest } from "../../engine/contracts";
+import type { UpsertSymbolEvent } from "../../engine/contracts";
 import type { AssistantGenerateInput } from "../../engine/hooks";
+
+export type WriteIntentMode = "none" | "strict";
+export type WriteTransport = "plain_text" | "function_call_bridge";
+export type WriteToolSchemaVersion = "v1";
+
+export type WriteIntentContext = {
+  mode: WriteIntentMode;
+};
+
+export type WriteIntentToolPayload = {
+  assistant_response: string;
+  symbol_events: UpsertSymbolEvent[];
+};
 
 export type VcwLangChainMiddlewareContext = {
   request: AssistantGenerateInput["request"];
@@ -19,6 +34,11 @@ export type LangChainAssistantResultMetadata = {
   model: string;
   baseUrl: string;
   durationMs: number;
+  writeIntentMode: WriteIntentMode;
+  writeIntentSatisfied: boolean;
+  writeTransport: WriteTransport;
+  toolCallDetected: boolean;
+  writeToolSchemaVersion: WriteToolSchemaVersion;
   responseMetadata?: Record<string, unknown>;
   usageMetadata?: Record<string, unknown>;
 };
@@ -53,6 +73,10 @@ export type LangChainInvokeResult = {
 
 export interface LangChainChatInvoker {
   invoke(prompt: string): Promise<LangChainInvokeResult | unknown>;
+  invokeWithWriteTool?(
+    prompt: string,
+    options: { schemaVersion: WriteToolSchemaVersion },
+  ): Promise<LangChainInvokeResult | unknown>;
 }
 
 export type LangChainAssistantOptions = {
@@ -61,6 +85,13 @@ export type LangChainAssistantOptions = {
   temperature?: number;
   env?: Record<string, string | undefined>;
   middleware?: VcwLangChainMiddleware[];
+  writeIntentResolver?: (
+    request: VirtualContextTurnRequest,
+  ) => WriteIntentMode;
+  writeToolSchemaVersion?: WriteToolSchemaVersion;
+  onResultMetadata?: (
+    metadata: LangChainAssistantResultMetadata,
+  ) => void | Promise<void>;
   now?: () => number;
   createInvoker?: (config: {
     model: string;

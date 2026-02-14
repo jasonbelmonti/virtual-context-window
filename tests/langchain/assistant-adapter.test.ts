@@ -26,6 +26,21 @@ function makeInput(): AssistantGenerateInput {
   };
 }
 
+function makeStrictInput(): AssistantGenerateInput {
+  const input = makeInput();
+  return {
+    ...input,
+    request: {
+      ...input.request,
+      metadata: {
+        writeIntent: {
+          mode: "strict",
+        },
+      },
+    },
+  };
+}
+
 test("deterministic prompt includes system, context pack, and transcript sections", () => {
   const prompt = buildDeterministicPrompt(makeInput());
   expect(prompt).toContain("### SYSTEM");
@@ -57,6 +72,94 @@ test("adapter invokes model exactly once per turn", async () => {
   expect(response).toBe("adapter output");
   expect(invokeCount).toBe(1);
   expect(capturedPrompt).toContain("### INSTRUCTIONS");
+});
+
+test("strict write intent mode uses write tool payload and emits deterministic trailing control block", async () => {
+  let invokeWithWriteToolCount = 0;
+  const metadataEvents: string[] = [];
+
+  const generate = createLangChainAssistantGenerate({
+    model: "mock-model",
+    baseUrl: "http://example.local",
+    onResultMetadata: (metadata) => {
+      metadataEvents.push(
+        `${metadata.writeIntentMode}:${metadata.writeTransport}:${metadata.writeIntentSatisfied}:${metadata.toolCallDetected}`,
+      );
+    },
+    createInvoker: () => ({
+      invoke: async () => ({ content: "fallback should not be used" }),
+      invokeWithWriteTool: async () => {
+        invokeWithWriteToolCount += 1;
+        return {
+          content: "",
+          tool_calls: [
+            {
+              name: "emit_symbol_events",
+              args: {
+                assistant_response: "Got it.",
+                symbol_events: [
+                  {
+                    type: "upsert_symbol",
+                    symbol_id: "sym_strict_1",
+                    summary: "strict summary",
+                    content: "strict content",
+                    kind: "note",
+                  },
+                ],
+              },
+            },
+          ],
+        };
+      },
+    }),
+  });
+
+  const output = await generate(makeStrictInput());
+  expect(invokeWithWriteToolCount).toBe(1);
+  expect(output).toContain("Got it.");
+  expect(output).toContain("<symbolic_control>");
+  expect(output).toContain("\"symbol_id\":\"sym_strict_1\"");
+  expect(metadataEvents).toEqual(["strict:function_call_bridge:true:true"]);
+});
+
+test("strict write intent mode throws when tool payload is missing", async () => {
+  const generate = createLangChainAssistantGenerate({
+    model: "mock-model",
+    baseUrl: "http://example.local",
+    createInvoker: () => ({
+      invoke: async () => ({ content: "unused" }),
+      invokeWithWriteTool: async () => ({ content: "no tool payload" }),
+    }),
+  });
+
+  await expect(generate(makeStrictInput())).rejects.toThrow(
+    "write_intent_protocol_violation:no_write_tool_payload",
+  );
+});
+
+test("strict write intent mode throws when tool payload schema is invalid", async () => {
+  const generate = createLangChainAssistantGenerate({
+    model: "mock-model",
+    baseUrl: "http://example.local",
+    createInvoker: () => ({
+      invoke: async () => ({ content: "unused" }),
+      invokeWithWriteTool: async () => ({
+        tool_calls: [
+          {
+            name: "emit_symbol_events",
+            args: {
+              assistant_response: "ok",
+              symbol_events: [{ type: "upsert_symbol", content: 123 }],
+            },
+          },
+        ],
+      }),
+    }),
+  });
+
+  await expect(generate(makeStrictInput())).rejects.toThrow(
+    "write_intent_protocol_violation:event_content_invalid",
+  );
 });
 
 test("middleware execution order is before in declaration order and after in reverse order", async () => {

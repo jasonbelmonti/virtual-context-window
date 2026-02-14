@@ -32,6 +32,9 @@ function formatTelemetrySummary(trace: ChatTurnTrace): string[] {
   lines.push(
     `  retrievalStrategy=${trace.diagnostics.retrievalStrategy} retrievalDegraded=${trace.diagnostics.retrievalDegraded}`,
   );
+  lines.push(
+    `  writeIntentMode=${trace.writeIntent.mode} writeTransport=${trace.writeIntent.transport} writeIntentSatisfied=${trace.writeIntent.satisfied} toolCallDetected=${trace.writeIntent.toolCallDetected} schemaVersion=${trace.writeIntent.schemaVersion}`,
+  );
 
   if (pre) {
     lines.push(
@@ -64,6 +67,14 @@ export function renderTurnTrace(trace: ChatTurnTrace): string {
   lines.push(`contextPackChars: ${trace.contextPackText.length}`);
   lines.push(`rawModelChars: ${trace.rawModelContent.length}`);
   lines.push(`visibleChars: ${trace.visibleContent.length}`);
+  lines.push(`symbolTableCount: ${trace.symbolTable.length}`);
+
+  if (trace.symbolTable.length > 0) {
+    lines.push("symbolTable:");
+    for (const record of trace.symbolTable) {
+      lines.push(`  ${JSON.stringify(record)}`);
+    }
+  }
 
   return lines.join("\n");
 }

@@ -129,7 +129,7 @@ export async function runInteractiveChatCli(
   writeLine(print, "Virtual Context Window Chat CLI");
   writeLine(
     print,
-    "Type /help for commands. Prefix your message with 'remember: ' while in --mock mode to exercise write-path upserts.",
+    "Type /help for commands. Use /remember <text> for strict write-intent memory writes.",
   );
 
   const input = (process.stdin as ReadStream | undefined) ?? process.stdin;
@@ -177,13 +177,25 @@ export async function runInteractiveChatCli(
           continue;
         }
 
-        const result = await runtime.executeCommand(parsed.command);
-        if (result.output) {
-          writeLine(print, result.output);
-        }
+        try {
+          const result = await runtime.executeCommand(parsed.command);
+          if (result.output) {
+            writeLine(print, result.output);
+          }
 
-        if (result.shouldQuit) {
-          shouldQuit = true;
+          if (result.turn && runtime.getTraceEnabled()) {
+            writeLine(print, renderTurnTrace(result.turn.trace));
+          }
+
+          if (result.shouldQuit) {
+            shouldQuit = true;
+          }
+        } catch (error) {
+          const classification = runtime.classifyError(error);
+          writeLine(
+            printError,
+            `[chat] ${classification}: ${toPrintableMessage(error)}`,
+          );
         }
 
         continue;

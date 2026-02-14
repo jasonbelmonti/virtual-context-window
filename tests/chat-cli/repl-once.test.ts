@@ -40,6 +40,7 @@ test("--once with --trace prints trace output", async () => {
   expect(output).toContain("Got it.");
   expect(output).toContain("--- Turn Trace ---");
   expect(output).toContain("parseOutcome=control_channel_valid");
+  expect(output).toContain("symbolTableCount:");
 });
 
 test("live startup fails fast when VCW_OLLAMA_MODEL is missing", async () => {

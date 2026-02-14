@@ -43,18 +43,36 @@ export function parseSlashCommand(input: string): CommandParseResult {
 
     case "trace": {
       const action = restTokens[0]?.toLowerCase();
-      if (action === "on" || action === "off" || action === "view") {
+      if (action === "on" || action === "off" || action === "view" || action === "raw") {
         return { ok: true, command: { type: "trace", action } };
       }
 
       return {
         ok: false,
-        error: "usage: /trace on|off|view",
+        error: "usage: /trace on|off|view|raw",
       };
     }
 
     case "state":
       return { ok: true, command: { type: "state" } };
+
+    case "remember": {
+      const content = restTokens.join(" ").trim();
+      if (!content) {
+        return {
+          ok: false,
+          error: "usage: /remember <text>",
+        };
+      }
+
+      return {
+        ok: true,
+        command: {
+          type: "remember",
+          content,
+        },
+      };
+    }
 
     case "symbols": {
       if (restTokens.length === 0) {
@@ -151,7 +169,8 @@ export function formatHelpText(): string {
   return [
     "Commands:",
     "  /help                Show this help",
-    "  /trace on|off|view   Toggle trace or print last trace",
+    "  /trace on|off|view|raw   Toggle trace, print last trace, or print last raw model output",
+    "  /remember <text>     Strict write-intent memory turn",
     "  /state               Show current CLI state",
     "  /symbols [limit]     List symbols in the current thread",
     "  /show <symbol_id>    Show full symbol content",

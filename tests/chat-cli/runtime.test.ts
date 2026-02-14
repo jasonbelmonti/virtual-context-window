@@ -19,6 +19,11 @@ test("processUserMessage captures parse/apply/scrub telemetry and mutates symbol
   expect(turn.content).toContain("Visible reply with leak");
   expect(turn.content).not.toContain("<symbolic_control>");
   expect(turn.content).not.toContain("⟦S:");
+  expect(turn.trace.writeIntent.mode).toBe("none");
+  expect(turn.trace.writeIntent.transport).toBe("plain_text");
+  expect(turn.trace.symbolTable.length).toBe(1);
+  expect(turn.trace.symbolTable[0]?.symbolId).toBe("sym_cli");
+  expect(turn.trace.symbolTable[0]?.content).toBe("cli content");
 
   const post = turn.trace.telemetry.find((event) => event.type === "post_model");
   expect(post?.type).toBe("post_model");
@@ -67,4 +72,45 @@ test("trust toggle propagates into telemetry pre-model event", async () => {
   if (untrustedPre?.type === "pre_model") {
     expect(untrustedPre.trustedSymbolRefsEnabled).toBe(false);
   }
+});
+
+test("trace raw command returns last raw model output", async () => {
+  const runtime = new ChatCliRuntime({
+    assistantGenerate: WRITE_PATH_ASSISTANT,
+  });
+
+  const empty = await runtime.executeCommand({
+    type: "trace",
+    action: "raw",
+  });
+  expect(empty.output).toContain("No raw output available yet.");
+
+  await runtime.processUserMessage("hello");
+
+  const raw = await runtime.executeCommand({
+    type: "trace",
+    action: "raw",
+  });
+  expect(raw.output).toContain("--- Raw Model Output ---");
+  expect(raw.output).toContain("<symbolic_control>");
+});
+
+test("remember command uses strict write intent and mutates symbol state in mock mode", async () => {
+  const runtime = new ChatCliRuntime({
+    mock: true,
+  });
+
+  const result = await runtime.executeCommand({
+    type: "remember",
+    content: "Buy milk and eggs",
+  });
+
+  expect(result.output).toContain("Got it");
+  expect(result.turn?.trace.writeIntent.mode).toBe("strict");
+  expect(result.turn?.trace.writeIntent.satisfied).toBe(true);
+  expect((result.turn?.trace.symbolTable.length ?? 0) > 0).toBe(true);
+  expect(result.turn?.trace.symbolTable[0]?.content).toContain("Buy milk and eggs");
+
+  const symbols = await runtime.executeCommand({ type: "symbols" });
+  expect(symbols.output).toContain("Buy milk and eggs");
 });
