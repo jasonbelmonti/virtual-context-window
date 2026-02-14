@@ -1,6 +1,7 @@
 import type {
   AssistantGenerateFn,
   AssistantGenerateInput,
+  AssistantGenerateStreamEvent,
 } from "../../engine/hooks";
 import {
   DEFAULT_RECOGNIZER_CONFIG,
@@ -43,6 +44,10 @@ function asObject(value: unknown): Record<string, unknown> | undefined {
   }
 
   return value as Record<string, unknown>;
+}
+
+function isAsyncIterable(value: unknown): value is AsyncIterable<unknown> {
+  return !!value && typeof value === "object" && Symbol.asyncIterator in value;
 }
 
 function parseBoundedInt(value: string | undefined, fallback: number): number {
@@ -276,6 +281,93 @@ function buildOpenAITools(): Array<Record<string, unknown>> {
     strict: true,
     parameters: normalizeSchemaForOpenAIStrict(toolDefinition.schema),
   }));
+}
+
+type StreamedCallResult = {
+  response: unknown;
+  streamChunkCount: number;
+  streamedTextChars: number;
+  streamProvider: "none" | "sse" | "buffered";
+  streamBuffered: boolean;
+};
+
+async function invokeAgentResponse(options: {
+  client: OpenAIResponsesClientLike;
+  params: Record<string, unknown>;
+  streamMode: boolean;
+  streamSink?: (delta: string) => void | Promise<void>;
+}): Promise<StreamedCallResult> {
+  if (!options.streamMode) {
+    const response = await options.client.responses.create({
+      ...options.params,
+      stream: false,
+    });
+    return {
+      response,
+      streamChunkCount: 0,
+      streamedTextChars: 0,
+      streamProvider: "none",
+      streamBuffered: false,
+    };
+  }
+
+  const responseOrStream = await options.client.responses.create({
+    ...options.params,
+    stream: true,
+  });
+
+  if (!isAsyncIterable(responseOrStream)) {
+    return {
+      response: responseOrStream,
+      streamChunkCount: 0,
+      streamedTextChars: 0,
+      streamProvider: "buffered",
+      streamBuffered: true,
+    };
+  }
+
+  let streamChunkCount = 0;
+  let streamedTextChars = 0;
+  let streamedText = "";
+  let responsePayload: unknown;
+
+  for await (const eventValue of responseOrStream) {
+    const event = asObject(eventValue);
+    if (!event) {
+      continue;
+    }
+
+    if (
+      event.type === "response.output_text.delta" &&
+      typeof event.delta === "string"
+    ) {
+      streamedText += event.delta;
+      streamChunkCount += 1;
+      streamedTextChars += event.delta.length;
+      if (options.streamSink) {
+        await options.streamSink(event.delta);
+      }
+      continue;
+    }
+
+    if (event.type === "response.completed") {
+      responsePayload = event.response;
+    }
+  }
+
+  if (!responsePayload) {
+    responsePayload = {
+      output_text: streamedText,
+    };
+  }
+
+  return {
+    response: responsePayload,
+    streamChunkCount,
+    streamedTextChars,
+    streamProvider: "sse",
+    streamBuffered: false,
+  };
 }
 
 type ResolvedAutoSymbolMetadata = {
@@ -528,6 +620,7 @@ export function createOpenAIResponsesAgentAssistantGenerate(
   const runTurn = async (
     input: AssistantGenerateInput,
     streamMode: boolean,
+    streamSink?: (delta: string) => void | Promise<void>,
   ): Promise<string> => {
     const writeIntentMode = resolveWriteIntentFromMetadata(input.request);
     const autoSymbolMetadata = resolveAutoSymbolMetadata(
@@ -537,7 +630,33 @@ export function createOpenAIResponsesAgentAssistantGenerate(
     if (writeIntentMode === "strict") {
       strictWriteToolCallDetected = false;
       const startedAtMs = now();
-      const output = await strictWriteGenerate(input);
+      let streamChunkCount = 0;
+      let streamedTextChars = 0;
+      let output = "";
+
+      if (streamMode && strictWriteGenerate.stream) {
+        let sawFinalText = false;
+        for await (const event of strictWriteGenerate.stream(input)) {
+          if (event.type === "text_delta") {
+            output += event.delta;
+            streamChunkCount += 1;
+            streamedTextChars += event.delta.length;
+            if (streamSink) {
+              await streamSink(event.delta);
+            }
+            continue;
+          }
+          if (event.type === "final_text") {
+            output = event.text;
+            sawFinalText = true;
+          }
+        }
+        if (!sawFinalText && output.length === 0) {
+          output = await strictWriteGenerate(input);
+        }
+      } else {
+        output = await strictWriteGenerate(input);
+      }
       const durationMs = now() - startedAtMs;
 
       await notifyResultMetadata(options.onResultMetadata, {
@@ -546,10 +665,11 @@ export function createOpenAIResponsesAgentAssistantGenerate(
         baseUrl,
         durationMs,
         streamEnabled: streamMode,
-        streamChunkCount: 0,
-        streamedTextChars: 0,
-        streamBuffered: streamMode,
-        streamProvider: streamMode ? "buffered" : "none",
+        streamChunkCount,
+        streamedTextChars,
+        streamBuffered: streamMode && streamChunkCount === 0,
+        streamProvider:
+          !streamMode ? "none" : streamChunkCount > 0 ? "sse" : "buffered",
         agentModelCallCount: 1,
         agentToolCallCount: strictWriteToolCallDetected ? 1 : 0,
         agentToolNames: strictWriteToolCallDetected ? ["emit_symbol_events"] : [],
@@ -606,6 +726,10 @@ export function createOpenAIResponsesAgentAssistantGenerate(
       const toolNames = new Set<string>();
       let currentResponse: unknown;
       let currentResponseId: string | undefined;
+      let streamChunkCount = 0;
+      let streamedTextChars = 0;
+      let streamProvider: "none" | "sse" | "buffered" = "none";
+      let streamBuffered = false;
 
       while (true) {
         modelCallCount += 1;
@@ -614,14 +738,31 @@ export function createOpenAIResponsesAgentAssistantGenerate(
         }
 
         if (modelCallCount === 1) {
-          currentResponse = await client.responses.create({
-            model,
-            input: prompt,
-            temperature,
-            tools,
-            parallel_tool_calls: false,
-            stream: false,
+          const callResult = await invokeAgentResponse({
+            client,
+            streamMode,
+            streamSink,
+            params: {
+              model,
+              input: prompt,
+              temperature,
+              tools,
+              parallel_tool_calls: false,
+            },
           });
+          currentResponse = callResult.response;
+          streamChunkCount += callResult.streamChunkCount;
+          streamedTextChars += callResult.streamedTextChars;
+          if (callResult.streamProvider === "sse") {
+            streamProvider = "sse";
+          } else if (
+            streamProvider !== "sse" &&
+            callResult.streamProvider === "buffered"
+          ) {
+            streamProvider = "buffered";
+          }
+          streamBuffered =
+            streamBuffered || callResult.streamBuffered;
         } else {
           if (!currentResponseId) {
             throw new Error("openai_agent_previous_response_missing_id");
@@ -653,15 +794,32 @@ export function createOpenAIResponsesAgentAssistantGenerate(
             break;
           }
 
-          currentResponse = await client.responses.create({
-            model,
-            previous_response_id: currentResponseId,
-            input: outputs,
-            temperature,
-            tools,
-            parallel_tool_calls: false,
-            stream: false,
+          const callResult = await invokeAgentResponse({
+            client,
+            streamMode,
+            streamSink,
+            params: {
+              model,
+              previous_response_id: currentResponseId,
+              input: outputs,
+              temperature,
+              tools,
+              parallel_tool_calls: false,
+            },
           });
+          currentResponse = callResult.response;
+          streamChunkCount += callResult.streamChunkCount;
+          streamedTextChars += callResult.streamedTextChars;
+          if (callResult.streamProvider === "sse") {
+            streamProvider = "sse";
+          } else if (
+            streamProvider !== "sse" &&
+            callResult.streamProvider === "buffered"
+          ) {
+            streamProvider = "buffered";
+          }
+          streamBuffered =
+            streamBuffered || callResult.streamBuffered;
         }
 
         const currentObject = asObject(currentResponse);
@@ -693,10 +851,10 @@ export function createOpenAIResponsesAgentAssistantGenerate(
         baseUrl,
         durationMs,
         streamEnabled: streamMode,
-        streamChunkCount: 0,
-        streamedTextChars: 0,
-        streamBuffered: streamMode,
-        streamProvider: streamMode ? "buffered" : "none",
+        streamChunkCount,
+        streamedTextChars,
+        streamBuffered: streamMode ? streamBuffered : false,
+        streamProvider: streamMode ? streamProvider : "none",
         agentModelCallCount: modelCallCount,
         agentToolCallCount: toolCallCount,
         agentToolNames: [...toolNames],
@@ -762,11 +920,62 @@ export function createOpenAIResponsesAgentAssistantGenerate(
   }) as AssistantGenerateFn;
 
   generate.stream = async function* (input: AssistantGenerateInput) {
-    const output = await runTurn(input, true);
-    yield {
-      type: "final_text",
-      text: output,
+    const queue: AssistantGenerateStreamEvent[] = [];
+    let waitingResolver: (() => void) | null = null;
+    let runComplete = false;
+    let runError: unknown;
+
+    const flushWaitingResolver = () => {
+      const resolver = waitingResolver;
+      waitingResolver = null;
+      if (resolver) {
+        resolver();
+      }
     };
+
+    const enqueue = (event: AssistantGenerateStreamEvent) => {
+      queue.push(event);
+      flushWaitingResolver();
+    };
+
+    const runPromise = (async () => {
+      try {
+        const output = await runTurn(input, true, async (delta) => {
+          enqueue({
+            type: "text_delta",
+            delta,
+          });
+        });
+        enqueue({
+          type: "final_text",
+          text: output,
+        });
+      } catch (error) {
+        runError = error;
+      } finally {
+        runComplete = true;
+        flushWaitingResolver();
+      }
+    })();
+
+    while (!runComplete || queue.length > 0) {
+      if (queue.length === 0) {
+        await new Promise<void>((resolve) => {
+          waitingResolver = resolve;
+        });
+        continue;
+      }
+
+      const event = queue.shift();
+      if (event) {
+        yield event;
+      }
+    }
+
+    await runPromise;
+    if (runError) {
+      throw runError;
+    }
   };
 
   return generate;
