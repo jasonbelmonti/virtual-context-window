@@ -36,6 +36,25 @@ export type VirtualContextTurnResponse = {
     postModelMs: number;
     retrievalStrategy: RetrievalStrategy;
     retrievalDegraded: boolean;
+    passive?: {
+      pressureRatio: number;
+      pressurePeak: number;
+      pressureState: "normal" | "compact";
+      compactionTriggered: boolean;
+      compactionReason: "high_watermark" | "below_threshold" | "none";
+      compactionJobsTriggered: number;
+      compactionSkippedReason:
+        | "none"
+        | "in_flight"
+        | "low_pressure"
+        | "no_candidates"
+        | "extractor_error";
+      extractorCalls: number;
+      proposalsCount: number;
+      committedSymbolsCount: number;
+      hydratedSymbolsCount: number;
+      ignoredModelEventCount: number;
+    };
   };
 };
 

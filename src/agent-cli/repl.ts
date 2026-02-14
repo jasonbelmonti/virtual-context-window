@@ -12,6 +12,7 @@ export type ParsedAgentCliArgs = {
   trace: boolean;
   mock: boolean;
   provider?: "ollama" | "openai_responses";
+  kernelMode?: "v1" | "v2_passive";
   stream: boolean;
   threadId?: string;
   help: boolean;
@@ -59,6 +60,17 @@ export function parseAgentCliArgs(argv: string[]): ParsedAgentCliArgs {
       continue;
     }
 
+    if (token === "--kernel") {
+      const value = (argv[index + 1] ?? "").toLowerCase();
+      if (value === "v1") {
+        parsed.kernelMode = "v1";
+      } else if (value === "v2" || value === "v2_passive") {
+        parsed.kernelMode = "v2_passive";
+      }
+      index += 1;
+      continue;
+    }
+
     if (token === "--stream") {
       parsed.stream = true;
       continue;
@@ -87,8 +99,8 @@ export function parseAgentCliArgs(argv: string[]): ParsedAgentCliArgs {
 export function formatAgentCliUsage(): string {
   return [
     "Usage:",
-    "  bun run agent:interactive [--mock] [--provider ollama|openai] [--stream|--no-stream] [--trace] [--thread <id>]",
-    "  bun run agent:interactive --once \"hello\" [--mock] [--provider ollama|openai] [--stream|--no-stream] [--trace]",
+    "  bun run agent:interactive [--mock] [--provider ollama|openai] [--kernel v1|v2_passive] [--stream|--no-stream] [--trace] [--thread <id>]",
+    "  bun run agent:interactive --once \"hello\" [--mock] [--provider ollama|openai] [--kernel v1|v2_passive] [--stream|--no-stream] [--trace]",
   ].join("\n");
 }
 
@@ -139,6 +151,18 @@ function renderProjectionCallout(
   return `${theme.success("PROJECTION ACCEPTED")} ${theme.value(detailParts.join(" "))}`;
 }
 
+function renderPassiveWriteIgnoredCallout(
+  trace: AgentTurnTrace,
+  theme: ReturnType<typeof createCliTheme>,
+): string | null {
+  const ignored = trace.diagnostics.passive?.ignoredModelEventCount ?? 0;
+  if (ignored <= 0) {
+    return null;
+  }
+
+  return `${theme.subtitle("MODEL WRITE IGNORED (v2 policy)")} ${theme.value(`ignoredModelEventCount=${ignored}`)}`;
+}
+
 export async function runInteractiveAgentCli(
   options: AgentCliLaunchOptions = {},
 ): Promise<number> {
@@ -152,6 +176,7 @@ export async function runInteractiveAgentCli(
     runtime = new AgentCliRuntime({
       mock: options.mock,
       provider: options.provider,
+      kernelMode: options.kernelMode,
       streamEnabled: options.stream,
       traceEnabled: options.trace,
       threadId: options.threadId,
@@ -190,6 +215,10 @@ export async function runInteractiveAgentCli(
       const projectionCallout = renderProjectionCallout(turn.trace, theme);
       if (projectionCallout) {
         writeLine(print, projectionCallout);
+      }
+      const ignoredCallout = renderPassiveWriteIgnoredCallout(turn.trace, theme);
+      if (ignoredCallout) {
+        writeLine(print, ignoredCallout);
       }
       if (runtime.getTraceEnabled()) {
         writeLine(print, renderTurnTrace(turn.trace, { color: colorEnabled }));
@@ -269,6 +298,10 @@ export async function runInteractiveAgentCli(
             if (projectionCallout) {
               writeLine(print, projectionCallout);
             }
+            const ignoredCallout = renderPassiveWriteIgnoredCallout(result.turn.trace, theme);
+            if (ignoredCallout) {
+              writeLine(print, ignoredCallout);
+            }
           }
           if (result.shouldQuit) {
             shouldQuit = true;
@@ -307,6 +340,10 @@ export async function runInteractiveAgentCli(
         const projectionCallout = renderProjectionCallout(result.trace, theme);
         if (projectionCallout) {
           writeLine(print, projectionCallout);
+        }
+        const ignoredCallout = renderPassiveWriteIgnoredCallout(result.trace, theme);
+        if (ignoredCallout) {
+          writeLine(print, ignoredCallout);
         }
         if (runtime.getTraceEnabled()) {
           writeLine(print, renderTurnTrace(result.trace, { color: colorEnabled }));

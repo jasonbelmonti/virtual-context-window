@@ -18,6 +18,24 @@ Cinematic incident-response showdown demo (live Ollama primary):
 bun run demo:showdown
 ```
 
+Passive sliding A/B validation (baseline `v1` vs `v2_passive`):
+
+```bash
+bun run demo:passive
+```
+
+Fast passive validation:
+
+```bash
+bun run demo:passive:fast
+```
+
+Passive demo artifacts are written to:
+
+```text
+reports/demo-passive-scroll/<timestamp>/
+```
+
 During execution, the CLI now streams a live ticker (`[t+Xs]`) with:
 - provider/tool probe progress
 - per-lane memory seeding and distractor turn progress
@@ -95,6 +113,13 @@ Agent CLI (mock):
 bun run agent:interactive --mock
 ```
 
+Agent kernel selection:
+
+```bash
+bun run agent:interactive --mock --kernel v1
+bun run agent:interactive --mock --kernel v2_passive
+```
+
 Agent CLI auto-symbol mode defaults to `active` (passive writes allowed for high-confidence durable facts). In-session controls:
 
 ```text
@@ -134,6 +159,10 @@ VCW_AUTO_SYMBOL_SHADOW_MIN_SCORE=0.50
 VCW_HISTORY_MAX_TURNS=<positive-integer>
 VCW_ASSISTANT_PROVIDER=ollama|openai_responses
 VCW_OPENAI_BASE_URL=https://api.openai.com/v1
+VCW_PASSIVE_HIGH_WATERMARK=0.80
+VCW_PASSIVE_LOW_WATERMARK=0.60
+VCW_PASSIVE_PACK_TOTAL_CHARS=420
+VCW_PASSIVE_MAX_EVENT_TAPE_ENTRIES=2000
 ```
 
 Phase 8 flow (detector + control envelope):

@@ -50,6 +50,7 @@ function createKeyValueTable(
 function renderSummary(trace: AgentTurnTrace): string {
   const table = createKeyValueTable([
     ["threadId", trace.threadId],
+    ["kernelMode", trace.kernelMode],
     ["stages", trace.stages.join(" -> ")],
     ["contextPackChars", trace.contextPackText.length],
     ["rawModelChars", trace.rawModelContent.length],
@@ -151,6 +152,29 @@ function renderAgentLoop(trace: AgentTurnTrace): string {
   return table.toString();
 }
 
+function renderPassiveSliding(trace: AgentTurnTrace): string {
+  const passive = trace.diagnostics.passive;
+  if (!passive) {
+    return "(v1 kernel: passive diagnostics unavailable)";
+  }
+
+  const table = createKeyValueTable([
+    ["pressureRatio", passive.pressureRatio.toFixed(3)],
+    ["pressurePeak", passive.pressurePeak.toFixed(3)],
+    ["pressureState", passive.pressureState],
+    ["compactionTriggered", passive.compactionTriggered],
+    ["compactionReason", passive.compactionReason],
+    ["compactionJobsTriggered", passive.compactionJobsTriggered],
+    ["compactionSkippedReason", passive.compactionSkippedReason],
+    ["extractorCalls", passive.extractorCalls],
+    ["proposalsCount", passive.proposalsCount],
+    ["committedSymbolsCount", passive.committedSymbolsCount],
+    ["hydratedSymbolsCount", passive.hydratedSymbolsCount],
+    ["ignoredModelEventCount", passive.ignoredModelEventCount],
+  ]);
+  return table.toString();
+}
+
 function renderSymbolTable(trace: AgentTurnTrace): string {
   if (trace.symbolTable.length === 0) {
     return "(empty)";
@@ -198,6 +222,8 @@ export function renderTurnTrace(
     renderAutoSymbol(trace),
     theme.section("Agent Loop"),
     renderAgentLoop(trace),
+    theme.section("Passive Sliding"),
+    renderPassiveSliding(trace),
     theme.section("Symbol Table"),
     renderSymbolTable(trace),
   ].join("\n");

@@ -1,7 +1,9 @@
 import {
+  createProviderCompressionExtractor,
   InMemorySymbolStore,
   createRetrievalHooks,
   createVirtualContextEngine,
+  createVirtualContextEngineV2Passive,
   createWritePathHooks,
   type AssistantGenerateFn,
   type EngineStage,
@@ -35,6 +37,7 @@ import {
 } from "../recognition";
 import type {
   AgentCliCommand,
+  KernelMode,
   AgentCliStateView,
   AgentThreadState,
   AgentTurnResult,
@@ -169,9 +172,28 @@ function parseProvider(
   return fallback;
 }
 
+function parseKernelMode(
+  value: string | undefined,
+  fallback: KernelMode,
+): KernelMode {
+  if (!value) {
+    return fallback;
+  }
+
+  const normalized = value.toLowerCase();
+  if (normalized === "v2" || normalized === "v2_passive") {
+    return "v2_passive";
+  }
+  if (normalized === "v1") {
+    return "v1";
+  }
+  return fallback;
+}
+
 export type AgentCliRuntimeOptions = {
   mock?: boolean;
   provider?: AgentProvider;
+  kernelMode?: KernelMode;
   streamEnabled?: boolean;
   traceEnabled?: boolean;
   threadId?: string;
@@ -235,6 +257,7 @@ export class AgentCliRuntime {
   private store = new InMemorySymbolStore();
   private engine: VirtualContextEngine;
   private readonly provider: AgentProvider;
+  private readonly kernelMode: KernelMode;
   private streamEnabled: boolean;
   private traceEnabled: boolean;
   private autoSymbolMode: AutoSymbolMode;
@@ -257,6 +280,10 @@ export class AgentCliRuntime {
       options.provider ?? env.VCW_ASSISTANT_PROVIDER,
       "ollama",
     );
+    this.kernelMode = parseKernelMode(
+      options.kernelMode ?? env.VCW_KERNEL_MODE,
+      "v1",
+    );
     this.streamEnabled = options.streamEnabled ?? true;
     this.traceEnabled = options.traceEnabled ?? false;
     this.autoSymbolMode = parseAutoSymbolMode(env.VCW_AUTO_SYMBOL_MODE, "active");
@@ -275,6 +302,7 @@ export class AgentCliRuntime {
     this.threadId = options.threadId ?? makeThreadId();
 
     if (!options.mock && !options.assistantGenerate) {
+      const needsEmbeddings = this.kernelMode !== "v2_passive";
       if (this.provider === "openai_responses") {
         if (!env.OPENAI_API_KEY) {
           throw new Error("missing_env:OPENAI_API_KEY");
@@ -282,14 +310,14 @@ export class AgentCliRuntime {
         if (!env.VCW_OPENAI_MODEL) {
           throw new Error("missing_env:VCW_OPENAI_MODEL");
         }
-        if (!env.VCW_OPENAI_EMBED_MODEL) {
+        if (needsEmbeddings && !env.VCW_OPENAI_EMBED_MODEL) {
           throw new Error("missing_env:VCW_OPENAI_EMBED_MODEL");
         }
       } else {
         if (!env.VCW_OLLAMA_MODEL) {
           throw new Error("missing_env:VCW_OLLAMA_MODEL");
         }
-        if (!env.VCW_OLLAMA_EMBED_MODEL) {
+        if (needsEmbeddings && !env.VCW_OLLAMA_EMBED_MODEL) {
           throw new Error("missing_env:VCW_OLLAMA_EMBED_MODEL");
         }
       }
@@ -353,6 +381,52 @@ export class AgentCliRuntime {
 
   private createEngine(): VirtualContextEngine {
     const env = this.options.env ?? process.env;
+    if (this.kernelMode === "v2_passive") {
+      const passiveHighWatermark = parsePositiveFloat(
+        env.VCW_PASSIVE_HIGH_WATERMARK,
+        0.8,
+      );
+      const passiveLowWatermarkRaw = parsePositiveFloat(
+        env.VCW_PASSIVE_LOW_WATERMARK,
+        0.6,
+      );
+      const passiveLowWatermark = Math.min(
+        passiveLowWatermarkRaw,
+        Math.max(0.05, passiveHighWatermark - 0.05),
+      );
+
+      return createVirtualContextEngineV2Passive({
+        assistantGenerate: this.resolveAssistantGenerate(),
+        store: this.store,
+        telemetry: {
+          emit: (event) => {
+            this.activeTelemetry?.push(event);
+          },
+        },
+        onStage: (stage) => {
+          this.activeStages?.push(stage);
+        },
+        retrievalStrategy: "hybrid_v2",
+        highWatermark: passiveHighWatermark,
+        lowWatermark: passiveLowWatermark,
+        packBudget: {
+          totalChars: parsePositiveInt(env.VCW_PASSIVE_PACK_TOTAL_CHARS, 420),
+          recentLiteralPairCount: 2,
+          recentLiteralItemMaxChars: 180,
+        },
+        maxEventTapeEntriesPerThread: parsePositiveInt(
+          env.VCW_PASSIVE_MAX_EVENT_TAPE_ENTRIES,
+          2_000,
+        ),
+        extractor: this.options.mock
+          ? undefined
+          : createProviderCompressionExtractor({
+              provider: this.provider,
+              env,
+            }),
+      });
+    }
+
     const embedModel =
       this.provider === "openai_responses"
         ? env.VCW_OPENAI_EMBED_MODEL
@@ -541,6 +615,25 @@ export class AgentCliRuntime {
       postModelMs: number;
       retrievalStrategy: "lexical_v1" | "hybrid_v2";
       retrievalDegraded: boolean;
+      passive?: {
+        pressureRatio: number;
+        pressurePeak: number;
+        pressureState: "normal" | "compact";
+        compactionTriggered: boolean;
+        compactionReason: "high_watermark" | "below_threshold" | "none";
+        compactionJobsTriggered: number;
+        compactionSkippedReason:
+          | "none"
+          | "in_flight"
+          | "low_pressure"
+          | "no_candidates"
+          | "extractor_error";
+        extractorCalls: number;
+        proposalsCount: number;
+        committedSymbolsCount: number;
+        hydratedSymbolsCount: number;
+        ignoredModelEventCount: number;
+      };
     };
   }): Promise<AgentTurnTrace> {
     const symbolTable = await this.collectSymbolTableSnapshot(this.threadId);
@@ -558,6 +651,7 @@ export class AgentCliRuntime {
         post.eventsAccepted > 0);
     return {
       threadId: this.threadId,
+      kernelMode: this.kernelMode,
       stages: this.activeStages ?? [],
       telemetry: this.activeTelemetry ?? [],
       symbolTable,
@@ -706,6 +800,25 @@ export class AgentCliRuntime {
               postModelMs: number;
               retrievalStrategy: "lexical_v1" | "hybrid_v2";
               retrievalDegraded: boolean;
+              passive?: {
+                pressureRatio: number;
+                pressurePeak: number;
+                pressureState: "normal" | "compact";
+                compactionTriggered: boolean;
+                compactionReason: "high_watermark" | "below_threshold" | "none";
+                compactionJobsTriggered: number;
+                compactionSkippedReason:
+                  | "none"
+                  | "in_flight"
+                  | "low_pressure"
+                  | "no_candidates"
+                  | "extractor_error";
+                extractorCalls: number;
+                proposalsCount: number;
+                committedSymbolsCount: number;
+                hydratedSymbolsCount: number;
+                ignoredModelEventCount: number;
+              };
             };
           }
         | undefined;
@@ -798,6 +911,7 @@ export class AgentCliRuntime {
             `threadId=${state.threadId}`,
             `trace=${state.traceMode}`,
             `provider=${state.provider}`,
+            `kernelMode=${state.kernelMode}`,
             `stream=${state.streamEnabled ? "on" : "off"}`,
             `autoSymbolMode=${state.autoSymbolMode}`,
             `historyTurnLimit=${state.historyTurnLimit ?? "off"}`,
@@ -807,6 +921,27 @@ export class AgentCliRuntime {
         };
       }
       case "remember": {
+        if (this.kernelMode === "v2_passive") {
+          const content = command.content.trim();
+          if (!content) {
+            return {
+              output: "empty_remember_content",
+            };
+          }
+          await this.store.upsert(this.threadId, {
+            summary: summarizeDeterministically(content),
+            content,
+            kind: "note",
+            meta: {
+              source: "passive_manual",
+              keyHint: "agent_cli_remember",
+            },
+          });
+          return {
+            output: "Remembered via passive policy write path.",
+          };
+        }
+
         const turn = await this.processUserMessage(command.content, {
           writeIntentMode: "strict",
         });
@@ -916,6 +1051,7 @@ export class AgentCliRuntime {
       threadId: this.threadId,
       traceMode: this.traceEnabled ? "on" : "off",
       provider: this.provider,
+      kernelMode: this.kernelMode,
       streamEnabled: this.streamEnabled,
       autoSymbolMode: this.autoSymbolMode,
       historyTurnLimit: this.historyTurnLimit,
