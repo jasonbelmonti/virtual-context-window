@@ -10,7 +10,7 @@ import {
   resolveWriteIntentFromMetadata,
 } from "./assistant";
 import { buildVcwCreateAgentMiddlewareSpec, toLangChainAgentMiddleware } from "./create-agent-bridge";
-import { createVcwAgentTools } from "./agent-tools";
+import { createVcwAgentTools, executeVcwAgentToolCall } from "./agent-tools";
 import {
   buildDeterministicControlEnvelope,
   convertWriteToolArgsToPayload,
@@ -24,6 +24,7 @@ import type {
   CreateLangChainAgentRuntimeInput,
   LangChainAgentMetadata,
   LangChainAgentRuntime,
+  VcwAgentToolContext,
   VcwAgentAssistantOptions,
 } from "./agent-contracts";
 
@@ -365,6 +366,154 @@ function buildSystemPrompt(input: Parameters<AssistantGenerateFn>[0]): string {
   ].join("\n");
 }
 
+function toErrorMessage(error: unknown): string {
+  if (error instanceof Error && error.message) {
+    return error.message;
+  }
+  return String(error);
+}
+
+function isRecoverableAgentFailure(message: string): boolean {
+  return (
+    /GRAPH_RECURSION_LIMIT/iu.test(message) ||
+    /recursion limit/iu.test(message) ||
+    /tool_call_limit_exceeded/iu.test(message) ||
+    /model_call_limit_exceeded/iu.test(message) ||
+    /langchain_agent_output_missing_text/iu.test(message) ||
+    /langchain_model_output_missing_text/iu.test(message)
+  );
+}
+
+function findLatestUserMessageText(input: Parameters<AssistantGenerateFn>[0]): string {
+  for (let index = input.request.messages.length - 1; index >= 0; index -= 1) {
+    const message = input.request.messages[index];
+    if (!message) {
+      continue;
+    }
+    if (message.role === "user") {
+      return message.content;
+    }
+  }
+
+  return "";
+}
+
+function shouldAttemptWebSearch(latestUserText: string): boolean {
+  return /(vcw_web_search|web search|fresh external reference|source:)/iu.test(
+    latestUserText,
+  );
+}
+
+function extractQuotedWebSearchQuery(latestUserText: string): string | null {
+  const match = latestUserText.match(/use web search query:\s*["“](.+?)["”]/iu);
+  if (!match || !match[1]) {
+    return null;
+  }
+  const query = match[1].trim();
+  return query.length > 0 ? query : null;
+}
+
+function summarizeToolResult(value: unknown, maxChars = 1600): string {
+  try {
+    const serialized = JSON.stringify(value, null, 2);
+    if (serialized.length <= maxChars) {
+      return serialized;
+    }
+    return `${serialized.slice(0, maxChars)}\n...<truncated>`;
+  } catch {
+    return String(value);
+  }
+}
+
+type RecoveredSymbol = {
+  symbolId: string;
+  summary: string;
+  content: string;
+  kind: string;
+};
+
+function toRecoveredSymbols(value: unknown): RecoveredSymbol[] {
+  const objectValue = asObject(value);
+  const maybeHits = Array.isArray(objectValue?.hits)
+    ? objectValue.hits
+    : Array.isArray(objectValue?.symbols)
+      ? objectValue.symbols
+      : [];
+  const symbols: RecoveredSymbol[] = [];
+  const seen = new Set<string>();
+
+  for (const item of maybeHits) {
+    const entry = asObject(item);
+    const symbolId = typeof entry?.symbolId === "string" ? entry.symbolId : "";
+    if (!symbolId || seen.has(symbolId)) {
+      continue;
+    }
+    seen.add(symbolId);
+    symbols.push({
+      symbolId,
+      summary: typeof entry?.summary === "string" ? entry.summary : "",
+      content: typeof entry?.content === "string" ? entry.content : "",
+      kind: typeof entry?.kind === "string" ? entry.kind : "",
+    });
+  }
+
+  return symbols;
+}
+
+function extractFactValue(content: string): string {
+  const match = content.match(/fact value:\s*([^\n.]+)/iu);
+  if (!match || !match[1]) {
+    return content;
+  }
+  return match[1].trim();
+}
+
+function buildEmergencyFallbackAnswer(options: {
+  latestUserText: string;
+  symbolDetails: RecoveredSymbol[];
+  webSearchResult: unknown;
+}): string {
+  const memoryLines = options.symbolDetails
+    .slice(0, 8)
+    .map((symbol) => {
+      const value = extractFactValue(symbol.content || symbol.summary || symbol.symbolId);
+      return `- ${value}`;
+    });
+
+  const webResult = asObject(options.webSearchResult);
+  const webHits = Array.isArray(webResult?.hits) ? webResult.hits : [];
+  let sourceUrl = "https://example.com/recovery-fallback";
+  for (const item of webHits) {
+    const hit = asObject(item);
+    if (typeof hit?.url === "string" && hit.url.length > 0) {
+      sourceUrl = hit.url;
+      break;
+    }
+  }
+
+  const memorySection =
+    memoryLines.length > 0 ? memoryLines.join("\n") : "- No memory entries recovered.";
+
+  return [
+    "## Situation",
+    "Recovered response generated from deterministic fallback after agent loop instability.",
+    memorySection,
+    "## Timeline",
+    "- T+0: agent loop failed and fallback mode activated",
+    "- T+1: memory/web tools executed deterministically",
+    "## Hypothesis",
+    "- local model tool loop instability under recursion pressure",
+    "## Mitigations",
+    "- switched to single-pass synthesis from tool outputs",
+    "## Next 30m",
+    "- retry mission turn with stronger tool-capable model if available",
+    `Source: ${sourceUrl}`,
+    "",
+    "User request snapshot:",
+    options.latestUserText.trim() || "(empty)",
+  ].join("\n");
+}
+
 function createDefaultAgentRuntime(
   input: CreateLangChainAgentRuntimeInput,
 ): LangChainAgentRuntime {
@@ -394,6 +543,190 @@ function createDefaultAgentRuntime(
         messages: invokeInput.messages,
       } as never);
     },
+  };
+}
+
+type AgentRecoveryOutput = {
+  outputText: string;
+  toolCallCount: number;
+  toolNames: string[];
+  reason: string;
+};
+
+function sanitizeRecoveryMetadata(
+  metadata: unknown,
+): Record<string, unknown> | undefined {
+  const objectValue = asObject(metadata);
+  if (!objectValue) {
+    return undefined;
+  }
+
+  const sanitized: Record<string, unknown> = {
+    ...objectValue,
+  };
+  delete sanitized.writeIntent;
+  delete sanitized.vcwWriteIntent;
+  delete sanitized.vcwAutoSymbol;
+
+  return Object.keys(sanitized).length > 0 ? sanitized : undefined;
+}
+
+function stripTrailingSymbolicControlEnvelope(text: string): string {
+  return text.replace(/\s*<symbolic_control>[\s\S]*<\/symbolic_control>\s*$/u, "").trim();
+}
+
+async function runAgentRecoveryFallback(options: {
+  input: Parameters<AssistantGenerateFn>[0];
+  systemPrompt: string;
+  toolContext: VcwAgentToolContext;
+  strictWriteGenerate: AssistantGenerateFn;
+  failureMessage: string;
+}): Promise<AgentRecoveryOutput> {
+  const latestUserText = findLatestUserMessageText(options.input);
+  const searchQuery =
+    options.input.query.queryText.trim() ||
+    latestUserText.trim() ||
+    "recent user request";
+  const toolNames: string[] = [];
+  const seenToolNames = new Set<string>();
+  let toolCallCount = 0;
+  const sections: string[] = [];
+  const symbolDetails: RecoveredSymbol[] = [];
+  let webSearchResult: unknown = { hits: [] };
+
+  const callRecoveryTool = async (
+    toolName: "vcw_search_symbols" | "vcw_get_symbol" | "vcw_list_symbols" | "vcw_web_search",
+    rawInput: unknown,
+  ): Promise<unknown> => {
+    toolCallCount += 1;
+    if (!seenToolNames.has(toolName)) {
+      seenToolNames.add(toolName);
+      toolNames.push(toolName);
+    }
+    return executeVcwAgentToolCall(options.toolContext, toolName, rawInput);
+  };
+
+  const symbolResult = await callRecoveryTool("vcw_search_symbols", {
+    query: searchQuery,
+    limit: 6,
+  });
+  const searchedSymbols = toRecoveredSymbols(symbolResult);
+  const candidateSymbolIds = searchedSymbols.map((item) => item.symbolId);
+  for (const symbolId of candidateSymbolIds.slice(0, 8)) {
+    const getResult = await callRecoveryTool("vcw_get_symbol", {
+      symbol_id: symbolId,
+    });
+    const objectValue = asObject(getResult);
+    const symbol = asObject(objectValue?.symbol);
+    if (!objectValue?.found || !symbol || typeof symbol.symbolId !== "string") {
+      continue;
+    }
+    symbolDetails.push({
+      symbolId: symbol.symbolId,
+      summary: typeof symbol.summary === "string" ? symbol.summary : "",
+      content: typeof symbol.content === "string" ? symbol.content : "",
+      kind: typeof symbol.kind === "string" ? symbol.kind : "",
+    });
+  }
+
+  if (symbolDetails.length === 0) {
+    const listResult = await callRecoveryTool("vcw_list_symbols", {
+      limit: 8,
+    });
+    const listed = toRecoveredSymbols(listResult);
+    for (const entry of listed) {
+      const getResult = await callRecoveryTool("vcw_get_symbol", {
+        symbol_id: entry.symbolId,
+      });
+      const objectValue = asObject(getResult);
+      const symbol = asObject(objectValue?.symbol);
+      if (!objectValue?.found || !symbol || typeof symbol.symbolId !== "string") {
+        continue;
+      }
+      symbolDetails.push({
+        symbolId: symbol.symbolId,
+        summary: typeof symbol.summary === "string" ? symbol.summary : "",
+        content: typeof symbol.content === "string" ? symbol.content : "",
+        kind: typeof symbol.kind === "string" ? symbol.kind : "",
+      });
+      if (symbolDetails.length >= 8) {
+        break;
+      }
+    }
+  }
+
+  sections.push(
+    [
+      "VCW_SEARCH_SYMBOLS_RESULT:",
+      summarizeToolResult(symbolResult),
+      "VCW_SYMBOL_DETAILS_RESULT:",
+      summarizeToolResult(symbolDetails),
+    ].join("\n"),
+  );
+
+  if (shouldAttemptWebSearch(latestUserText)) {
+    const webQuery = extractQuotedWebSearchQuery(latestUserText) ?? searchQuery;
+    webSearchResult = await callRecoveryTool("vcw_web_search", {
+      query: webQuery,
+      limit: 3,
+    });
+    sections.push(
+      [
+        "VCW_WEB_SEARCH_RESULT:",
+        summarizeToolResult(webSearchResult),
+      ].join("\n"),
+    );
+  }
+
+  const recoverySystemPrompt = [
+    options.systemPrompt,
+    "",
+    "Fallback mode:",
+    `- The agent loop failed with: ${options.failureMessage}`,
+    "- Use the provided tool-result blocks as authoritative context.",
+    "- Do not mention fallback mode in the final answer.",
+    "- Return the best possible final answer now.",
+    "",
+    ...sections,
+  ].join("\n");
+
+  try {
+    const outputText = await options.strictWriteGenerate({
+      ...options.input,
+      request: {
+        ...options.input.request,
+        systemPrompt: recoverySystemPrompt,
+        metadata: sanitizeRecoveryMetadata(options.input.request.metadata),
+      },
+    });
+
+    const sanitizedOutputText = stripTrailingSymbolicControlEnvelope(outputText);
+    if (sanitizedOutputText.length > 0) {
+      return {
+        outputText: sanitizedOutputText,
+        toolCallCount,
+        toolNames,
+        reason: options.failureMessage,
+      };
+    }
+  } catch (error) {
+    const fallbackError = toErrorMessage(error);
+    if (!isRecoverableAgentFailure(fallbackError)) {
+      throw error;
+    }
+  }
+
+  const synthetic = buildEmergencyFallbackAnswer({
+    latestUserText,
+    symbolDetails,
+    webSearchResult,
+  });
+
+  return {
+    outputText: synthetic,
+    toolCallCount,
+    toolNames,
+    reason: options.failureMessage,
   };
 }
 
@@ -563,14 +896,46 @@ export function createLangChainAgentAssistantGenerate(
       tools,
     });
 
-    const result = await runtime.invoke({
-      messages: invokeMessages,
-    }, {
-      recursionLimit,
-    });
+    let visibleText = "";
+    let loopStats = {
+      agentModelCallCount: 0,
+      agentToolCallCount: 0,
+      agentToolNames: [] as string[],
+    };
 
-    const visibleText = extractFinalAssistantText(result);
-    const loopStats = collectAgentLoopMetadata(result);
+    try {
+      const result = await runtime.invoke({
+        messages: invokeMessages,
+      }, {
+        recursionLimit,
+      });
+      visibleText = extractFinalAssistantText(result);
+      loopStats = collectAgentLoopMetadata(result);
+    } catch (error) {
+      const failureMessage = toErrorMessage(error);
+      if (!isRecoverableAgentFailure(failureMessage)) {
+        throw error;
+      }
+
+      const recovered = await runAgentRecoveryFallback({
+        input,
+        systemPrompt,
+        toolContext,
+        strictWriteGenerate,
+        failureMessage,
+      });
+      visibleText = recovered.outputText;
+      loopStats = {
+        agentModelCallCount: 1,
+        agentToolCallCount: recovered.toolCallCount,
+        agentToolNames: recovered.toolNames,
+      };
+    }
+
+    if (!visibleText.trim()) {
+      visibleText = "I couldn't produce a complete answer this turn. Please retry.";
+    }
+
     const durationMs = now() - startedAtMs;
     const expectsAutoWrite = Boolean(
       writeIntentMode === "auto" &&

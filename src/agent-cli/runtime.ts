@@ -599,6 +599,12 @@ export class AgentCliRuntime {
             agentToolCallCount: this.lastAgentMetadata.agentToolCallCount,
             agentToolNames: this.lastAgentMetadata.agentToolNames,
             agentLoopDurationMs: this.lastAgentMetadata.agentLoopDurationMs,
+            writeIntentMode: this.lastAgentMetadata.writeIntentMode,
+            writeTransport: this.lastAgentMetadata.writeTransport,
+            writeIntentSatisfied: this.lastAgentMetadata.writeIntentSatisfied,
+            toolCallDetected: this.lastAgentMetadata.toolCallDetected,
+            writeToolSchemaVersion:
+              this.lastAgentMetadata.writeToolSchemaVersion,
           }
         : {
             provider:
@@ -623,6 +629,11 @@ export class AgentCliRuntime {
             agentToolCallCount: 0,
             agentToolNames: [],
             agentLoopDurationMs: 0,
+            writeIntentMode: "none",
+            writeTransport: "plain_text",
+            writeIntentSatisfied: true,
+            toolCallDetected: false,
+            writeToolSchemaVersion: "v1",
           },
     };
   }

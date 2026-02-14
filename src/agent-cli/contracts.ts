@@ -5,6 +5,11 @@ import type {
   TelemetryEvent,
   VirtualContextMessage,
 } from "../engine";
+import type {
+  WriteIntentMode,
+  WriteToolSchemaVersion,
+  WriteTransport,
+} from "../integrations/langchain";
 import type { AutoSymbolMode, RecognitionScoreBand } from "../recognition";
 
 export type TraceMode = "off" | "on";
@@ -41,6 +46,11 @@ export type AgentAssistantTraceMetadata = {
   agentToolCallCount: number;
   agentToolNames: string[];
   agentLoopDurationMs: number;
+  writeIntentMode: WriteIntentMode;
+  writeTransport: WriteTransport;
+  writeIntentSatisfied: boolean;
+  toolCallDetected: boolean;
+  writeToolSchemaVersion: WriteToolSchemaVersion;
 };
 
 export type AgentTurnTrace = {

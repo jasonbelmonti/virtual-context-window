@@ -142,6 +142,11 @@ function renderAgentLoop(trace: AgentTurnTrace): string {
     ["agentToolCallCount", trace.agent.agentToolCallCount],
     ["agentToolNames", trace.agent.agentToolNames.join(", ") || "(none)"],
     ["agentLoopDurationMs", trace.agent.agentLoopDurationMs.toFixed(2)],
+    ["writeIntentMode", trace.agent.writeIntentMode],
+    ["writeTransport", trace.agent.writeTransport],
+    ["writeIntentSatisfied", trace.agent.writeIntentSatisfied],
+    ["toolCallDetected", trace.agent.toolCallDetected],
+    ["schemaVersion", trace.agent.writeToolSchemaVersion],
   ]);
   return table.toString();
 }

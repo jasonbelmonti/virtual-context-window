@@ -38,6 +38,9 @@ test("--once with --trace prints trace output", async () => {
   expect(exitCode).toBe(0);
   const output = printed.join("\n");
   expect(output).toContain("Got it.");
+  expect(output).toContain("PROJECTION ACCEPTED");
+  expect(output).toContain("origin=MODEL_RENDERED");
+  expect(output).toContain("transport=plain_text");
   expect(output).toContain("--- Turn Trace ---");
   expect(output).toContain("parseOutcome");
   expect(output).toContain("control_channel_valid");
