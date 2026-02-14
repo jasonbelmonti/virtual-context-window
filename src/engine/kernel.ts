@@ -269,7 +269,6 @@ export function createVirtualContextEngine(
     await markStage("InvokeAssistant", threadId, executeOptions?.streamEvents);
     let rawModelContent = "";
     let invokeError: unknown;
-    let emittedAssistantDeltaCount = 0;
     let shouldEmitSanitizedFallbackDelta = false;
 
     const onStreamEvent = executeOptions?.streamEvents
@@ -277,12 +276,6 @@ export function createVirtualContextEngine(
           if (event.type !== "text_delta") {
             return;
           }
-          emittedAssistantDeltaCount += 1;
-          await executeOptions.streamEvents!({
-            type: "assistant_text_delta",
-            threadId,
-            delta: event.delta,
-          });
         }
       : undefined;
 
@@ -305,7 +298,6 @@ export function createVirtualContextEngine(
       !invokeError &&
       executeOptions?.useAssistantStream === true &&
       executeOptions.streamEvents !== undefined &&
-      emittedAssistantDeltaCount === 0 &&
       rawModelContent.length > 0;
 
     const postModelStart = clock();
