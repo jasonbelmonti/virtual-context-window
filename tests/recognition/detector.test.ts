@@ -22,6 +22,20 @@ test("recognizeAutomaticSymbols captures high-confidence profile name", () => {
   expect(decision.events[0]?.symbol_id).toBe("profile:name");
 });
 
+test("recognizeAutomaticSymbols handles quoted profile statements", () => {
+  const decision = recognizeAutomaticSymbols({
+    latestUserText: "“my name is Jason”",
+    mode: "active",
+  });
+
+  expect(decision.triggered).toBe(true);
+  expect(decision.shouldWrite).toBe(true);
+  expect(decision.reason).toBe("profile_name_statement");
+  expect(decision.scoring.band).toBe("write");
+  expect(decision.scoring.overrideApplied).toBe(true);
+  expect(decision.events[0]?.symbol_id).toBe("profile:name");
+});
+
 test("recognizeAutomaticSymbols filters direct questions", () => {
   const decision = recognizeAutomaticSymbols({
     latestUserText: "what is the weather today?",

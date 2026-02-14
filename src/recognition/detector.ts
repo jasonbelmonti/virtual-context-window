@@ -110,6 +110,39 @@ function roundTo(value: number, digits = 6): number {
   return Math.round(value * multiplier) / multiplier;
 }
 
+const WRAPPING_QUOTES: Array<[string, string]> = [
+  ['"', '"'],
+  ["'", "'"],
+  ["`", "`"],
+  ["“", "”"],
+  ["‘", "’"],
+];
+
+function stripWrappingQuotes(text: string): string {
+  let normalized = text.trim();
+  while (normalized.length >= 2) {
+    let stripped = false;
+    for (const [open, close] of WRAPPING_QUOTES) {
+      if (normalized.startsWith(open) && normalized.endsWith(close)) {
+        normalized = normalized
+          .slice(open.length, normalized.length - close.length)
+          .trim();
+        stripped = true;
+        break;
+      }
+    }
+    if (!stripped) {
+      break;
+    }
+  }
+
+  return normalized;
+}
+
+function normalizeRecognizerInput(text: string): string {
+  return stripWrappingQuotes(text.replace(/\s+/gu, " ").trim());
+}
+
 function sigmoid(value: number): number {
   return 1 / (1 + Math.exp(-value));
 }
@@ -462,7 +495,7 @@ export function recognizeAutomaticSymbols(input: {
         : DEFAULT_RECOGNIZER_CONFIG.maxEventsPerTurn,
   };
 
-  const normalizedText = input.latestUserText.replace(/\s+/gu, " ").trim();
+  const normalizedText = normalizeRecognizerInput(input.latestUserText);
   const textLength = normalizedText.length;
 
   if (input.mode === "off") {
