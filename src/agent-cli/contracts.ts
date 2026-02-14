@@ -128,7 +128,7 @@ export type AgentCliStateView = {
 
 export type AgentCliCommand =
   | { type: "help" }
-  | { type: "trace"; action: "on" | "off" | "view" | "raw" }
+  | { type: "trace"; action: "on" | "off" | "view" | "raw" | "pack" }
   | { type: "stream"; action: "on" | "off" | "status" }
   | { type: "auto"; action: "on" | "off" | "shadow" | "status" }
   | { type: "state" }

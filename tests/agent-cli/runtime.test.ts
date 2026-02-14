@@ -44,6 +44,10 @@ test("agent runtime captures parse/apply/scrub telemetry and mutates symbol stat
   expect(view.output).toContain("Agent Loop");
   expect(view.output).toContain("parseOutcome");
   expect(view.output).toContain("writeTransport");
+
+  const pack = await runtime.executeCommand({ type: "trace", action: "pack" });
+  expect(pack.output).toContain("--- Context Pack ---");
+  expect(pack.output).toContain("(empty)");
 });
 
 test("remember command persists symbols through policy write path in mock mode", async () => {

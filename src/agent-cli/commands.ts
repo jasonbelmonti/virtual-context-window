@@ -23,10 +23,16 @@ export function parseSlashCommand(input: string): CommandParseResult {
       return { ok: true, command: { type: "help" } };
     case "trace": {
       const action = restTokens[0]?.toLowerCase();
-      if (action === "on" || action === "off" || action === "view" || action === "raw") {
+      if (
+        action === "on" ||
+        action === "off" ||
+        action === "view" ||
+        action === "raw" ||
+        action === "pack"
+      ) {
         return { ok: true, command: { type: "trace", action } };
       }
-      return { ok: false, error: "usage: /trace on|off|view|raw" };
+      return { ok: false, error: "usage: /trace on|off|view|raw|pack" };
     }
     case "stream": {
       const action = restTokens[0]?.toLowerCase();
@@ -125,7 +131,7 @@ export function formatHelpText(): string {
   return [
     "Commands:",
     "  /help                          Show this help",
-    "  /trace on|off|view|raw         Toggle trace, print last trace, or raw model output",
+    "  /trace on|off|view|raw|pack    Toggle trace, print last trace/raw output/context pack",
     "  /stream on|off|status          Toggle streaming output in this session",
     "  /auto on|off|shadow|status     Configure passive symbol recognition mode",
     "  /state                         Show current CLI state",

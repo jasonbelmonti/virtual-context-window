@@ -904,6 +904,17 @@ export class AgentCliRuntime {
             ].join("\n"),
           };
         }
+        if (command.action === "pack") {
+          if (!this.lastTrace) {
+            return { output: "No context pack available yet." };
+          }
+          return {
+            output: [
+              "--- Context Pack ---",
+              this.lastTrace.contextPackText || "(empty)",
+            ].join("\n"),
+          };
+        }
         if (command.action === "view") {
           if (!this.lastTrace) {
             return { output: "No trace available yet." };

@@ -17,6 +17,11 @@ test("parseSlashCommand parses supported agent commands", () => {
     command: { type: "trace", action: "raw" },
   });
 
+  expect(parseSlashCommand("/trace pack")).toEqual({
+    ok: true,
+    command: { type: "trace", action: "pack" },
+  });
+
   expect(parseSlashCommand("/stream off")).toEqual({
     ok: true,
     command: { type: "stream", action: "off" },
@@ -81,7 +86,7 @@ test("parseSlashCommand parses supported agent commands", () => {
 test("parseSlashCommand returns useful errors for invalid input", () => {
   expect(parseSlashCommand("/trace maybe")).toEqual({
     ok: false,
-    error: "usage: /trace on|off|view|raw",
+    error: "usage: /trace on|off|view|raw|pack",
   });
 
   expect(parseSlashCommand("/stream maybe")).toEqual({
@@ -122,7 +127,7 @@ test("parseSlashCommand returns useful errors for invalid input", () => {
 
 test("formatHelpText includes command anchors", () => {
   const help = formatHelpText();
-  expect(help).toContain("/trace on|off|view|raw");
+  expect(help).toContain("/trace on|off|view|raw|pack");
   expect(help).toContain("/stream on|off|status");
   expect(help).toContain("/auto on|off|shadow|status");
   expect(help).toContain("/remember <text>");
