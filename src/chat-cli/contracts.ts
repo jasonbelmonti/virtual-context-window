@@ -10,7 +10,7 @@ import type {
   WriteToolSchemaVersion,
   WriteTransport,
 } from "../integrations/langchain";
-import type { AutoSymbolMode } from "../recognition";
+import type { AutoSymbolMode, RecognitionScoreBand } from "../recognition";
 
 export type TraceMode = "off" | "on";
 
@@ -54,6 +54,11 @@ export type ChatTurnTrace = {
     eventCount: number;
     suppressed: boolean;
     writeApplied: boolean;
+    scorerVersion: string;
+    score: number;
+    scoreBand: RecognitionScoreBand;
+    overrideApplied: boolean;
+    topFeatures: string[];
   };
   diagnostics: {
     generationCallCount: number;

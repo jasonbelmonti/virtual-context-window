@@ -48,6 +48,11 @@ export type LangChainAssistantResultMetadata = {
   autoReason?: string;
   autoEventCount?: number;
   autoSuppressed?: boolean;
+  autoScore?: number;
+  autoScoreBand?: "suppress" | "shadow" | "write";
+  autoScorerVersion?: "heuristic_v2";
+  autoOverrideApplied?: boolean;
+  autoTopFeatures?: string[];
   responseMetadata?: Record<string, unknown>;
   usageMetadata?: Record<string, unknown>;
 };

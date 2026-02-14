@@ -153,6 +153,16 @@
   - Prompt-only passive writes without deterministic detector metadata: rejected due low reliability.
   - Model-judged recognition in Phase 8: rejected for lower determinism and harder rollback.
 
+## ADR-018: Phase 8.1 Locks Heuristic Scoring v2 for Conservative Passive Capture
+- Date: 2026-02-14
+- Status: Accepted
+- Decision: Replace fixed per-pattern confidence constants with deterministic weighted heuristic scoring (`heuristic_v2`) plus conservative score bands (`write`/`shadow`/`suppress`), while retaining hard suppressions for secrets and hard write overrides for high-signal profile facts and explicit remember cues in active mode.
+- Rationale: Improves detector sophistication and explainability without adding ML training complexity or changing parser/policy write authority.
+- Rejected alternatives:
+  - Immediate ML-trained scorer rollout: rejected due operational complexity and calibration overhead for this increment.
+  - Pure-score policy without high-signal overrides: rejected due reduced reliability on canonical profile captures.
+  - Aggressive default thresholds: rejected due increased passive false-positive risk.
+
 ## Phase 0 Sign-off
 - Date: 2026-02-13
 - Status: PASS
@@ -318,12 +328,13 @@
 - Date: 2026-02-14
 - Status: PASS
 - Checklist summary:
-  - Added deterministic recognition module (`src/recognition/`) with fixed thresholds, durable-fact pattern families, low-signal filters, secret suppression, and deterministic IDs (`profile:*` / `auto:<sha1_12>`).
+  - Added deterministic recognition module (`src/recognition/`) with weighted heuristic scoring (`heuristic_v2`), conservative thresholds (`active=0.84`, `shadow=0.50`), durable-fact pattern families, low-signal filters, secret suppression, and deterministic IDs (`profile:*` / `auto:<sha1_12>`).
   - Added passive auto write-intent transport in adapters (`detector_bridge`) with strict mode unchanged and fail-soft auto metadata handling.
-  - Updated chat and agent CLIs with `/auto on|off|shadow|status`, mode defaults (`chat=shadow`, `agent=active`), env overrides, and trace/state visibility for recognition outcomes.
+  - Updated chat and agent CLIs with `/auto on|off|shadow|status`, mode defaults (`chat=shadow`, `agent=active`), env overrides, and trace/state visibility for recognition outcomes including scoring diagnostics (band/override/top features).
   - Added deterministic dedupe to suppress repeated same-content writes for deterministic symbol IDs.
   - Added additive tests:
     - `tests/recognition/detector.test.ts`
+    - `tests/recognition/scoring.test.ts`
     - `tests/langchain/assistant-auto-intent.test.ts`
     - `tests/chat-cli/auto-mode.test.ts`
     - `tests/agent-cli/auto-mode.test.ts`
@@ -334,9 +345,10 @@
     - `bun run test:agent`
     - `bun run chat:interactive --mock --once "my name is Jason" --trace`
     - `VCW_AUTO_SYMBOL_MODE=active bun run agent:interactive --mock --once "my name is Jason" --trace`
-    - `VCW_AUTO_SYMBOL_MODE=shadow bun run chat:interactive --mock --once "my favorite color is green" --trace`
+    - `VCW_AUTO_SYMBOL_MODE=active bun run agent:interactive --mock --once "my favorite color is green" --trace`
     - `bun x tsc --noEmit`
     - `rg -n "WriteIntentMode|detector_bridge|vcwAutoSymbol|/auto on\\|off\\|shadow\\|status" src`
+    - `rg -n "RecognitionScoring|scoreBand|overrideApplied|autoTopFeatures" src`
 - Ambiguities resolved during Phase 8:
   - Locked passive-capture strategy to deterministic detector first; no model-judged recognition in this phase.
 - Freeze commit SHA reference:

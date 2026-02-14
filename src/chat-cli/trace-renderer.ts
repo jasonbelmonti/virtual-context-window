@@ -89,6 +89,16 @@ function renderAutoSymbolTable(trace: ChatTurnTrace): string {
     ["eventCount", trace.autoSymbol.eventCount],
     ["suppressed", trace.autoSymbol.suppressed],
     ["writeApplied", trace.autoSymbol.writeApplied],
+    ["scorerVersion", trace.autoSymbol.scorerVersion],
+    ["score", trace.autoSymbol.score.toFixed(2)],
+    ["scoreBand", trace.autoSymbol.scoreBand],
+    ["overrideApplied", trace.autoSymbol.overrideApplied],
+    [
+      "topFeatures",
+      trace.autoSymbol.topFeatures.length > 0
+        ? trace.autoSymbol.topFeatures.join(", ")
+        : "(none)",
+    ],
   ]);
 
   return table.toString();

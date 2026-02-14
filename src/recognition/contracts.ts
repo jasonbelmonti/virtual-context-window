@@ -1,6 +1,22 @@
 import type { UpsertSymbolEvent } from "../engine/contracts";
 
 export type AutoSymbolMode = "off" | "shadow" | "active";
+export type RecognitionScoreBand = "suppress" | "shadow" | "write";
+export type RecognitionFeatureId =
+  | "is_explicit_remember"
+  | "is_profile_name"
+  | "is_profile_location"
+  | "is_profile_occupation"
+  | "is_durable_preference"
+  | "is_project_plan"
+  | "has_first_person_pronoun"
+  | "has_declarative_verb"
+  | "has_hedge_phrase"
+  | "has_transient_marker"
+  | "is_question_like"
+  | "is_command_like"
+  | "is_too_short"
+  | "is_very_long";
 
 export type RecognitionReason =
   | "none"
@@ -31,12 +47,29 @@ export type RecognitionDecision = {
   shouldWrite: boolean;
   suppressed: boolean;
   events: UpsertSymbolEvent[];
+  scoring: RecognitionScoring;
 };
 
 export type RecognizerConfig = {
   activeMinScore: number;
   shadowMinScore: number;
   maxEventsPerTurn: number;
+};
+
+export type RecognitionFeatureContribution = {
+  feature: RecognitionFeatureId;
+  active: boolean;
+  weight: number;
+  contribution: number;
+};
+
+export type RecognitionScoring = {
+  scorerVersion: "heuristic_v2";
+  rawScore: number;
+  probability: number;
+  band: RecognitionScoreBand;
+  overrideApplied: boolean;
+  contributions: RecognitionFeatureContribution[];
 };
 
 export type AutoSymbolMetadataEnvelope = {
@@ -46,5 +79,6 @@ export type AutoSymbolMetadataEnvelope = {
   reason: string;
   events: unknown[];
   suppressed: boolean;
+  scoring?: RecognitionScoring;
   valid: boolean;
 };

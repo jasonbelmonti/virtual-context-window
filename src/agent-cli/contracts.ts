@@ -5,7 +5,7 @@ import type {
   TelemetryEvent,
   VirtualContextMessage,
 } from "../engine";
-import type { AutoSymbolMode } from "../recognition";
+import type { AutoSymbolMode, RecognitionScoreBand } from "../recognition";
 
 export type TraceMode = "off" | "on";
 
@@ -59,6 +59,11 @@ export type AgentTurnTrace = {
     eventCount: number;
     suppressed: boolean;
     writeApplied: boolean;
+    scorerVersion: string;
+    score: number;
+    scoreBand: RecognitionScoreBand;
+    overrideApplied: boolean;
+    topFeatures: string[];
   };
   agent: AgentAssistantTraceMetadata | null;
 };

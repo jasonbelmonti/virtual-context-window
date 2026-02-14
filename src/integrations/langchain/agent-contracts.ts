@@ -106,6 +106,11 @@ export type LangChainAgentMetadata = {
   autoReason?: string;
   autoEventCount?: number;
   autoSuppressed?: boolean;
+  autoScore?: number;
+  autoScoreBand?: "suppress" | "shadow" | "write";
+  autoScorerVersion?: "heuristic_v2";
+  autoOverrideApplied?: boolean;
+  autoTopFeatures?: string[];
 };
 
 export type VcwAgentAssistantOptions = {

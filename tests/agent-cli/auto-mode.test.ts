@@ -14,6 +14,9 @@ test("agent runtime defaults to active auto mode and writes high-confidence fact
   expect(turn.trace.autoSymbol.mode).toBe("active");
   expect(turn.trace.autoSymbol.triggered).toBe(true);
   expect(turn.trace.autoSymbol.writeApplied).toBe(true);
+  expect(turn.trace.autoSymbol.overrideApplied).toBe(true);
+  expect(turn.trace.autoSymbol.scoreBand).toBe("write");
+  expect(turn.trace.autoSymbol.scorerVersion).toBe("heuristic_v2");
   expect(turn.trace.symbolTable.length).toBe(1);
   expect(turn.trace.symbolTable[0]?.symbolId).toBe("profile:name");
 });
@@ -36,6 +39,7 @@ test("agent auto shadow mode records detection but does not mutate symbols", asy
   expect(turn.trace.autoSymbol.mode).toBe("shadow");
   expect(turn.trace.autoSymbol.triggered).toBe(true);
   expect(turn.trace.autoSymbol.writeApplied).toBe(false);
+  expect(turn.trace.autoSymbol.scoreBand).toBe("shadow");
   expect(turn.trace.symbolTable).toHaveLength(0);
 
   const state = await runtime.executeCommand({ type: "state" });
@@ -63,4 +67,17 @@ test("agent auto status command reports current mode", async () => {
     action: "status",
   });
   expect(statusAfter.output).toContain("autoSymbolMode=off");
+});
+
+test("agent active keeps durable preference in shadow band unless threshold crossed", async () => {
+  const runtime = new AgentCliRuntime({
+    mock: true,
+  });
+
+  const turn = await runtime.processUserMessage("my favorite color is green");
+  expect(turn.trace.autoSymbol.mode).toBe("active");
+  expect(turn.trace.autoSymbol.reason).toBe("durable_preference_statement");
+  expect(turn.trace.autoSymbol.scoreBand).toBe("shadow");
+  expect(turn.trace.autoSymbol.writeApplied).toBe(false);
+  expect(turn.trace.symbolTable).toHaveLength(0);
 });

@@ -23,7 +23,10 @@ import {
   convertWriteToolArgsToPayload,
   getWriteToolDefinition,
 } from "./write-tool-bridge";
-import { parseAutoSymbolMetadataEnvelope } from "../../recognition";
+import {
+  parseAutoSymbolMetadataEnvelope,
+  type RecognitionScoring,
+} from "../../recognition";
 
 const DEFAULT_OLLAMA_BASE_URL = "http://127.0.0.1:11434";
 const DEFAULT_TEMPERATURE = 0;
@@ -422,8 +425,21 @@ type ResolvedAutoSymbolMetadata = {
   reason: string;
   events: UpsertSymbolEvent[];
   suppressed: boolean;
+  scoring?: RecognitionScoring;
   valid: boolean;
 };
+
+function topScoringFeatures(scoring: RecognitionScoring | undefined): string[] {
+  if (!scoring) {
+    return [];
+  }
+
+  return scoring.contributions
+    .filter((item) => item.active && item.contribution !== 0)
+    .sort((a, b) => Math.abs(b.contribution) - Math.abs(a.contribution))
+    .slice(0, 3)
+    .map((item) => `${item.feature}:${item.contribution > 0 ? "+" : ""}${item.contribution.toFixed(2)}`);
+}
 
 function resolveAutoSymbolMetadata(
   request: VirtualContextTurnRequest,
@@ -435,15 +451,16 @@ function resolveAutoSymbolMetadata(
   }
 
   if (!parsed.valid) {
-    return {
-      mode: parsed.mode,
-      triggered: parsed.triggered,
-      confidence: parsed.confidence,
-      reason: parsed.reason,
-      events: [],
-      suppressed: parsed.suppressed,
-      valid: false,
-    };
+      return {
+        mode: parsed.mode,
+        triggered: parsed.triggered,
+        confidence: parsed.confidence,
+        reason: parsed.reason,
+        events: [],
+        suppressed: parsed.suppressed,
+        scoring: parsed.scoring,
+        valid: false,
+      };
   }
 
   try {
@@ -459,6 +476,7 @@ function resolveAutoSymbolMetadata(
       reason: parsed.reason,
       events,
       suppressed: parsed.suppressed,
+      scoring: parsed.scoring,
       valid: true,
     };
   } catch {
@@ -469,6 +487,7 @@ function resolveAutoSymbolMetadata(
       reason: parsed.reason,
       events: [],
       suppressed: parsed.suppressed,
+      scoring: parsed.scoring,
       valid: false,
     };
   }
@@ -606,6 +625,11 @@ export function createLangChainAssistantGenerate(
         autoReason: autoSymbolMetadata?.reason,
         autoEventCount: autoSymbolMetadata?.events.length ?? 0,
         autoSuppressed: autoSymbolMetadata?.suppressed,
+        autoScore: autoSymbolMetadata?.scoring?.probability,
+        autoScoreBand: autoSymbolMetadata?.scoring?.band,
+        autoScorerVersion: autoSymbolMetadata?.scoring?.scorerVersion,
+        autoOverrideApplied: autoSymbolMetadata?.scoring?.overrideApplied,
+        autoTopFeatures: topScoringFeatures(autoSymbolMetadata?.scoring),
         responseMetadata:
           asObject(resultObject.responseMetadata) ??
           asObject(resultObject.response_metadata),

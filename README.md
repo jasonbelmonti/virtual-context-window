@@ -70,8 +70,8 @@ Auto-mode env controls:
 
 ```bash
 VCW_AUTO_SYMBOL_MODE=off|shadow|active
-VCW_AUTO_SYMBOL_ACTIVE_MIN_SCORE=0.70
-VCW_AUTO_SYMBOL_SHADOW_MIN_SCORE=0.45
+VCW_AUTO_SYMBOL_ACTIVE_MIN_SCORE=0.84
+VCW_AUTO_SYMBOL_SHADOW_MIN_SCORE=0.50
 ```
 
 Phase 8 flow (detector + control envelope):
@@ -98,6 +98,16 @@ flowchart TD
 Notes:
 - `shadow` means detect-only: decision/diagnostics are recorded, but no envelope is appended and no write occurs.
 - The detector runs pre-model; envelope append decision is applied post-model from detector metadata.
+
+Heuristic scorer v2 (Phase 8.1):
+- Scorer: deterministic weighted linear model with sigmoid probability (`heuristic_v2`).
+- Bands:
+  - `write`: `p >= activeMinScore` (default `0.84`)
+  - `shadow`: `shadowMinScore <= p < activeMinScore` (default `0.50`)
+  - `suppress`: `p < shadowMinScore`
+- Hard suppression: secret-like patterns always suppress.
+- Hard override in `active`: `explicit_remember_cue` and profile slot facts (`name/location/occupation`) force write band.
+- Trace now shows: scorer version, score band, override flag, and top weighted feature contributions.
 
 createAgent bridge (Phase 6 compatibility surface):
 

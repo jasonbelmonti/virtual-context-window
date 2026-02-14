@@ -21,6 +21,7 @@ import {
   normalizeForComparison,
   parseAutoSymbolMetadataEnvelope,
   parseAutoSymbolMode,
+  RECOGNITION_SCORER_VERSION,
   recognizeAutomaticSymbols,
   toAutoSymbolMetadataEnvelope,
   type AutoSymbolMode,
@@ -39,9 +40,21 @@ import { formatHelpText } from "./commands";
 import { renderTurnTrace } from "./trace-renderer";
 
 const DEFAULT_SYMBOL_LIST_LIMIT = 20;
-const DEFAULT_AUTO_ACTIVE_MIN_SCORE = 0.7;
-const DEFAULT_AUTO_SHADOW_MIN_SCORE = 0.45;
+const DEFAULT_AUTO_ACTIVE_MIN_SCORE = 0.84;
+const DEFAULT_AUTO_SHADOW_MIN_SCORE = 0.5;
 const DEFAULT_AUTO_MAX_EVENTS_PER_TURN = 1;
+
+function topFeaturesFromDecision(decision: RecognitionDecision | null): string[] {
+  if (!decision) {
+    return [];
+  }
+
+  return decision.scoring.contributions
+    .filter((item) => item.active && item.contribution !== 0)
+    .sort((a, b) => Math.abs(b.contribution) - Math.abs(a.contribution))
+    .slice(0, 3)
+    .map((item) => `${item.feature}:${item.contribution > 0 ? "+" : ""}${item.contribution.toFixed(2)}`);
+}
 
 function makeThreadId(): string {
   return `agent-thread-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
@@ -138,7 +151,10 @@ export function createMockAgentAssistantGenerate(): AssistantGenerateFn {
       autoMetadata.mode === "active" &&
       autoMetadata.triggered &&
       !autoMetadata.suppressed &&
-      autoMetadata.events.length > 0;
+      autoMetadata.events.length > 0 &&
+      (autoMetadata.scoring?.band === "write" ||
+        (autoMetadata.scoring === undefined &&
+          autoMetadata.confidence >= DEFAULT_AUTO_ACTIVE_MIN_SCORE));
 
     if (rememberPrefix.test(lastUserText) || strictWriteIntent) {
       const content = lastUserText.replace(rememberPrefix, "").trim();
@@ -328,6 +344,14 @@ export class AgentCliRuntime {
       shouldWrite: false,
       suppressed: false,
       events: [],
+      scoring: {
+        scorerVersion: RECOGNITION_SCORER_VERSION,
+        rawScore: 0,
+        probability: 0,
+        band: "suppress",
+        overrideApplied: false,
+        contributions: [],
+      },
     };
   }
 
@@ -377,19 +401,26 @@ export class AgentCliRuntime {
       initial.triggered && duplicateSkipped && dedupedEvents.length === 0
         ? "duplicate_suppressed"
         : initial.reason;
-    const shouldWrite =
-      initial.mode === "active" &&
-      initial.triggered &&
-      initial.confidence >= this.recognizerConfig.activeMinScore &&
-      !suppressed &&
-      dedupedEvents.length > 0;
+    const scoring =
+      suppressed && initial.scoring.band !== "suppress"
+        ? {
+            ...initial.scoring,
+            band: "suppress" as const,
+            overrideApplied: false,
+          }
+        : initial.scoring;
+    const triggered = dedupedEvents.length > 0 && scoring.band !== "suppress";
+    const shouldWrite = initial.shouldWrite && !suppressed && dedupedEvents.length > 0;
 
     return {
       ...initial,
+      triggered,
+      confidence: scoring.probability,
       reason,
       suppressed,
       shouldWrite,
       events: dedupedEvents,
+      scoring,
     };
   }
 
@@ -434,6 +465,16 @@ export class AgentCliRuntime {
         eventCount: this.lastAgentMetadata?.autoEventCount ?? auto.events.length,
         suppressed: this.lastAgentMetadata?.autoSuppressed ?? auto.suppressed,
         writeApplied,
+        scorerVersion:
+          this.lastAgentMetadata?.autoScorerVersion ?? auto.scoring.scorerVersion,
+        score: this.lastAgentMetadata?.autoScore ?? auto.scoring.probability,
+        scoreBand: this.lastAgentMetadata?.autoScoreBand ?? auto.scoring.band,
+        overrideApplied:
+          this.lastAgentMetadata?.autoOverrideApplied ??
+          auto.scoring.overrideApplied,
+        topFeatures:
+          this.lastAgentMetadata?.autoTopFeatures ??
+          topFeaturesFromDecision(auto),
       },
       agent: this.lastAgentMetadata,
     };

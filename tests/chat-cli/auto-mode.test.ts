@@ -15,6 +15,9 @@ test("chat runtime defaults to shadow auto mode and records detection without wr
   expect(turn.trace.autoSymbol.triggered).toBe(true);
   expect(turn.trace.autoSymbol.reason).toBe("profile_name_statement");
   expect(turn.trace.autoSymbol.writeApplied).toBe(false);
+  expect(turn.trace.autoSymbol.scorerVersion).toBe("heuristic_v2");
+  expect(turn.trace.autoSymbol.scoreBand).toBe("shadow");
+  expect(turn.trace.autoSymbol.topFeatures.length).toBeGreaterThan(0);
   expect(turn.trace.symbolTable).toHaveLength(0);
   expect(turn.trace.writeIntent.mode).toBe("auto");
 });
@@ -34,6 +37,8 @@ test("chat auto on performs passive write in mock mode", async () => {
 
   expect(turn.trace.autoSymbol.mode).toBe("active");
   expect(turn.trace.autoSymbol.writeApplied).toBe(true);
+  expect(turn.trace.autoSymbol.overrideApplied).toBe(true);
+  expect(turn.trace.autoSymbol.scoreBand).toBe("write");
   expect(turn.trace.symbolTable.length).toBe(1);
   expect(turn.trace.symbolTable[0]?.symbolId).toBe("profile:name");
 
@@ -63,6 +68,7 @@ test("chat auto dedupe suppresses repeated deterministic slot write", async () =
   expect(second.trace.autoSymbol.reason).toBe("duplicate_suppressed");
   expect(second.trace.autoSymbol.suppressed).toBe(true);
   expect(second.trace.autoSymbol.writeApplied).toBe(false);
+  expect(second.trace.autoSymbol.scoreBand).toBe("suppress");
 });
 
 test("chat auto updates deterministic slot on changed fact content", async () => {
@@ -86,7 +92,20 @@ test("chat auto suppresses secret-like payloads without writes", async () => {
   expect(turn.trace.autoSymbol.triggered).toBe(true);
   expect(turn.trace.autoSymbol.suppressed).toBe(true);
   expect(turn.trace.autoSymbol.writeApplied).toBe(false);
+  expect(turn.trace.autoSymbol.scoreBand).toBe("suppress");
   expect(turn.trace.symbolTable.length).toBe(0);
+});
+
+test("chat auto active keeps durable preference in shadow band without passive write", async () => {
+  const runtime = new ChatCliRuntime({ mock: true });
+  await runtime.executeCommand({ type: "auto", action: "on" });
+
+  const turn = await runtime.processUserMessage("my favorite color is green");
+  expect(turn.trace.autoSymbol.mode).toBe("active");
+  expect(turn.trace.autoSymbol.reason).toBe("durable_preference_statement");
+  expect(turn.trace.autoSymbol.scoreBand).toBe("shadow");
+  expect(turn.trace.autoSymbol.writeApplied).toBe(false);
+  expect(turn.trace.symbolTable).toHaveLength(0);
 });
 
 test("chat auto status reports configured mode", async () => {

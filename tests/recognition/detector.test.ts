@@ -15,6 +15,9 @@ test("recognizeAutomaticSymbols captures high-confidence profile name", () => {
   expect(decision.triggered).toBe(true);
   expect(decision.shouldWrite).toBe(true);
   expect(decision.reason).toBe("profile_name_statement");
+  expect(decision.scoring.scorerVersion).toBe("heuristic_v2");
+  expect(decision.scoring.band).toBe("write");
+  expect(decision.scoring.overrideApplied).toBe(true);
   expect(decision.events).toHaveLength(1);
   expect(decision.events[0]?.symbol_id).toBe("profile:name");
 });
@@ -29,6 +32,7 @@ test("recognizeAutomaticSymbols filters direct questions", () => {
   expect(decision.shouldWrite).toBe(false);
   expect(decision.events).toHaveLength(0);
   expect(decision.reason).toBe("question_filtered");
+  expect(decision.scoring.band).toBe("suppress");
 });
 
 test("recognizeAutomaticSymbols suppresses secret-like payloads", () => {
@@ -42,6 +46,7 @@ test("recognizeAutomaticSymbols suppresses secret-like payloads", () => {
   expect(decision.shouldWrite).toBe(false);
   expect(decision.events).toHaveLength(0);
   expect(decision.reason).toBe("secret_pattern_suppressed");
+  expect(decision.scoring.band).toBe("suppress");
 });
 
 test("parseAutoSymbolMode handles explicit modes and fallback", () => {
@@ -65,6 +70,7 @@ test("auto metadata envelope parse validates required fields", () => {
   expect(parsed?.mode).toBe("shadow");
   expect(parsed?.triggered).toBe(true);
   expect(parsed?.events.length).toBeGreaterThan(0);
+  expect(parsed?.scoring?.scorerVersion).toBe("heuristic_v2");
 
   const invalid = parseAutoSymbolMetadataEnvelope({
     vcwAutoSymbol: {
@@ -74,8 +80,34 @@ test("auto metadata envelope parse validates required fields", () => {
       reason: "plan",
       events: "oops",
       suppressed: false,
+      scoring: {
+        scorerVersion: "heuristic_v2",
+        rawScore: 1,
+        probability: 0.9,
+        band: "write",
+        overrideApplied: true,
+        contributions: "bad",
+      },
     },
   });
   expect(invalid?.valid).toBe(false);
   expect(invalid?.events).toEqual([]);
+  expect(invalid?.scoring).toBeUndefined();
+
+  const scoringMalformedOnly = parseAutoSymbolMetadataEnvelope({
+    vcwAutoSymbol: {
+      mode: "active",
+      triggered: true,
+      confidence: 0.9,
+      reason: "profile_name_statement",
+      events: [],
+      suppressed: false,
+      scoring: {
+        scorerVersion: "heuristic_v2",
+        rawScore: "bad",
+      },
+    },
+  });
+  expect(scoringMalformedOnly?.valid).toBe(true);
+  expect(scoringMalformedOnly?.scoring).toBeUndefined();
 });
