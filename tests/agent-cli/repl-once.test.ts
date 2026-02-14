@@ -38,6 +38,7 @@ test("--once with --trace prints trace output in mock mode", async () => {
   expect(exitCode).toBe(0);
   const output = printed.join("\n");
   expect(output).toContain("Got it.");
+  expect(output).toContain("PROJECTION ACCEPTED");
   expect(output).toContain("--- Agent Turn Trace ---");
   expect(output).toContain("parseOutcome");
   expect(output).toContain("control_channel_valid");

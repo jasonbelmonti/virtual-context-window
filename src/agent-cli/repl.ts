@@ -1,8 +1,9 @@
 import { createInterface } from "node:readline/promises";
 import type { ReadStream, WriteStream } from "node:tty";
+import type { PostModelTelemetry } from "../engine";
 import { createCliTheme, detectColorEnabled } from "../chat-cli/ui";
 import { isSlashCommand, parseSlashCommand } from "./commands";
-import type { AgentCliLaunchOptions } from "./contracts";
+import type { AgentCliLaunchOptions, AgentTurnTrace } from "./contracts";
 import { AgentCliRuntime } from "./runtime";
 import { renderTurnTrace } from "./trace-renderer";
 
@@ -98,6 +99,35 @@ function toPrintableMessage(error: unknown): string {
   return String(error);
 }
 
+function renderProjectionCallout(
+  trace: AgentTurnTrace,
+  theme: ReturnType<typeof createCliTheme>,
+): string | null {
+  const post = trace.telemetry.find(
+    (event): event is PostModelTelemetry => event.type === "post_model",
+  );
+  if (!post || post.eventsAccepted <= 0) {
+    return null;
+  }
+
+  const source = trace.autoSymbol.writeApplied
+    ? `auto:${trace.autoSymbol.reason}`
+    : "strict_or_explicit";
+  const detailParts = [
+    `eventsAccepted=${post.eventsAccepted}`,
+    `parseOutcome=${post.parseOutcome}`,
+    `source=${source}`,
+  ];
+  if (post.eventsRejected > 0) {
+    detailParts.push(`eventsRejected=${post.eventsRejected}`);
+  }
+  if (post.writeFailures > 0) {
+    detailParts.push(`writeFailures=${post.writeFailures}`);
+  }
+
+  return `${theme.success("PROJECTION ACCEPTED")} ${theme.value(detailParts.join(" "))}`;
+}
+
 export async function runInteractiveAgentCli(
   options: AgentCliLaunchOptions = {},
 ): Promise<number> {
@@ -145,6 +175,10 @@ export async function runInteractiveAgentCli(
         writeLine(print, theme.assistant(streamedText));
       } else {
         process.stdout.write("\n");
+      }
+      const projectionCallout = renderProjectionCallout(turn.trace, theme);
+      if (projectionCallout) {
+        writeLine(print, projectionCallout);
       }
       if (runtime.getTraceEnabled()) {
         writeLine(print, renderTurnTrace(turn.trace, { color: colorEnabled }));
@@ -219,6 +253,12 @@ export async function runInteractiveAgentCli(
           if (result.turn && runtime.getTraceEnabled()) {
             writeLine(print, renderTurnTrace(result.turn.trace, { color: colorEnabled }));
           }
+          if (result.turn) {
+            const projectionCallout = renderProjectionCallout(result.turn.trace, theme);
+            if (projectionCallout) {
+              writeLine(print, projectionCallout);
+            }
+          }
           if (result.shouldQuit) {
             shouldQuit = true;
           }
@@ -252,6 +292,10 @@ export async function runInteractiveAgentCli(
           writeLine(print, theme.assistant(streamedText));
         } else {
           process.stdout.write("\n");
+        }
+        const projectionCallout = renderProjectionCallout(result.trace, theme);
+        if (projectionCallout) {
+          writeLine(print, projectionCallout);
         }
         if (runtime.getTraceEnabled()) {
           writeLine(print, renderTurnTrace(result.trace, { color: colorEnabled }));
