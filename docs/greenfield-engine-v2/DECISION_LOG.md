@@ -205,6 +205,36 @@
   - `93f59e2` (Phase 4 validation subsystem, gate engine, scripts, tests, and docs freeze point).
 - Handoff note: Phase 5 (`MVP Stabilization and Ops Readiness`) is authorized to begin with baseline-v2 gate artifacts as input.
 
+## Phase 5 Sign-off
+- Date: 2026-02-14
+- Status: PASS
+- Checklist summary:
+  - Added scripted certification workflow (`validate:phase5`) with protocol enforcement (`VCW_VALIDATE_TIMEOUT_MS=60000`, `VCW_VALIDATE_CONCURRENCY=1`) and warmup execution.
+  - Added Phase 5 certification artifact bundle output (`reports/phase5/<timestamp>/phase5-certification.{md,json}`).
+  - Added rollback dry-run evidence protocol with trigger verification against `OPERATIONS_SLO.md` and `RISK_REGISTER.md`.
+  - Added Phase 5 operations closeout docs:
+    - `PHASE_RUNBOOK_5.md` canonical command + fallback sequence.
+    - `OPERATIONS_SLO.md` Phase 5 certification profile section.
+    - `RISK_REGISTER.md` risk status snapshot.
+    - `RELEASE_CHECKLIST_MVP.md` release evidence checklist.
+  - Phase 5 command gate executed:
+    - `bun test`
+    - `bun run validate:phase5`
+    - `bun run validate:stability`
+- Production run pair:
+  - Run A: `production-2026-02-14T01-09-00-801Z`
+  - Run B: `production-2026-02-14T01-09-13-930Z`
+- Gate artifact references:
+  - Baseline-v2: `reports/baseline-v2/2026-02-14T01-09-26-361Z/gate.md` (`Status: PASS`)
+  - Stability (certification pair): `reports/baseline-v2/2026-02-14T01-09-26-362Z/gate.md` (`Status: PASS`)
+  - Stability (standalone command): `reports/baseline-v2/2026-02-14T01-11-22-402Z/gate.md` (`Status: PASS`)
+  - Phase 5 report: `reports/phase5/2026-02-14T01-09-39-354Z/phase5-certification.md` (`Status: PASS`)
+- Ambiguities resolved during Phase 5:
+  - None.
+- Freeze commit SHA reference:
+  - `TBD` (set to Phase 5 closure commit SHA at commit time).
+- Handoff note: MVP stabilization and operations readiness are complete; post-MVP roadmap planning may proceed.
+
 ## Template for New ADRs
 ```md
 ## ADR-XXX: <title>

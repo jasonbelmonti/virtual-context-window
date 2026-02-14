@@ -119,3 +119,14 @@ Rollback steps:
 3. Telemetry schema validated in staging.
 4. Rollback playbook dry-run completed.
 5. Incident contact rotation updated.
+
+## 10) Phase 5 Certification Profile
+Phase 5 certification uses a locked execution protocol to reduce variance while preserving gate policy:
+1. Provider target remains `ollama` with explicit `VCW_OLLAMA_MODEL`.
+2. Runtime controls for certification runs:
+   - `VCW_VALIDATE_TIMEOUT_MS=60000`
+   - `VCW_VALIDATE_CONCURRENCY=1`
+3. Two Ollama warmup calls execute before production run A.
+4. Two production-signal runs are executed back-to-back under identical provider settings.
+5. Baseline-v2 and stability checks are evaluated against the same certification pair.
+6. This section defines execution protocol only; it does not alter drift/threshold comparator policy.

@@ -4,6 +4,7 @@ export * from "./drift";
 export * from "./gate";
 export * from "./live-provider";
 export * from "./metrics";
+export * from "./phase5-certification";
 export * from "./reports";
 export * from "./runners";
 export * from "./scenario-catalog";

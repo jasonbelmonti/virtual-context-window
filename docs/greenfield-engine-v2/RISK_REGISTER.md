@@ -35,3 +35,22 @@ When a new risk is discovered:
 2. Add owner and rollback trigger.
 3. Link related ADR in `DECISION_LOG.md`.
 4. Update impacted phase runbook pass/fail checks.
+
+## Phase 5 Risk Status Snapshot (2026-02-14)
+Evidence bundle:
+- Phase 5 certification report: `reports/phase5/2026-02-14T01-09-39-354Z/phase5-certification.md`
+- Baseline gate PASS: `reports/baseline-v2/2026-02-14T01-09-26-361Z/gate.md`
+- Stability gate PASS: `reports/baseline-v2/2026-02-14T01-09-26-362Z/gate.md`
+
+| ID | Severity | Status | Evidence | Notes |
+| --- | --- | --- | --- | --- |
+| R-001 | P0 | Mitigated | `reports/phase5/2026-02-14T01-09-39-354Z/phase5-certification.md` | One-call invariant scenario covered in both production-signal runs. |
+| R-002 | P0 | Mitigated | `reports/baseline-v2/2026-02-14T01-09-26-361Z/gate.md` | Canary split metrics scored and parser-related checks remained at PASS. |
+| R-003 | P0 | Mitigated | `reports/baseline-v2/2026-02-14T01-09-26-361Z/gate.md` | `output_control_channel_leak_absence_rate` remained at PASS. |
+| R-004 | P0 | Mitigated | `reports/baseline-v2/2026-02-14T01-09-26-361Z/gate.md` | Isolation zero-tolerance checks passed for certification pair. |
+| R-005 | P1 | Mitigated | `reports/production-2026-02-14T01-09-13-930Z/summary.md` | Paraphrase retrieval and answer-fidelity metrics passed threshold checks. |
+| R-006 | P1 | Mitigated | `reports/production-2026-02-14T01-09-13-930Z/summary.md` | Step timeout rate remained 0.00% under certification runtime controls. |
+| R-007 | P1 | Mitigated | `reports/phase5/2026-02-14T01-09-39-354Z/phase5-certification.md` | Quick and quick-live smoke checks passed within certification workflow. |
+| R-008 | P1 | Mitigated | `reports/baseline-v2/2026-02-14T01-09-26-361Z/gate.md` | Denominator floor precondition satisfied. |
+| R-009 | P1 | Mitigated | `reports/baseline-v2/2026-02-14T01-09-26-362Z/gate.md` | Stability drift check passed for all tracked latency metrics. |
+| R-011 | P1 | Accepted | `docs/greenfield-engine-v2/RISK_REGISTER.md` | Shared-plane remains out of MVP runtime path and feature-flag constrained. |

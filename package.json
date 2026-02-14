@@ -14,7 +14,8 @@
     "validate:quick:live": "bun run scripts/validate-quick-live.ts",
     "validate:stability": "bun run scripts/validate-stability.ts",
     "validate:production": "bun run scripts/validate-production.ts",
-    "validate:baseline-v2": "bun run scripts/validate-baseline-v2.ts"
+    "validate:baseline-v2": "bun run scripts/validate-baseline-v2.ts",
+    "validate:phase5": "bun run scripts/validate-phase5.ts"
   },
   "devDependencies": {
     "@types/bun": "latest"
