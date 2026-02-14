@@ -74,6 +74,9 @@ export type AgentTurnTrace = {
       pressureRatio: number;
       pressurePeak: number;
       pressureState: "normal" | "compact";
+      compactionDrainAttempted: boolean;
+      compactionDrainWaitMs: number;
+      compactionDrainTimedOut: boolean;
       compactionTriggered: boolean;
       compactionReason: "high_watermark" | "below_threshold" | "none";
       compactionJobsTriggered: number;

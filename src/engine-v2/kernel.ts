@@ -57,6 +57,7 @@ const DEFAULT_HIGH_WATERMARK = 0.8;
 const DEFAULT_LOW_WATERMARK = 0.6;
 const DEFAULT_EXTRACTOR_TIMEOUT_MS = 1_200;
 const DEFAULT_MAX_COMPACTION_PROPOSALS = 4;
+const DEFAULT_COMPACTION_DRAIN_TIMEOUT_MS = 1_200;
 
 const defaultNow = () => Date.now();
 const defaultClock = () => performance.now();
@@ -163,6 +164,7 @@ function createThreadState(): ThreadState {
     committedSymbolsCount: 0,
     compactMode: false,
     compactionInFlight: false,
+    compactionJob: null,
     lastCompactionOutcome: "none",
   };
 }
@@ -291,6 +293,11 @@ export function createVirtualContextEngineV2Passive(
     DEFAULT_LOW_WATERMARK,
   );
   const timeoutMs = Math.max(50, options.extractorTimeoutMs ?? DEFAULT_EXTRACTOR_TIMEOUT_MS);
+  const compactionDrainTimeoutMs = Math.max(
+    50,
+    options.compactionDrainTimeoutMs ?? DEFAULT_COMPACTION_DRAIN_TIMEOUT_MS,
+  );
+  const waitForCompactionDrain = options.waitForCompactionDrain ?? true;
   const maxCompactionProposals = Math.max(
     1,
     options.maxCompactionProposals ?? DEFAULT_MAX_COMPACTION_PROPOSALS,
@@ -397,15 +404,55 @@ export function createVirtualContextEngineV2Passive(
 
     state.compactionInFlight = true;
     state.compactionJobsTriggered += 1;
-    void (async () => {
+    const compactionJob = (async () => {
       try {
         state.lastCompactionOutcome = await runCompactionJob(threadId, queryText);
+      } catch {
+        state.lastCompactionOutcome = "extractor_error";
       } finally {
         state.compactionInFlight = false;
+        if (state.compactionJob === compactionJob) {
+          state.compactionJob = null;
+        }
       }
     })();
+    state.compactionJob = compactionJob;
 
     return "none";
+  }
+
+  async function waitForCompactionDrainIfNeeded(threadId: string): Promise<{
+    attempted: boolean;
+    waitMs: number;
+    timedOut: boolean;
+  }> {
+    const state = getThreadState(threadId);
+    if (!waitForCompactionDrain || !state.compactionInFlight || !state.compactionJob) {
+      return {
+        attempted: false,
+        waitMs: 0,
+        timedOut: false,
+      };
+    }
+
+    const startedAt = clock();
+    let timedOut = false;
+    const job = state.compactionJob;
+    await Promise.race([
+      job,
+      new Promise<void>((resolve) => {
+        setTimeout(() => {
+          timedOut = true;
+          resolve();
+        }, compactionDrainTimeoutMs);
+      }),
+    ]);
+    const waitMs = clock() - startedAt;
+    return {
+      attempted: true,
+      waitMs,
+      timedOut,
+    };
   }
 
   const markStage = async (
@@ -445,6 +492,7 @@ export function createVirtualContextEngineV2Passive(
 
     const preModelStart = clock();
     await markStage("ResolveIdentity", threadId, executeOptions?.streamEvents);
+    const compactionDrain = await waitForCompactionDrainIfNeeded(threadId);
 
     await markStage("BuildTurnQuery", threadId, executeOptions?.streamEvents);
     const query = await queryBuilder({
@@ -620,6 +668,9 @@ export function createVirtualContextEngineV2Passive(
       pressureRatio: compiled.pressureRatio,
       pressurePeak: state.pressurePeak,
       pressureState: compiled.pressureState,
+      compactionDrainAttempted: compactionDrain.attempted,
+      compactionDrainWaitMs: compactionDrain.waitMs,
+      compactionDrainTimedOut: compactionDrain.timedOut,
       compactionTriggered: compiled.compactionTriggered,
       compactionReason: compiled.compactionReason,
       compactionJobsTriggered: state.compactionJobsTriggered,

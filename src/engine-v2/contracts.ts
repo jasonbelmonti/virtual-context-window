@@ -104,6 +104,9 @@ export type PassiveTurnDiagnostics = {
   pressureRatio: number;
   pressurePeak: number;
   pressureState: "normal" | "compact";
+  compactionDrainAttempted: boolean;
+  compactionDrainWaitMs: number;
+  compactionDrainTimedOut: boolean;
   compactionTriggered: boolean;
   compactionReason: "high_watermark" | "below_threshold" | "none";
   compactionJobsTriggered: number;
@@ -131,6 +134,8 @@ export type PassiveKernelOptions = {
   maxCompactionProposals?: number;
   packBudget?: Partial<PassivePackBudget>;
   maxEventTapeEntriesPerThread?: number;
+  compactionDrainTimeoutMs?: number;
+  waitForCompactionDrain?: boolean;
 };
 
 export type PassiveThreadCounters = {
@@ -141,6 +146,7 @@ export type PassiveThreadCounters = {
   committedSymbolsCount: number;
   compactMode: boolean;
   compactionInFlight: boolean;
+  compactionJob: Promise<void> | null;
   lastCompactionOutcome: "none" | "no_candidates" | "extractor_error";
 };
 

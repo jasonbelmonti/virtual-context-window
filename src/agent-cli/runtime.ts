@@ -130,6 +130,21 @@ function parseOptionalPositiveInt(value: string | undefined): number | null {
   return parsed;
 }
 
+function parseBoolean(value: string | undefined, fallback: boolean): boolean {
+  if (!value) {
+    return fallback;
+  }
+
+  const normalized = value.trim().toLowerCase();
+  if (normalized === "true" || normalized === "1" || normalized === "yes" || normalized === "on") {
+    return true;
+  }
+  if (normalized === "false" || normalized === "0" || normalized === "no" || normalized === "off") {
+    return false;
+  }
+  return fallback;
+}
+
 function classifyRuntimeError(error: unknown): string {
   if (error instanceof Error) {
     const message = error.message.toLowerCase();
@@ -394,6 +409,10 @@ export class AgentCliRuntime {
         passiveLowWatermarkRaw,
         Math.max(0.05, passiveHighWatermark - 0.05),
       );
+      const waitForCompactionDrain = parseBoolean(
+        env.VCW_PASSIVE_WAIT_FOR_COMPACTION_DRAIN,
+        true,
+      );
 
       return createVirtualContextEngineV2Passive({
         assistantGenerate: this.resolveAssistantGenerate(),
@@ -417,6 +436,11 @@ export class AgentCliRuntime {
         maxEventTapeEntriesPerThread: parsePositiveInt(
           env.VCW_PASSIVE_MAX_EVENT_TAPE_ENTRIES,
           2_000,
+        ),
+        waitForCompactionDrain,
+        compactionDrainTimeoutMs: parsePositiveInt(
+          env.VCW_PASSIVE_COMPACTION_DRAIN_TIMEOUT_MS,
+          1_200,
         ),
         extractor: this.options.mock
           ? undefined
@@ -619,6 +643,9 @@ export class AgentCliRuntime {
         pressureRatio: number;
         pressurePeak: number;
         pressureState: "normal" | "compact";
+        compactionDrainAttempted: boolean;
+        compactionDrainWaitMs: number;
+        compactionDrainTimedOut: boolean;
         compactionTriggered: boolean;
         compactionReason: "high_watermark" | "below_threshold" | "none";
         compactionJobsTriggered: number;
@@ -804,6 +831,9 @@ export class AgentCliRuntime {
                 pressureRatio: number;
                 pressurePeak: number;
                 pressureState: "normal" | "compact";
+                compactionDrainAttempted: boolean;
+                compactionDrainWaitMs: number;
+                compactionDrainTimedOut: boolean;
                 compactionTriggered: boolean;
                 compactionReason: "high_watermark" | "below_threshold" | "none";
                 compactionJobsTriggered: number;
