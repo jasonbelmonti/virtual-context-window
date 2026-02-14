@@ -133,6 +133,16 @@
   - Full createAgent loop adoption in Phase 6: rejected due higher invariant regression risk and broader scope.
   - Non-LangChain direct-only adapter: rejected because stack baseline already locks LangChain compatibility.
 
+## ADR-016: Phase 7 Enables createAgent Runtime with Boundary-Preserved Invariants and Live Embedding Retrieval
+- Date: 2026-02-14
+- Status: Accepted
+- Decision: Adopt full LangChain `createAgent` runtime behind the engine assistant seam while preserving the engine boundary invariant (`generationCallCount === 1`), and activate real Ollama embedding retrieval with endpoint fallback and in-memory embedding cache.
+- Rationale: Enables multi-step tool/action behavior without changing core engine contracts, while improving hybrid retrieval quality and preserving deterministic policy-controlled write semantics.
+- Rejected alternatives:
+  - Agent-loop writes bypassing VCW policy path: rejected due memory-control and provenance risk.
+  - Lexical-only retrieval in agent mode: rejected because hybrid retrieval quality is a core objective.
+  - Streaming-first rollout: rejected to reduce invariant and observability complexity in Phase 7.
+
 ## Phase 0 Sign-off
 - Date: 2026-02-13
 - Status: PASS
@@ -268,6 +278,30 @@
 - Freeze commit SHA reference:
   - `PENDING_COMMIT_SHA` (to be updated at commit time for Phase 6 freeze point).
 - Handoff note: Phase 7 may layer full createAgent runtime composition, streaming, and persistence on the Phase 6 adapter + CLI foundation.
+
+## Phase 7 Sign-off
+- Date: 2026-02-14
+- Status: PASS
+- Checklist summary:
+  - Added full agent-loop assistant runtime via LangChain `createAgent` behind the existing engine seam (`createLangChainAgentAssistantGenerate`).
+  - Added VCW agent tools (`vcw_list_symbols`, `vcw_get_symbol`, `vcw_search_symbols`, `vcw_upsert_symbol`) with write operations routed through policy semantics.
+  - Added real Ollama embedding adapter (`/api/embed` + `/api/embeddings` fallback) and in-memory embedding cache.
+  - Added retrieval embedding integration in `createRetrievalHooks` with fail-open/fail-fast controls and `retrievalDegraded` signaling.
+  - Added separate interactive mini consumer CLI (`agent:interactive`) with trace diagnostics and mock/live modes.
+  - Added targeted additive tests for embedding provider, retrieval embeddings, agent assistant/tools, and agent CLI paths.
+  - Phase 7 command gate executed:
+    - `bun test`
+    - `bun run test:chat-cli`
+    - `bun run test:agent`
+    - `bun run agent:interactive --mock --once "hello agent"`
+    - `VCW_OLLAMA_MODEL=gpt-oss:20b VCW_OLLAMA_EMBED_MODEL=nomic-embed-text VCW_OLLAMA_BASE_URL=http://192.168.4.43:11434 bun run agent:interactive --once "remember phase seven" --trace`
+    - `bun x tsc --noEmit`
+    - `rg -n "createLangChainAgentAssistantGenerate|OllamaEmbeddingProvider|runInteractiveAgentCli" src`
+- Ambiguities resolved during Phase 7:
+  - None.
+- Freeze commit SHA reference:
+  - `PENDING_COMMIT_SHA` (to be updated at commit time for Phase 7 freeze point).
+- Handoff note: Phase 8 may add streaming and persistence on top of the Phase 7 agent runtime and embedding foundation.
 
 ## Template for New ADRs
 ```md

@@ -179,6 +179,23 @@ export interface SymbolStore {
   ): Promise<SymbolSearchResult>;
 }
 
+export type EmbeddingRequest = {
+  model: string;
+  input: string;
+  traceId?: string;
+};
+
+export type EmbeddingResponse = {
+  vector: number[];
+  model: string;
+  provider: string;
+  latencyMs: number;
+};
+
+export interface EmbeddingProvider {
+  embed(request: EmbeddingRequest): Promise<EmbeddingResponse>;
+}
+
 export type RetrievalQuery = {
   queryText: string;
   queryTokens: string[];

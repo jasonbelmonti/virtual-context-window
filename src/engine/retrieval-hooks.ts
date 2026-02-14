@@ -1,16 +1,20 @@
 import type {
   ContextPackBudget,
   ContextPackComposer,
+  EmbeddingProvider,
+  EmbeddingResponse,
   ContextPackInput,
+  RetrievalQuery,
+  SymbolRecord,
   RetrievalPlanner,
   RetrievalStrategy,
   SymbolStore,
 } from "./contracts";
 import { DefaultContextPackComposer } from "./context-pack-composer";
+import { InMemoryEmbeddingCache } from "./embedding-cache";
 import type {
   ContextPackInjectorHook,
   QueryBuilderHook,
-  QueryBuilderOutput,
 } from "./hooks";
 import { DefaultRetrievalPlanner } from "./retrieval-planner";
 
@@ -23,6 +27,8 @@ const DEFAULT_CONTEXT_PACK_BUDGET: ContextPackBudget = {
   recallK: 4,
 };
 
+const DEFAULT_EMBEDDING_CACHE_MAX_ENTRIES = 2_000;
+const DEFAULT_EMBEDDING_MODEL = "nomic-embed-text";
 const TRUSTED_SYMBOL_REF_REGEX = /⟦S:([A-Za-z0-9_.:-]+)⟧/gu;
 
 export type RetrievalHooksOptions = {
@@ -32,7 +38,54 @@ export type RetrievalHooksOptions = {
   composer?: ContextPackComposer;
   budget?: Partial<ContextPackBudget>;
   failOnRetrievalError?: boolean;
+  embeddingProvider?: EmbeddingProvider;
+  embeddingModel?: string;
+  failOnEmbeddingError?: boolean;
+  embeddingCacheMaxEntries?: number;
 };
+
+type EmbeddingTurnState = {
+  fallbackUsed: boolean;
+};
+
+function cosineSimilarity(left: number[], right: number[]): number {
+  if (left.length === 0 || right.length === 0 || left.length !== right.length) {
+    throw new Error("embedding_dimension_mismatch");
+  }
+
+  let dot = 0;
+  let leftNorm = 0;
+  let rightNorm = 0;
+  for (let index = 0; index < left.length; index += 1) {
+    const leftValue = left[index] ?? 0;
+    const rightValue = right[index] ?? 0;
+    dot += leftValue * rightValue;
+    leftNorm += leftValue * leftValue;
+    rightNorm += rightValue * rightValue;
+  }
+
+  if (leftNorm === 0 || rightNorm === 0) {
+    return 0;
+  }
+
+  return dot / (Math.sqrt(leftNorm) * Math.sqrt(rightNorm));
+}
+
+function normalizeEmbeddingVector(response: EmbeddingResponse): number[] {
+  if (!Array.isArray(response.vector) || response.vector.length === 0) {
+    throw new Error("embedding_empty_vector");
+  }
+
+  const normalized: number[] = [];
+  for (const value of response.vector) {
+    if (typeof value !== "number" || !Number.isFinite(value)) {
+      throw new Error("embedding_invalid_vector");
+    }
+    normalized.push(value);
+  }
+
+  return normalized;
+}
 
 function extractTrustedSymbolRefIds(text: string): string[] {
   const ids: string[] = [];
@@ -63,7 +116,7 @@ export function createRetrievalHooks(options: RetrievalHooksOptions): {
   contextPackInjector: ContextPackInjectorHook;
 } {
   const strategy = options.strategy ?? "lexical_v1";
-  const planner =
+  const queryPlanner =
     options.planner ??
     new DefaultRetrievalPlanner({
       store: options.store,
@@ -74,16 +127,147 @@ export function createRetrievalHooks(options: RetrievalHooksOptions): {
     ...DEFAULT_CONTEXT_PACK_BUDGET,
     ...options.budget,
   };
+  const embeddingProvider = options.embeddingProvider;
+  const embeddingModel = options.embeddingModel ?? DEFAULT_EMBEDDING_MODEL;
+  const failOnEmbeddingError = options.failOnEmbeddingError ?? false;
+  const embeddingCache = new InMemoryEmbeddingCache({
+    maxEntries:
+      options.embeddingCacheMaxEntries ?? DEFAULT_EMBEDDING_CACHE_MAX_ENTRIES,
+  });
+
+  async function getQueryEmbedding(
+    threadId: string,
+    query: RetrievalQuery,
+    turnState: EmbeddingTurnState,
+  ): Promise<number[] | undefined> {
+    if (!embeddingProvider || strategy !== "hybrid_v2") {
+      return undefined;
+    }
+
+    const queryText = query.queryText.trim();
+    if (queryText.length === 0) {
+      return undefined;
+    }
+
+    const cacheKey = InMemoryEmbeddingCache.queryKey({
+      threadId,
+      model: embeddingModel,
+      query: queryText,
+    });
+    const cached = embeddingCache.get(cacheKey);
+    if (cached) {
+      return cached;
+    }
+
+    try {
+      const response = await embeddingProvider.embed({
+        model: embeddingModel,
+        input: queryText,
+        traceId: `${threadId}:query`,
+      });
+      const vector = normalizeEmbeddingVector(response);
+      embeddingCache.set(cacheKey, vector);
+      return vector;
+    } catch (error) {
+      if (failOnEmbeddingError) {
+        throw error;
+      }
+      turnState.fallbackUsed = true;
+      return undefined;
+    }
+  }
+
+  async function getSymbolEmbedding(
+    threadId: string,
+    record: SymbolRecord,
+    turnState: EmbeddingTurnState,
+  ): Promise<number[] | undefined> {
+    if (!embeddingProvider || strategy !== "hybrid_v2") {
+      return undefined;
+    }
+
+    const cacheKey = InMemoryEmbeddingCache.symbolKey({
+      threadId,
+      model: embeddingModel,
+      symbolId: record.symbolId,
+      version: record.updatedAt,
+    });
+    const cached = embeddingCache.get(cacheKey);
+    if (cached) {
+      return cached;
+    }
+
+    try {
+      const response = await embeddingProvider.embed({
+        model: embeddingModel,
+        input: `${record.summary}\n${record.content}`,
+        traceId: `${threadId}:symbol:${record.symbolId}`,
+      });
+      const vector = normalizeEmbeddingVector(response);
+      embeddingCache.set(cacheKey, vector);
+      return vector;
+    } catch (error) {
+      if (failOnEmbeddingError) {
+        throw error;
+      }
+      turnState.fallbackUsed = true;
+      return undefined;
+    }
+  }
+
+  function getPlannerForTurn(
+    threadId: string,
+    turnState: EmbeddingTurnState,
+  ): RetrievalPlanner {
+    if (options.planner) {
+      return options.planner;
+    }
+
+    return new DefaultRetrievalPlanner({
+      store: options.store,
+      strategy,
+      queryEmbeddingProvider: (query) =>
+        getQueryEmbedding(threadId, query, turnState),
+      vectorScorer: async (record, _query, queryEmbedding) => {
+        if (!queryEmbedding?.length) {
+          return 0;
+        }
+
+        const symbolEmbedding = await getSymbolEmbedding(
+          threadId,
+          record,
+          turnState,
+        );
+        if (!symbolEmbedding?.length) {
+          return 0;
+        }
+
+        try {
+          return Math.max(0, cosineSimilarity(symbolEmbedding, queryEmbedding));
+        } catch (error) {
+          if (failOnEmbeddingError) {
+            throw error;
+          }
+          turnState.fallbackUsed = true;
+          return 0;
+        }
+      },
+    });
+  }
 
   return {
-    queryBuilder: ({ messages }) => planner.buildQuery(messages),
+    queryBuilder: ({ messages }) => queryPlanner.buildQuery(messages),
     contextPackInjector: async ({
       threadId,
       request,
       query,
       trustedSymbolRefsEnabled,
     }) => {
+      const turnState: EmbeddingTurnState = {
+        fallbackUsed: false,
+      };
       try {
+        const planner = getPlannerForTurn(threadId, turnState);
         const rankedCandidates = await planner.selectCandidates(threadId, query);
         const gated = planner.confidenceGate(rankedCandidates);
         const symbolIndexList = await options.store.list(threadId);
@@ -179,7 +363,7 @@ export function createRetrievalHooks(options: RetrievalHooksOptions): {
             historyTurnsUsed: query.turnsUsed,
             retrievalQueryChars: query.queryText.length,
             retrievalStrategy: strategy,
-            retrievalDegraded: false,
+            retrievalDegraded: turnState.fallbackUsed,
             lexicalCandidateCount: rankedCandidates.filter(
               (candidate) => candidate.lexicalScore > 0,
             ).length,
@@ -193,7 +377,7 @@ export function createRetrievalHooks(options: RetrievalHooksOptions): {
           },
         };
       } catch (error) {
-        if (options.failOnRetrievalError) {
+        if (failOnEmbeddingError || options.failOnRetrievalError) {
           throw error;
         }
 

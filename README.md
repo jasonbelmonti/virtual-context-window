@@ -30,6 +30,24 @@ One-shot chat (live Ollama):
 VCW_OLLAMA_MODEL=<your_model> VCW_OLLAMA_BASE_URL=<your_url> bun run chat:interactive --once "hello live" --trace
 ```
 
+Agent CLI (mock):
+
+```bash
+bun run agent:interactive --mock
+```
+
+One-shot agent (mock):
+
+```bash
+bun run agent:interactive --mock --once "hello agent"
+```
+
+One-shot agent (live Ollama + embeddings):
+
+```bash
+VCW_OLLAMA_MODEL=<your_model> VCW_OLLAMA_EMBED_MODEL=<your_embed_model> VCW_OLLAMA_BASE_URL=<your_url> bun run agent:interactive --once "remember phase seven" --trace
+```
+
 createAgent bridge (Phase 6 compatibility surface):
 
 ```ts

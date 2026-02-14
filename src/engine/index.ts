@@ -1,6 +1,7 @@
 export * from "./contracts";
 export * from "./control-channel-parser";
 export * from "./context-pack-composer";
+export * from "./embedding-cache";
 export * from "./errors";
 export * from "./hooks";
 export * from "./identity";
