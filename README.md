@@ -12,6 +12,30 @@ To run default entrypoint:
 bun run index.ts
 ```
 
+Sliding context window showdown demo (live Ollama primary):
+
+```bash
+bun run demo:showdown
+```
+
+Quick smoke variant:
+
+```bash
+bun run demo:showdown:fast
+```
+
+Demo artifacts are written to:
+
+```text
+reports/demo-showdown/<timestamp>/
+```
+
+Success criteria:
+- `chat_only.answerCorrect = false`
+- `vcw_only.answerCorrect = true`
+- `vcw_only.focusedInjectedCount + vcw_only.recallInjectedCount > 0`
+- `chat_only.symbolTableCount = 0` after branch
+
 Interactive chat CLI:
 
 ```bash
