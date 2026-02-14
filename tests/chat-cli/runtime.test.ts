@@ -230,3 +230,29 @@ test("state output includes active mode badge", async () => {
   const vcwOnlyState = await runtime.executeCommand({ type: "state" });
   expect(vcwOnlyState.output).toContain("activeMode=[VCW] vcw-only");
 });
+
+test("processUserMessage rejects concurrent turns with explicit error", async () => {
+  const blockingAssistant: AssistantGenerateFn = async () => {
+    await new Promise<void>((resolve) => {
+      setTimeout(resolve, 50);
+    });
+    return "first done";
+  };
+
+  const runtime = new ChatCliRuntime({
+    assistantGenerate: blockingAssistant,
+  });
+
+  const firstTurn = runtime.processUserMessage("first");
+  await Promise.resolve();
+
+  await expect(runtime.processUserMessage("second")).rejects.toThrow(
+    "turn_in_progress",
+  );
+  expect(runtime.classifyError(new Error("turn_in_progress"))).toBe(
+    "concurrency_violation",
+  );
+
+  const firstResult = await firstTurn;
+  expect(firstResult.content).toBe("first done");
+});

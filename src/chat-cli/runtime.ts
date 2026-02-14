@@ -127,6 +127,10 @@ function classifyRuntimeError(error: unknown): string {
       return "contract_violation";
     }
 
+    if (message.includes("turn_in_progress")) {
+      return "concurrency_violation";
+    }
+
     return "runtime_failure";
   }
 
@@ -157,6 +161,7 @@ export class ChatCliRuntime {
   private activeAssistantMetadata: LangChainAssistantResultMetadata | null = null;
   private lastAssistantMetadata: LangChainAssistantResultMetadata | null = null;
   private lastTrace: ChatTurnTrace | null = null;
+  private turnInFlight = false;
 
   constructor(options: ChatCliRuntimeOptions = {}) {
     this.options = options;
@@ -316,6 +321,10 @@ export class ChatCliRuntime {
     userInput: string,
     options?: { writeIntentMode?: WriteIntentMode },
   ): Promise<ChatTurnResult> {
+    if (this.turnInFlight) {
+      throw new Error("turn_in_progress");
+    }
+
     const text = userInput.trim();
     if (text.length === 0) {
       throw new Error("empty_user_message");
@@ -338,6 +347,7 @@ export class ChatCliRuntime {
     this.activeWriteIntentMode = writeIntentMode;
     this.activeWriteToolSchemaVersion = "v1";
     this.activeAssistantMetadata = null;
+    this.turnInFlight = true;
 
     try {
       const response = await this.engine.processTurn({
@@ -363,6 +373,7 @@ export class ChatCliRuntime {
       this.activeTelemetry = null;
       this.activeWriteIntentMode = "none";
       this.activeAssistantMetadata = null;
+      this.turnInFlight = false;
     }
   }
 

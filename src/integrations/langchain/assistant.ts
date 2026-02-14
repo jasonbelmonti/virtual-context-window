@@ -260,9 +260,31 @@ function createDefaultInvoker(config: {
       return existing;
     }
 
-    const boundModel = (model as unknown as {
-      bindTools: (tools: unknown[]) => unknown;
-    }).bindTools([getWriteToolDefinition(schemaVersion)]);
+    const modelWithTools = model as unknown as {
+      bindTools?: (tools: unknown[]) => unknown;
+    };
+    if (typeof modelWithTools.bindTools !== "function") {
+      throw new Error(
+        "write_intent_protocol_violation:provider_bind_tools_unsupported",
+      );
+    }
+
+    let boundModel: unknown;
+    try {
+      boundModel = modelWithTools.bindTools([getWriteToolDefinition(schemaVersion)]);
+    } catch {
+      throw new Error("write_intent_protocol_violation:provider_bind_tools_failed");
+    }
+
+    const strictModel = boundModel as {
+      invoke?: (promptText: string) => Promise<unknown>;
+    };
+    if (typeof strictModel.invoke !== "function") {
+      throw new Error(
+        "write_intent_protocol_violation:provider_strict_model_invoke_missing",
+      );
+    }
+
     strictModelBySchema.set(schemaVersion, boundModel);
     return boundModel;
   };
