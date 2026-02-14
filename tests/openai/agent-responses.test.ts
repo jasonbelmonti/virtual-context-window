@@ -115,3 +115,139 @@ test("openai agent enforces model loop limit deterministically", async () => {
     "agent_model_call_limit_exceeded:1",
   );
 });
+
+test("openai agent stream emits text deltas when provider supports SSE", async () => {
+  const store = new InMemorySymbolStore();
+  const requestStreamFlags: unknown[] = [];
+  let metadataProvider: string | undefined;
+  let metadataChunks = 0;
+
+  const generate = createOpenAIResponsesAgentAssistantGenerate({
+    store,
+    apiKey: "test-key",
+    model: "gpt-4.1-mini",
+    createClient: () => ({
+      responses: {
+        create: async (params) => {
+          requestStreamFlags.push(params.stream);
+          if (params.stream !== true) {
+            throw new Error("expected_stream_true_for_stream_mode");
+          }
+
+          return (async function* () {
+            yield { type: "response.output_text.delta", delta: "agent " };
+            yield { type: "response.output_text.delta", delta: "stream output" };
+            yield {
+              type: "response.completed",
+              response: {
+                id: "resp_stream",
+                output: [
+                  {
+                    type: "message",
+                    content: [{ type: "output_text", text: "agent stream output" }],
+                  },
+                ],
+              },
+            };
+          })();
+        },
+      },
+      embeddings: {
+        create: async () => ({ data: [] }),
+      },
+    }),
+    onResultMetadata: (metadata) => {
+      metadataProvider = metadata.streamProvider;
+      metadataChunks = metadata.streamChunkCount ?? 0;
+    },
+  });
+
+  const events: Array<{ type: string; text?: string; delta?: string }> = [];
+  for await (const event of generate.stream!(makeInput())) {
+    events.push(event);
+  }
+
+  expect(requestStreamFlags).toEqual([true]);
+  expect(events.some((event) => event.type === "text_delta")).toBe(true);
+  expect(events.at(-1)).toEqual({
+    type: "final_text",
+    text: "agent stream output",
+  });
+  expect(metadataProvider).toBe("sse");
+  expect(metadataChunks).toBe(2);
+});
+
+test("openai agent stream suppresses pre-tool deltas and emits only terminal deltas", async () => {
+  const store = new InMemorySymbolStore();
+  let metadataChunks = 0;
+  const generate = createOpenAIResponsesAgentAssistantGenerate({
+    store,
+    apiKey: "test-key",
+    model: "gpt-4.1-mini",
+    createClient: () => {
+      let callCount = 0;
+      return {
+        responses: {
+          create: async () => {
+            callCount += 1;
+            if (callCount === 1) {
+              return (async function* () {
+                yield { type: "response.output_text.delta", delta: "pretool " };
+                yield { type: "response.output_text.delta", delta: "draft" };
+                yield {
+                  type: "response.completed",
+                  response: {
+                    id: "resp_1",
+                    output: [
+                      {
+                        type: "function_call",
+                        name: "vcw_list_symbols",
+                        call_id: "call_1",
+                        arguments: "{\"limit\":5}",
+                      },
+                    ],
+                  },
+                };
+              })();
+            }
+
+            return (async function* () {
+              yield { type: "response.output_text.delta", delta: "final " };
+              yield { type: "response.output_text.delta", delta: "answer" };
+              yield {
+                type: "response.completed",
+                response: {
+                  id: "resp_2",
+                  output: [
+                    {
+                      type: "message",
+                      content: [{ type: "output_text", text: "final answer" }],
+                    },
+                  ],
+                },
+              };
+            })();
+          },
+        },
+        embeddings: {
+          create: async () => ({ data: [] }),
+        },
+      };
+    },
+    onResultMetadata: (metadata) => {
+      metadataChunks = metadata.streamChunkCount ?? 0;
+    },
+  });
+
+  const events: Array<{ type: string; text?: string; delta?: string }> = [];
+  for await (const event of generate.stream!(makeInput())) {
+    events.push(event);
+  }
+
+  expect(events).toEqual([
+    { type: "text_delta", delta: "final " },
+    { type: "text_delta", delta: "answer" },
+    { type: "final_text", text: "final answer" },
+  ]);
+  expect(metadataChunks).toBe(2);
+});

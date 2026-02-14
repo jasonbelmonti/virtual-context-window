@@ -4,7 +4,11 @@ import {
   modelCallLimitMiddleware,
   toolCallLimitMiddleware,
 } from "langchain";
-import type { AssistantGenerateFn } from "../../engine/hooks";
+import type {
+  AssistantGenerateFn,
+  AssistantGenerateInput,
+  AssistantGenerateStreamEvent,
+} from "../../engine/hooks";
 import {
   createLangChainAssistantGenerate,
   resolveWriteIntentFromMetadata,
@@ -318,6 +322,46 @@ function collectAgentLoopMetadata(result: unknown): {
   };
 }
 
+function extractStreamEventTextDelta(event: Record<string, unknown>): string {
+  const eventName = typeof event.event === "string" ? event.event : "";
+  if (eventName !== "on_chat_model_stream" && eventName !== "on_llm_stream") {
+    return "";
+  }
+
+  const eventData = asObject(event.data);
+  const chunk = eventData?.chunk;
+  const chunkObject = asObject(chunk);
+  const content =
+    chunkObject && "content" in chunkObject
+      ? extractContentText(chunkObject.content)
+      : extractContentText(chunk);
+
+  if (content.length > 0) {
+    return content;
+  }
+
+  if (typeof chunk === "string") {
+    return chunk;
+  }
+
+  return "";
+}
+
+function extractStreamEventOutput(
+  event: Record<string, unknown>,
+): unknown {
+  const eventName = typeof event.event === "string" ? event.event : "";
+  if (!eventName.endsWith("_end")) {
+    return undefined;
+  }
+
+  const eventData = asObject(event.data);
+  if (!eventData || !("output" in eventData)) {
+    return undefined;
+  }
+  return eventData.output;
+}
+
 function assignModelOutputText(result: unknown, outputText: string): unknown {
   const resultObject = asObject(result);
   if (!resultObject) {
@@ -521,7 +565,7 @@ function createDefaultAgentRuntime(
     model: input.model,
     baseUrl: input.baseUrl,
     temperature: input.temperature,
-    streaming: false,
+    streaming: true,
   });
 
   const agent = createAgent({
@@ -542,6 +586,20 @@ function createDefaultAgentRuntime(
       return configuredAgent.invoke({
         messages: invokeInput.messages,
       } as never);
+    },
+    streamEvents: (invokeInput, options) => {
+      const configuredAgent =
+        options?.recursionLimit !== undefined
+          ? agent.withConfig({
+              recursionLimit: options.recursionLimit,
+            })
+          : agent;
+
+      return configuredAgent.streamEvents(
+        {
+          messages: invokeInput.messages,
+        } as never,
+      );
     },
   };
 }
@@ -786,7 +844,10 @@ export function createLangChainAgentAssistantGenerate(
       ...options.strictWriteAssistantOptions,
     });
 
-  const generate = (async (input) => {
+  const runTurn = async (
+    input: AssistantGenerateInput,
+    streamSink?: (delta: string) => void | Promise<void>,
+  ): Promise<string> => {
     const writeIntentMode = resolveWriteIntentFromMetadata(input.request);
     const autoSymbolMetadata = resolveAutoSymbolMetadata(
       asObject(input.request.metadata),
@@ -794,7 +855,39 @@ export function createLangChainAgentAssistantGenerate(
     if (writeIntentMode === "strict") {
       strictWriteToolCallDetected = false;
       const startedAtMs = now();
-      const output = await strictWriteGenerate(input);
+      let streamChunkCount = 0;
+      let streamedTextChars = 0;
+      let streamProvider: "none" | "langchain_stream" | "buffered" = "none";
+      let streamBuffered = false;
+      let output = "";
+
+      if (streamSink && strictWriteGenerate.stream) {
+        let sawFinalText = false;
+        for await (const event of strictWriteGenerate.stream(input)) {
+          if (event.type === "text_delta") {
+            output += event.delta;
+            streamChunkCount += 1;
+            streamedTextChars += event.delta.length;
+            streamProvider = "langchain_stream";
+            await streamSink(event.delta);
+            continue;
+          }
+          if (event.type === "final_text") {
+            output = event.text;
+            sawFinalText = true;
+          }
+        }
+        if (!sawFinalText && output.length === 0) {
+          output = await strictWriteGenerate(input);
+        }
+      } else {
+        output = await strictWriteGenerate(input);
+      }
+
+      if (streamSink && streamChunkCount === 0) {
+        streamBuffered = true;
+        streamProvider = "buffered";
+      }
       const durationMs = now() - startedAtMs;
 
       await notifyResultMetadata(options.onResultMetadata, {
@@ -802,6 +895,11 @@ export function createLangChainAgentAssistantGenerate(
         model,
         baseUrl,
         durationMs,
+        streamEnabled: streamSink !== undefined,
+        streamChunkCount,
+        streamedTextChars,
+        streamBuffered,
+        streamProvider,
         agentModelCallCount: 1,
         agentToolCallCount: strictWriteToolCallDetected ? 1 : 0,
         agentToolNames: strictWriteToolCallDetected ? ["emit_symbol_events"] : [],
@@ -897,6 +995,10 @@ export function createLangChainAgentAssistantGenerate(
     });
 
     let visibleText = "";
+    let streamChunkCount = 0;
+    let streamedTextChars = 0;
+    let streamProvider: "none" | "langchain_stream" | "buffered" = "none";
+    let streamBuffered = false;
     let loopStats = {
       agentModelCallCount: 0,
       agentToolCallCount: 0,
@@ -904,13 +1006,118 @@ export function createLangChainAgentAssistantGenerate(
     };
 
     try {
-      const result = await runtime.invoke({
-        messages: invokeMessages,
-      }, {
-        recursionLimit,
-      });
-      visibleText = extractFinalAssistantText(result);
-      loopStats = collectAgentLoopMetadata(result);
+      if (streamSink && runtime.streamEvents) {
+        let streamResult: unknown = undefined;
+        let streamedVisibleText = "";
+        const streamedToolNames = new Set<string>();
+        const streamedLoopStats = {
+          agentModelCallCount: 0,
+          agentToolCallCount: 0,
+          agentToolNames: [] as string[],
+        };
+
+        for await (const eventValue of runtime.streamEvents(
+          {
+            messages: invokeMessages,
+          },
+          {
+            recursionLimit,
+          },
+        )) {
+          const event = asObject(eventValue);
+          if (!event) {
+            continue;
+          }
+          const eventName = typeof event.event === "string" ? event.event : "";
+          if (eventName === "on_chat_model_start" || eventName === "on_llm_start") {
+            streamedLoopStats.agentModelCallCount += 1;
+          } else if (eventName === "on_tool_start") {
+            streamedLoopStats.agentToolCallCount += 1;
+            const toolName = typeof event.name === "string" ? event.name : "";
+            if (toolName && !streamedToolNames.has(toolName)) {
+              streamedToolNames.add(toolName);
+              streamedLoopStats.agentToolNames.push(toolName);
+            }
+          }
+
+          const delta = extractStreamEventTextDelta(event);
+          if (delta.length > 0) {
+            streamedVisibleText += delta;
+            streamChunkCount += 1;
+            streamedTextChars += delta.length;
+            streamProvider = "langchain_stream";
+            await streamSink(delta);
+          }
+
+          const maybeOutput = extractStreamEventOutput(event);
+          if (maybeOutput !== undefined) {
+            streamResult = maybeOutput;
+          }
+        }
+
+        if (streamResult !== undefined) {
+          try {
+            visibleText = extractFinalAssistantText(streamResult);
+            loopStats = collectAgentLoopMetadata(streamResult);
+          } catch {
+            // Fall through to streamed text and inferred loop stats.
+          }
+        }
+
+        if (!visibleText.trim() && streamedVisibleText.trim()) {
+          visibleText = streamedVisibleText;
+        }
+        if (!visibleText.trim() && !streamedVisibleText.trim()) {
+          const invokeResult = await runtime.invoke(
+            {
+              messages: invokeMessages,
+            },
+            {
+              recursionLimit,
+            },
+          );
+          visibleText = extractFinalAssistantText(invokeResult);
+          loopStats = collectAgentLoopMetadata(invokeResult);
+        }
+        if (
+          loopStats.agentModelCallCount === 0 &&
+          streamedLoopStats.agentModelCallCount > 0
+        ) {
+          loopStats.agentModelCallCount = streamedLoopStats.agentModelCallCount;
+        }
+        if (
+          loopStats.agentToolCallCount === 0 &&
+          streamedLoopStats.agentToolCallCount > 0
+        ) {
+          loopStats.agentToolCallCount = streamedLoopStats.agentToolCallCount;
+        }
+        if (
+          loopStats.agentToolNames.length === 0 &&
+          streamedLoopStats.agentToolNames.length > 0
+        ) {
+          loopStats.agentToolNames = streamedLoopStats.agentToolNames;
+        }
+
+        if (streamChunkCount === 0) {
+          streamBuffered = true;
+          streamProvider = "buffered";
+        }
+      } else {
+        const result = await runtime.invoke(
+          {
+            messages: invokeMessages,
+          },
+          {
+            recursionLimit,
+          },
+        );
+        visibleText = extractFinalAssistantText(result);
+        loopStats = collectAgentLoopMetadata(result);
+        if (streamSink) {
+          streamBuffered = true;
+          streamProvider = "buffered";
+        }
+      }
     } catch (error) {
       const failureMessage = toErrorMessage(error);
       if (!isRecoverableAgentFailure(failureMessage)) {
@@ -930,6 +1137,10 @@ export function createLangChainAgentAssistantGenerate(
         agentToolCallCount: recovered.toolCallCount,
         agentToolNames: recovered.toolNames,
       };
+      if (streamSink && streamChunkCount === 0) {
+        streamBuffered = true;
+        streamProvider = "buffered";
+      }
     }
 
     if (!visibleText.trim()) {
@@ -976,6 +1187,11 @@ export function createLangChainAgentAssistantGenerate(
       model,
       baseUrl,
       durationMs,
+      streamEnabled: streamSink !== undefined,
+      streamChunkCount,
+      streamedTextChars,
+      streamBuffered,
+      streamProvider,
       agentModelCallCount: loopStats.agentModelCallCount,
       agentToolCallCount: loopStats.agentToolCallCount,
       agentToolNames: loopStats.agentToolNames,
@@ -999,14 +1215,69 @@ export function createLangChainAgentAssistantGenerate(
     });
 
     return outputText;
+  };
+
+  const generate = (async (input: AssistantGenerateInput) => {
+    return runTurn(input);
   }) as AssistantGenerateFn;
 
   generate.stream = async function* (input) {
-    const output = await generate(input);
-    yield {
-      type: "final_text",
-      text: output,
+    const queue: AssistantGenerateStreamEvent[] = [];
+    let waitingResolver: (() => void) | null = null;
+    let runComplete = false;
+    let runError: unknown;
+
+    const flushWaitingResolver = () => {
+      const resolver = waitingResolver;
+      waitingResolver = null;
+      if (resolver) {
+        resolver();
+      }
     };
+
+    const enqueue = (event: AssistantGenerateStreamEvent) => {
+      queue.push(event);
+      flushWaitingResolver();
+    };
+
+    const runPromise = (async () => {
+      try {
+        const output = await runTurn(input, async (delta) => {
+          enqueue({
+            type: "text_delta",
+            delta,
+          });
+        });
+        enqueue({
+          type: "final_text",
+          text: output,
+        });
+      } catch (error) {
+        runError = error;
+      } finally {
+        runComplete = true;
+        flushWaitingResolver();
+      }
+    })();
+
+    while (!runComplete || queue.length > 0) {
+      if (queue.length === 0) {
+        await new Promise<void>((resolve) => {
+          waitingResolver = resolve;
+        });
+        continue;
+      }
+
+      const event = queue.shift();
+      if (event) {
+        yield event;
+      }
+    }
+
+    await runPromise;
+    if (runError) {
+      throw runError;
+    }
   };
 
   return generate;
