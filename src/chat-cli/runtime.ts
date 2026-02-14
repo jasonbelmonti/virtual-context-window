@@ -22,6 +22,10 @@ import type {
   WriteToolSchemaVersion,
 } from "../integrations/langchain";
 import {
+  createOpenAIResponsesAssistantGenerate,
+  type OpenAIResponsesAssistantResultMetadata,
+} from "../integrations/openai";
+import {
   normalizeForComparison,
   parseAutoSymbolMetadataEnvelope,
   parseAutoSymbolMode,
@@ -47,6 +51,11 @@ const DEFAULT_SYMBOL_LIST_LIMIT = 20;
 const DEFAULT_AUTO_ACTIVE_MIN_SCORE = 0.84;
 const DEFAULT_AUTO_SHADOW_MIN_SCORE = 0.5;
 const DEFAULT_AUTO_MAX_EVENTS_PER_TURN = 1;
+
+type ChatProvider = "ollama" | "openai_responses";
+type AssistantTraceMetadata =
+  | LangChainAssistantResultMetadata
+  | OpenAIResponsesAssistantResultMetadata;
 
 function topFeaturesFromDecision(decision: RecognitionDecision | null): string[] {
   if (!decision) {
@@ -175,6 +184,7 @@ function classifyRuntimeError(error: unknown): string {
     const message = error.message.toLowerCase();
     if (
       message.includes("ollama") ||
+      message.includes("openai") ||
       message.includes("econn") ||
       message.includes("fetch") ||
       message.includes("provider")
@@ -200,8 +210,28 @@ function classifyRuntimeError(error: unknown): string {
   return "runtime_failure";
 }
 
+function parseProvider(
+  value: string | undefined,
+  fallback: ChatProvider,
+): ChatProvider {
+  if (!value) {
+    return fallback;
+  }
+
+  const normalized = value.toLowerCase();
+  if (normalized === "openai" || normalized === "openai_responses") {
+    return "openai_responses";
+  }
+  if (normalized === "ollama") {
+    return "ollama";
+  }
+  return fallback;
+}
+
 export type ChatCliRuntimeOptions = {
   mock?: boolean;
+  provider?: ChatProvider;
+  streamEnabled?: boolean;
   traceEnabled?: boolean;
   trustedSymbolRefs?: boolean;
   threadId?: string;
@@ -214,6 +244,8 @@ export class ChatCliRuntime {
   private readonly sessions = new Map<string, ChatThreadState>();
   private store = new InMemorySymbolStore();
   private engine: VirtualContextEngine;
+  private readonly provider: ChatProvider;
+  private streamEnabled: boolean;
   private traceEnabled: boolean;
   private trustedSymbolRefs: boolean;
   private autoSymbolMode: AutoSymbolMode;
@@ -223,9 +255,9 @@ export class ChatCliRuntime {
   private activeTelemetry: TelemetryEvent[] | null = null;
   private activeWriteIntentMode: WriteIntentMode = "none";
   private activeWriteToolSchemaVersion: WriteToolSchemaVersion = "v1";
-  private activeAssistantMetadata: LangChainAssistantResultMetadata | null = null;
+  private activeAssistantMetadata: AssistantTraceMetadata | null = null;
   private activeAutoDecision: RecognitionDecision | null = null;
-  private lastAssistantMetadata: LangChainAssistantResultMetadata | null = null;
+  private lastAssistantMetadata: AssistantTraceMetadata | null = null;
   private lastAutoDecision: RecognitionDecision | null = null;
   private lastTrace: ChatTurnTrace | null = null;
   private turnInFlight = false;
@@ -233,6 +265,11 @@ export class ChatCliRuntime {
   constructor(options: ChatCliRuntimeOptions = {}) {
     this.options = options;
     const env = options.env ?? process.env;
+    this.provider = parseProvider(
+      options.provider ?? env.VCW_ASSISTANT_PROVIDER,
+      "ollama",
+    );
+    this.streamEnabled = options.streamEnabled ?? true;
     this.traceEnabled = options.traceEnabled ?? false;
     this.trustedSymbolRefs = options.trustedSymbolRefs ?? false;
     this.autoSymbolMode = parseAutoSymbolMode(
@@ -251,6 +288,20 @@ export class ChatCliRuntime {
       maxEventsPerTurn: DEFAULT_AUTO_MAX_EVENTS_PER_TURN,
     };
     this.threadId = options.threadId ?? makeThreadId();
+
+    if (!options.mock && !options.assistantGenerate) {
+      if (this.provider === "openai_responses") {
+        if (!env.OPENAI_API_KEY) {
+          throw new Error("missing_env:OPENAI_API_KEY");
+        }
+        if (!env.VCW_OPENAI_MODEL) {
+          throw new Error("missing_env:VCW_OPENAI_MODEL");
+        }
+      } else if (!env.VCW_OLLAMA_MODEL) {
+        throw new Error("missing_env:VCW_OLLAMA_MODEL");
+      }
+    }
+
     this.engine = this.createEngine();
   }
 
@@ -261,6 +312,15 @@ export class ChatCliRuntime {
 
     if (this.options.mock) {
       return createMockAssistantGenerate();
+    }
+
+    if (this.provider === "openai_responses") {
+      return createOpenAIResponsesAssistantGenerate({
+        env: this.options.env,
+        onResultMetadata: (metadata) => {
+          this.activeAssistantMetadata = metadata;
+        },
+      });
     }
 
     return createLangChainAssistantGenerate({
@@ -444,6 +504,7 @@ export class ChatCliRuntime {
     const metadata = this.lastAssistantMetadata;
     const writeIntentMode = metadata?.writeIntentMode ?? this.activeWriteIntentMode;
     const auto = this.lastAutoDecision ?? this.emptyAutoDecision();
+    const env = this.options.env ?? process.env;
     const post = this.activeTelemetry?.find(
       (event) => event.type === "post_model",
     );
@@ -474,6 +535,28 @@ export class ChatCliRuntime {
         toolCallDetected: metadata?.toolCallDetected ?? false,
         schemaVersion:
           metadata?.writeToolSchemaVersion ?? this.activeWriteToolSchemaVersion,
+      },
+      assistant: {
+        provider:
+          metadata?.provider ??
+          (this.provider === "openai_responses"
+            ? "openai_responses"
+            : "langchain_ollama"),
+        model:
+          metadata?.model ??
+          (this.provider === "openai_responses"
+            ? env.VCW_OPENAI_MODEL ?? "(unknown)"
+            : env.VCW_OLLAMA_MODEL ?? "(unknown)"),
+        baseUrl:
+          metadata?.baseUrl ??
+          (this.provider === "openai_responses"
+            ? env.VCW_OPENAI_BASE_URL ?? "https://api.openai.com/v1"
+            : env.VCW_OLLAMA_BASE_URL ?? "http://127.0.0.1:11434"),
+        streamEnabled: metadata?.streamEnabled ?? this.streamEnabled,
+        streamChunkCount: metadata?.streamChunkCount ?? 0,
+        streamedTextChars: metadata?.streamedTextChars ?? 0,
+        streamBuffered: metadata?.streamBuffered ?? false,
+        streamProvider: metadata?.streamProvider ?? "none",
       },
       autoSymbol: {
         mode: metadata?.autoMode ?? auto.mode,
@@ -531,7 +614,10 @@ export class ChatCliRuntime {
 
   async processUserMessage(
     userInput: string,
-    options?: { writeIntentMode?: WriteIntentMode },
+    options?: {
+      writeIntentMode?: WriteIntentMode;
+      onAssistantDelta?: (delta: string) => void | Promise<void>;
+    },
   ): Promise<ChatTurnResult> {
     if (this.turnInFlight) {
       throw new Error("turn_in_progress");
@@ -579,12 +665,41 @@ export class ChatCliRuntime {
     this.turnInFlight = true;
 
     try {
-      const response = await this.engine.processTurn({
+      const request = {
         threadId: this.threadId,
         trustedSymbolRefs: this.trustedSymbolRefs,
         messages: requestMessages,
         metadata,
-      });
+      };
+      let response:
+        | {
+            content: string;
+            rawModelContent: string;
+            contextPackText: string;
+            diagnostics: {
+              generationCallCount: number;
+              preModelMs: number;
+              postModelMs: number;
+              retrievalStrategy: "lexical_v1" | "hybrid_v2";
+              retrievalDegraded: boolean;
+            };
+          }
+        | undefined;
+      if (this.streamEnabled) {
+        for await (const event of this.engine.processTurnStream(request)) {
+          if (event.type === "assistant_text_delta" && options?.onAssistantDelta) {
+            await options.onAssistantDelta(event.delta);
+          }
+          if (event.type === "turn_completed") {
+            response = event.response;
+          }
+        }
+      } else {
+        response = await this.engine.processTurn(request);
+      }
+      if (!response) {
+        throw new Error("turn_stream_missing_completion");
+      }
       this.lastAssistantMetadata = this.activeAssistantMetadata;
       this.lastAutoDecision = this.activeAutoDecision;
 
@@ -646,6 +761,17 @@ export class ChatCliRuntime {
           output: `trace=${this.traceEnabled ? "on" : "off"}`,
         };
 
+      case "stream":
+        if (command.action === "status") {
+          return {
+            output: `stream=${this.streamEnabled ? "on" : "off"}`,
+          };
+        }
+        this.streamEnabled = command.action === "on";
+        return {
+          output: `stream=${this.streamEnabled ? "on" : "off"}`,
+        };
+
       case "auto":
         if (command.action === "status") {
           return {
@@ -684,6 +810,8 @@ export class ChatCliRuntime {
             `threadId=${state.threadId}`,
             `trace=${state.traceMode}`,
             `trustedSymbolRefs=${state.trustedSymbolRefs}`,
+            `provider=${state.provider}`,
+            `stream=${state.streamEnabled ? "on" : "off"}`,
             `autoSymbolMode=${state.autoSymbolMode}`,
             `messageCount=${state.messageCount}`,
             `symbolCount=${symbolCount}`,
@@ -815,6 +943,8 @@ export class ChatCliRuntime {
       threadId: this.threadId,
       traceMode: this.traceEnabled ? "on" : "off",
       trustedSymbolRefs: this.trustedSymbolRefs,
+      provider: this.provider,
+      streamEnabled: this.streamEnabled,
       autoSymbolMode: this.autoSymbolMode,
       messageCount: this.getOrCreateThread(this.threadId).messages.length,
     };
@@ -822,6 +952,10 @@ export class ChatCliRuntime {
 
   getTraceEnabled(): boolean {
     return this.traceEnabled;
+  }
+
+  getStreamEnabled(): boolean {
+    return this.streamEnabled;
   }
 
   getLastTrace(): ChatTurnTrace | null {

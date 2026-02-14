@@ -17,6 +17,11 @@ test("parseSlashCommand parses supported commands", () => {
     command: { type: "trace", action: "raw" },
   });
 
+  expect(parseSlashCommand("/stream off")).toEqual({
+    ok: true,
+    command: { type: "stream", action: "off" },
+  });
+
   expect(parseSlashCommand("/auto shadow")).toEqual({
     ok: true,
     command: { type: "auto", action: "shadow" },
@@ -76,6 +81,12 @@ test("parseSlashCommand returns useful errors for invalid input", () => {
     error: "usage: /trace on|off|view|raw",
   });
 
+  const invalidStream = parseSlashCommand("/stream maybe");
+  expect(invalidStream).toEqual({
+    ok: false,
+    error: "usage: /stream on|off|status",
+  });
+
   const invalidLimit = parseSlashCommand("/symbols nope");
   expect(invalidLimit).toEqual({
     ok: false,
@@ -110,6 +121,7 @@ test("parseSlashCommand returns useful errors for invalid input", () => {
 test("formatHelpText includes all command anchors", () => {
   const help = formatHelpText();
   expect(help).toContain("/trace on|off|view|raw");
+  expect(help).toContain("/stream on|off|status");
   expect(help).toContain("/auto on|off|shadow|status");
   expect(help).toContain("/experiment vcw-only|chat-only");
   expect(help).toContain("/history clear");

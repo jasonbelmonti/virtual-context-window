@@ -163,6 +163,16 @@
   - Pure-score policy without high-signal overrides: rejected due reduced reliability on canonical profile captures.
   - Aggressive default thresholds: rejected due increased passive false-positive risk.
 
+## ADR-019: Phase 9 Adds Engine-Level Streaming and Native OpenAI Responses Provider Path
+- Date: 2026-02-14
+- Status: Accepted
+- Decision: Introduce `processTurnStream` at engine boundary with deterministic lifecycle events, keep strict write-intent buffered in stream mode, and add native OpenAI Responses adapters (chat + agent + embeddings) alongside existing LangChain/Ollama adapters with provider-selectable CLIs.
+- Rationale: Enables real-time UX and provider portability while preserving one-call boundary invariants and existing parser/policy authority.
+- Rejected alternatives:
+  - CLI-only streaming with unchanged engine contract: rejected due fragmented behavior and weaker testability.
+  - OpenAI via LangChain wrapper only: rejected to reduce abstraction mismatch and preserve full Responses tool-loop control.
+  - Stream strict write-intent token-by-token: rejected due protocol-safety and control-leak risk.
+
 ## Phase 0 Sign-off
 - Date: 2026-02-13
 - Status: PASS
@@ -354,6 +364,38 @@
 - Freeze commit SHA reference:
   - `PENDING_COMMIT_SHA` (to be updated at commit time for Phase 8 freeze point).
 - Handoff note: Phase 9 may add persistence-backed memory lifecycle and recognition calibration over Phase 8 diagnostics.
+
+## Phase 9 Sign-off
+- Date: 2026-02-14
+- Status: PASS
+- Checklist summary:
+  - Added engine streaming contract and runtime (`processTurnStream`, `VirtualContextTurnStreamEvent`, stage/event lifecycle emission).
+  - Added stream-capable assistant seam (`AssistantGenerateFn.stream`) and preserved one-call invariant on stream + non-stream paths.
+  - Added native OpenAI Responses integrations:
+    - chat assistant adapter
+    - agent tool-loop adapter
+    - OpenAI embeddings provider
+  - Added provider/stream controls to chat + agent CLIs:
+    - launch args: `--provider`, `--stream`, `--no-stream`
+    - in-session command: `/stream on|off|status`
+  - Added additive tests:
+    - engine stream behavior
+    - langchain stream behavior
+    - openai adapter behavior
+    - CLI provider/stream behavior
+  - Phase 9 command gate executed:
+    - `bun test`
+    - `bun run test:chat-cli`
+    - `bun run test:agent`
+    - `bun run test:stream`
+    - `bun run test:openai`
+    - `bun x tsc --noEmit`
+- Ambiguities resolved during Phase 9:
+  - Locked strict write-intent buffering policy for stream mode.
+  - Locked default provider (`ollama`) and default stream mode (`on`).
+- Freeze commit SHA reference:
+  - `PENDING_COMMIT_SHA` (update on commit cut).
+- Handoff note: Phase 10 can focus on richer stream UX/persistence without reworking provider seams.
 
 ## Template for New ADRs
 ```md

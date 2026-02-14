@@ -94,12 +94,28 @@ export type AssistantGenerateInput = {
   contextPackText: string;
 };
 
-export type AssistantGenerateFn = (
+export type AssistantGenerateStreamEvent = {
+  type: "text_delta";
+  delta: string;
+} | {
+  type: "final_text";
+  text: string;
+};
+
+export type AssistantGenerateStreamFn = (
   input: AssistantGenerateInput,
-) => Promise<string>;
+) => AsyncIterable<AssistantGenerateStreamEvent>;
+
+export type AssistantGenerateFn = ((input: AssistantGenerateInput) => Promise<string>) & {
+  stream?: AssistantGenerateStreamFn;
+};
 
 export type AssistantInvokerInput = AssistantGenerateInput & {
   generate: AssistantGenerateFn;
+  useStream?: boolean;
+  onStreamEvent?: (
+    event: AssistantGenerateStreamEvent,
+  ) => void | Promise<void>;
 };
 
 export type AssistantInvokerHook = (
@@ -179,6 +195,28 @@ export function defaultOutputSanitizer(
 export async function defaultAssistantInvoker(
   input: AssistantInvokerInput,
 ): Promise<string> {
+  if (input.useStream && input.generate.stream) {
+    let output = "";
+    for await (const event of input.generate.stream({
+      request: input.request,
+      threadId: input.threadId,
+      trustedSymbolRefsEnabled: input.trustedSymbolRefsEnabled,
+      query: input.query,
+      contextPackText: input.contextPackText,
+    })) {
+      if (event.type === "text_delta") {
+        output += event.delta;
+      }
+      if (event.type === "final_text") {
+        output = event.text;
+      }
+      if (input.onStreamEvent) {
+        await input.onStreamEvent(event);
+      }
+    }
+    return output;
+  }
+
   return input.generate({
     request: input.request,
     threadId: input.threadId,

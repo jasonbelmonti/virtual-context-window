@@ -80,6 +80,21 @@ function renderDiagnosticsTable(trace: ChatTurnTrace): string {
   return table.toString();
 }
 
+function renderAssistantTable(trace: ChatTurnTrace): string {
+  const table = createKeyValueTable([
+    ["provider", trace.assistant.provider],
+    ["model", trace.assistant.model],
+    ["baseUrl", trace.assistant.baseUrl],
+    ["streamEnabled", trace.assistant.streamEnabled],
+    ["streamChunkCount", trace.assistant.streamChunkCount],
+    ["streamedTextChars", trace.assistant.streamedTextChars],
+    ["streamBuffered", trace.assistant.streamBuffered],
+    ["streamProvider", trace.assistant.streamProvider],
+  ]);
+
+  return table.toString();
+}
+
 function renderAutoSymbolTable(trace: ChatTurnTrace): string {
   const table = createKeyValueTable([
     ["autoMode", trace.autoSymbol.mode],
@@ -179,6 +194,8 @@ export function renderTurnTrace(
   lines.push(renderSummaryTable(trace));
   lines.push(theme.section("Diagnostics"));
   lines.push(renderDiagnosticsTable(trace));
+  lines.push(theme.section("Assistant"));
+  lines.push(renderAssistantTable(trace));
   lines.push(theme.section("Auto Symbol Recognition"));
   lines.push(renderAutoSymbolTable(trace));
   lines.push(theme.section("Telemetry"));

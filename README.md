@@ -18,6 +18,14 @@ Interactive chat CLI:
 bun run chat:interactive --mock
 ```
 
+Streaming is enabled by default in both CLIs. Use:
+
+```text
+/stream status
+/stream off
+/stream on
+```
+
 Chat CLI auto-symbol mode defaults to `shadow` (detect-only, no passive writes). In-session controls:
 
 ```text
@@ -37,6 +45,12 @@ One-shot chat (live Ollama):
 
 ```bash
 VCW_OLLAMA_MODEL=<your_model> VCW_OLLAMA_BASE_URL=<your_url> bun run chat:interactive --once "hello live" --trace
+```
+
+One-shot chat (OpenAI Responses):
+
+```bash
+VCW_ASSISTANT_PROVIDER=openai_responses OPENAI_API_KEY=<your_key> VCW_OPENAI_MODEL=<your_model> bun run chat:interactive --provider openai --once "hello from responses" --trace
 ```
 
 Agent CLI (mock):
@@ -69,6 +83,12 @@ One-shot agent (live Ollama + embeddings):
 VCW_OLLAMA_MODEL=<your_model> VCW_OLLAMA_EMBED_MODEL=<your_embed_model> VCW_OLLAMA_BASE_URL=<your_url> bun run agent:interactive --once "remember phase seven" --trace
 ```
 
+One-shot agent (OpenAI Responses + OpenAI embeddings):
+
+```bash
+VCW_ASSISTANT_PROVIDER=openai_responses OPENAI_API_KEY=<your_key> VCW_OPENAI_MODEL=<your_model> VCW_OPENAI_EMBED_MODEL=<your_embed_model> bun run agent:interactive --provider openai --once "hello openai agent" --trace
+```
+
 Auto-mode env controls:
 
 ```bash
@@ -76,6 +96,8 @@ VCW_AUTO_SYMBOL_MODE=off|shadow|active
 VCW_AUTO_SYMBOL_ACTIVE_MIN_SCORE=0.84
 VCW_AUTO_SYMBOL_SHADOW_MIN_SCORE=0.50
 VCW_HISTORY_MAX_TURNS=<positive-integer>
+VCW_ASSISTANT_PROVIDER=ollama|openai_responses
+VCW_OPENAI_BASE_URL=https://api.openai.com/v1
 ```
 
 Phase 8 flow (detector + control envelope):

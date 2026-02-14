@@ -12,6 +12,8 @@
     "test:write-path": "bun test tests/engine/write-path.test.ts",
     "test:chat-cli": "bun test tests/chat-cli tests/langchain",
     "test:agent": "bun test tests/agent-cli tests/langchain/agent-* tests/engine/embedding-* tests/engine/retrieval-embedding.test.ts",
+    "test:stream": "bun test tests/engine/kernel-stream.test.ts tests/langchain/*stream.test.ts tests/chat-cli/stream-provider.test.ts tests/agent-cli/stream-provider.test.ts",
+    "test:openai": "bun test tests/openai",
     "chat:interactive": "bun run scripts/chat.ts",
     "agent:interactive": "bun run scripts/agent-chat.ts",
     "validate:quick": "bun run scripts/validate-quick.ts",
@@ -31,6 +33,7 @@
     "@langchain/ollama": "^1.2.2",
     "chalk": "^5.6.2",
     "cli-table3": "^0.6.5",
-    "langchain": "^1.2.24"
+    "langchain": "^1.2.24",
+    "openai": "^6.22.0"
   }
 }

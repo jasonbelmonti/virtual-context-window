@@ -453,7 +453,7 @@ export function createLangChainAgentAssistantGenerate(
       ...options.strictWriteAssistantOptions,
     });
 
-  return async (input) => {
+  const generate = (async (input) => {
     const writeIntentMode = resolveWriteIntentFromMetadata(input.request);
     const autoSymbolMetadata = resolveAutoSymbolMetadata(
       asObject(input.request.metadata),
@@ -476,6 +476,8 @@ export function createLangChainAgentAssistantGenerate(
         writeIntentMode: "strict",
         writeTransport: "function_call_bridge",
         writeIntentSatisfied: true,
+        toolCallDetected: strictWriteToolCallDetected,
+        writeToolSchemaVersion: "v1",
         autoMode: autoSymbolMetadata?.mode,
         autoTriggered: autoSymbolMetadata?.triggered,
         autoConfidence: autoSymbolMetadata?.confidence,
@@ -570,19 +572,20 @@ export function createLangChainAgentAssistantGenerate(
     const visibleText = extractFinalAssistantText(result);
     const loopStats = collectAgentLoopMetadata(result);
     const durationMs = now() - startedAtMs;
-    const expectsAutoWrite =
+    const expectsAutoWrite = Boolean(
       writeIntentMode === "auto" &&
-      autoSymbolMetadata?.valid &&
-      autoSymbolMetadata.mode === "active" &&
-      autoSymbolMetadata.triggered &&
-      !autoSymbolMetadata.suppressed &&
-      autoSymbolMetadata.events.length > 0 &&
-      isAutoWriteDecision(autoSymbolMetadata);
+        autoSymbolMetadata?.valid &&
+        autoSymbolMetadata.mode === "active" &&
+        autoSymbolMetadata.triggered &&
+        !autoSymbolMetadata.suppressed &&
+        autoSymbolMetadata.events.length > 0 &&
+        isAutoWriteDecision(autoSymbolMetadata),
+    );
     const shouldApplyAutoControl = expectsAutoWrite;
     const outputText = shouldApplyAutoControl
       ? buildDeterministicControlEnvelope({
           assistant_response: visibleText,
-          symbol_events: autoSymbolMetadata.events,
+          symbol_events: autoSymbolMetadata!.events,
         })
       : visibleText;
     const writeTransport = shouldApplyAutoControl
@@ -615,6 +618,8 @@ export function createLangChainAgentAssistantGenerate(
       writeIntentMode,
       writeTransport,
       writeIntentSatisfied,
+      toolCallDetected: false,
+      writeToolSchemaVersion: "v1",
       autoMode: autoSymbolMetadata?.mode,
       autoTriggered: autoSymbolMetadata?.triggered,
       autoConfidence: autoSymbolMetadata?.confidence,
@@ -629,5 +634,15 @@ export function createLangChainAgentAssistantGenerate(
     });
 
     return outputText;
+  }) as AssistantGenerateFn;
+
+  generate.stream = async function* (input) {
+    const output = await generate(input);
+    yield {
+      type: "final_text",
+      text: output,
+    };
   };
+
+  return generate;
 }
