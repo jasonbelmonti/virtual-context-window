@@ -193,7 +193,22 @@ export type ContextPressureSnapshot = {
 }; // CP-02
 
 export type ProjectionEvent =
-  | { type: "stage_transition"; timestamp: number; threadId: string; from?: string; to: string; sequence: number }
+  | {
+      type: "stage_transition";
+      timestamp: number;
+      threadId: string;
+      symbolId: string;
+      fromZone?: "index" | "focused" | "recall";
+      toZone: "index" | "focused" | "recall";
+      cause:
+        | "trusted_ref"
+        | "retrieval_focus"
+        | "retrieval_recall"
+        | "budget_trim"
+        | "eviction"
+        | "manual_override";
+      turnSequence: number;
+    }
   | { type: "context_pressure"; timestamp: number; threadId: string; snapshot: ContextPressureSnapshot }
   | {
       type: "lens_binding";
@@ -202,7 +217,27 @@ export type ProjectionEvent =
       bindingId: string;
       symbolId: string;
       section: "index" | "focused" | "recall";
-      range: { start: number; end: number };
+      rawRange: { start: number; end: number };
+      structuredPath: string;
+    }
+  | {
+      type: "gravity_snapshot";
+      timestamp: number;
+      threadId: string;
+      turnSequence: number;
+      nodes: Array<{
+        symbolId: string;
+        fusedScore: number;
+        recencyScore: number;
+        zone: "index" | "focused" | "recall";
+        updatedAt: number;
+      }>;
+      edges: Array<{
+        fromSymbolId: string;
+        toSymbolId: string;
+        weight: number;
+        reason: "semantic_similarity" | "co_retrieved" | "shared_anchor";
+      }>;
     };
 ```
 
