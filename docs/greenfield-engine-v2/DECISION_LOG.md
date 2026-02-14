@@ -362,7 +362,7 @@
 - Ambiguities resolved during Phase 8:
   - Locked passive-capture strategy to deterministic detector first; no model-judged recognition in this phase.
 - Freeze commit SHA reference:
-  - `PENDING_COMMIT_SHA` (to be updated at commit time for Phase 8 freeze point).
+  - `122a612` (Phase 8 branch freeze point after auto-intent hardening).
 - Handoff note: Phase 9 may add persistence-backed memory lifecycle and recognition calibration over Phase 8 diagnostics.
 
 ## Phase 9 Sign-off
@@ -394,7 +394,7 @@
   - Locked strict write-intent buffering policy for stream mode.
   - Locked default provider (`ollama`) and default stream mode (`on`).
 - Freeze commit SHA reference:
-  - `PENDING_COMMIT_SHA` (update on commit cut).
+  - `90913ec` (Phase 9 hardening freeze point with sanitized stream delta emission).
 - Handoff note: Phase 10 can focus on richer stream UX/persistence without reworking provider seams.
 
 ## Template for New ADRs
