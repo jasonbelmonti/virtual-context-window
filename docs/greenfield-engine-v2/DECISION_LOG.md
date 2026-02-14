@@ -276,7 +276,7 @@
   - Locked single-invoke LangChain execution for invariant safety.
   - Deferred full createAgent runtime loop adoption to Phase 7+.
 - Freeze commit SHA reference:
-  - `PENDING_COMMIT_SHA` (to be updated at commit time for Phase 6 freeze point).
+  - `37d35a9` (Phase 6 hardening freeze point: CLI concurrency guard + strict tool-path error handling).
 - Handoff note: Phase 7 may layer full createAgent runtime composition, streaming, and persistence on the Phase 6 adapter + CLI foundation.
 
 ## Phase 7 Sign-off
@@ -284,7 +284,8 @@
 - Status: PASS
 - Checklist summary:
   - Added full agent-loop assistant runtime via LangChain `createAgent` behind the existing engine seam (`createLangChainAgentAssistantGenerate`).
-  - Added VCW agent tools (`vcw_list_symbols`, `vcw_get_symbol`, `vcw_search_symbols`, `vcw_upsert_symbol`) with write operations routed through policy semantics.
+  - Added VCW agent tools (`vcw_list_symbols`, `vcw_get_symbol`, `vcw_search_symbols`, `vcw_web_search`) for read/search + real-world lookup behavior.
+  - Routed memory writes through strict write-intent control-channel bridging (`emit_symbol_events` -> deterministic trailing `<symbolic_control>`), preserving policy/applier authority.
   - Added real Ollama embedding adapter (`/api/embed` + `/api/embeddings` fallback) and in-memory embedding cache.
   - Added retrieval embedding integration in `createRetrievalHooks` with fail-open/fail-fast controls and `retrievalDegraded` signaling.
   - Added separate interactive mini consumer CLI (`agent:interactive`) with trace diagnostics and mock/live modes.
@@ -300,7 +301,7 @@
 - Ambiguities resolved during Phase 7:
   - None.
 - Freeze commit SHA reference:
-  - `PENDING_COMMIT_SHA` (to be updated at commit time for Phase 7 freeze point).
+  - `12cf7ed` (Phase 7 runtime hardening freeze point: strict `/remember` path + web-search toolset + recursion controls).
 - Handoff note: Phase 8 may add streaming and persistence on top of the Phase 7 agent runtime and embedding foundation.
 
 ## Template for New ADRs
