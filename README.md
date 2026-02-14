@@ -12,16 +12,22 @@ To run default entrypoint:
 bun run index.ts
 ```
 
-Sliding context window showdown demo (live Ollama primary):
+Cinematic incident-response showdown demo (live Ollama primary):
 
 ```bash
 bun run demo:showdown
 ```
 
-Quick smoke variant:
+Fast variant (optimized for under ~3 minutes):
 
 ```bash
 bun run demo:showdown:fast
+```
+
+Classic fallback mode:
+
+```bash
+bun run demo:showdown:classic
 ```
 
 Demo artifacts are written to:
@@ -31,10 +37,10 @@ reports/demo-showdown/<timestamp>/
 ```
 
 Success criteria:
-- `chat_only.answerCorrect = false`
-- `vcw_only.answerCorrect = true`
-- `vcw_only.focusedInjectedCount + vcw_only.recallInjectedCount > 0`
-- `chat_only.symbolTableCount = 0` after branch
+- required tool calls are observed (`vcw_search_symbols`, `vcw_web_search`)
+- brief format and evidence gates pass in `vcw_only`
+- strict gate marks lane-level PASS/FAIL with explicit `failureReasons`
+- overall strict run exits non-zero if any lane fails
 
 Interactive chat CLI:
 

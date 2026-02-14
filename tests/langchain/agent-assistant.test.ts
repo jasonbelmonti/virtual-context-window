@@ -125,6 +125,102 @@ test("agent assistant propagates runtime errors", async () => {
   await expect(generate(makeInput())).rejects.toThrow("agent_runtime_failed");
 });
 
+test("agent assistant recovers from recursion-limit failure with fallback synthesis", async () => {
+  const store = new InMemorySymbolStore();
+  await store.upsert("thread-agent", {
+    symbolId: "incident:id",
+    summary: "Incident ID",
+    content: "INC-123",
+    kind: "fact",
+  });
+  let strictFallbackCalls = 0;
+  let metadata: unknown;
+
+  const generate = createLangChainAgentAssistantGenerate({
+    store,
+    model: "mock-model",
+    baseUrl: "http://example.local",
+    createAgentRuntime: () => ({
+      invoke: async () => {
+        throw new Error("GRAPH_RECURSION_LIMIT");
+      },
+    }),
+    strictWriteGenerate: async (input) => {
+      strictFallbackCalls += 1;
+      expect(input.request.systemPrompt).toContain("Fallback mode:");
+      expect(input.request.systemPrompt).toContain("VCW_SEARCH_SYMBOLS_RESULT:");
+      return "Recovered answer";
+    },
+    onResultMetadata: (value) => {
+      metadata = value;
+    },
+  });
+
+  const output = await generate(makeInput());
+  expect(output).toBe("Recovered answer");
+  expect(strictFallbackCalls).toBe(1);
+  expect(metadata).toMatchObject({
+    agentToolNames: expect.arrayContaining(["vcw_search_symbols"]),
+  });
+});
+
+test("agent assistant recovers from missing final text and can include web search fallback", async () => {
+  const store = new InMemorySymbolStore();
+  let strictFallbackCalls = 0;
+
+  const generate = createLangChainAgentAssistantGenerate({
+    store,
+    model: "mock-model",
+    baseUrl: "http://example.local",
+    createAgentRuntime: () => ({
+      invoke: async () => ({
+        messages: [
+          {
+            type: "ai",
+            content: "",
+            tool_calls: [{ name: "vcw_search_symbols" }],
+          },
+        ],
+      }),
+    }),
+    buildToolContext: (input) => ({
+      store,
+      threadId: input.threadId,
+      request: input.request,
+      trustedSymbolRefsEnabled: input.trustedSymbolRefsEnabled,
+      retrievalStrategy: "hybrid_v2",
+      webSearch: {
+        enabled: false,
+        source: "disabled_for_test",
+      },
+    }),
+    strictWriteGenerate: async (input) => {
+      strictFallbackCalls += 1;
+      expect(input.request.systemPrompt).toContain("VCW_SEARCH_SYMBOLS_RESULT:");
+      expect(input.request.systemPrompt).toContain("VCW_WEB_SEARCH_RESULT:");
+      return "Recovered answer with fallback web context";
+    },
+  });
+
+  const webInput: AssistantGenerateInput = {
+    ...makeInput(),
+    request: {
+      ...makeInput().request,
+      messages: [
+        {
+          role: "user",
+          content:
+            "Use web search query: \"incident latency mitigation\" and include Source: links.",
+        },
+      ],
+    },
+  };
+
+  const output = await generate(webInput);
+  expect(output).toBe("Recovered answer with fallback web context");
+  expect(strictFallbackCalls).toBe(1);
+});
+
 test("strict write intent bypasses createAgent runtime and uses strict control path", async () => {
   const store = new InMemorySymbolStore();
   let createAgentCalled = 0;
