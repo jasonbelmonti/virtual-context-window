@@ -16,6 +16,18 @@ import {
   type LangChainAgentMetadata,
   resolveWriteIntentFromMetadata,
 } from "../integrations/langchain";
+import type { WriteIntentMode } from "../integrations/langchain";
+import {
+  normalizeForComparison,
+  parseAutoSymbolMetadataEnvelope,
+  parseAutoSymbolMode,
+  RECOGNITION_SCORER_VERSION,
+  recognizeAutomaticSymbols,
+  toAutoSymbolMetadataEnvelope,
+  type AutoSymbolMode,
+  type RecognitionDecision,
+  type RecognizerConfig,
+} from "../recognition";
 import type {
   AgentCliCommand,
   AgentCliStateView,
@@ -28,6 +40,21 @@ import { formatHelpText } from "./commands";
 import { renderTurnTrace } from "./trace-renderer";
 
 const DEFAULT_SYMBOL_LIST_LIMIT = 20;
+const DEFAULT_AUTO_ACTIVE_MIN_SCORE = 0.84;
+const DEFAULT_AUTO_SHADOW_MIN_SCORE = 0.5;
+const DEFAULT_AUTO_MAX_EVENTS_PER_TURN = 1;
+
+function topFeaturesFromDecision(decision: RecognitionDecision | null): string[] {
+  if (!decision) {
+    return [];
+  }
+
+  return decision.scoring.contributions
+    .filter((item) => item.active && item.contribution !== 0)
+    .sort((a, b) => Math.abs(b.contribution) - Math.abs(a.contribution))
+    .slice(0, 3)
+    .map((item) => `${item.feature}:${item.contribution > 0 ? "+" : ""}${item.contribution.toFixed(2)}`);
+}
 
 function makeThreadId(): string {
   return `agent-thread-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
@@ -61,6 +88,20 @@ function parsePositiveInt(value: string | undefined, fallback: number): number {
   const parsed = Number.parseInt(value, 10);
   if (!Number.isFinite(parsed) || parsed <= 0) {
     return fallback;
+  }
+  return parsed;
+}
+
+function parsePositiveFloat(value: string | undefined, fallback: number): number {
+  if (!value) {
+    return fallback;
+  }
+  const parsed = Number.parseFloat(value);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    return fallback;
+  }
+  if (parsed > 1) {
+    return 1;
   }
   return parsed;
 }
@@ -102,6 +143,18 @@ export function createMockAgentAssistantGenerate(): AssistantGenerateFn {
     const rememberPrefix = /^remember\s*:\s*/iu;
     const strictWriteIntent =
       resolveWriteIntentFromMetadata(input.request) === "strict";
+    const autoMetadata = parseAutoSymbolMetadataEnvelope(
+      input.request.metadata as Record<string, unknown> | undefined,
+    );
+    const autoWriteActive =
+      autoMetadata?.valid === true &&
+      autoMetadata.mode === "active" &&
+      autoMetadata.triggered &&
+      !autoMetadata.suppressed &&
+      autoMetadata.events.length > 0 &&
+      (autoMetadata.scoring?.band === "write" ||
+        (autoMetadata.scoring === undefined &&
+          autoMetadata.confidence >= DEFAULT_AUTO_ACTIVE_MIN_SCORE));
 
     if (rememberPrefix.test(lastUserText) || strictWriteIntent) {
       const content = lastUserText.replace(rememberPrefix, "").trim();
@@ -120,6 +173,16 @@ export function createMockAgentAssistantGenerate(): AssistantGenerateFn {
       return `Got it.\n<symbolic_control>${JSON.stringify(payload)}</symbolic_control>`;
     }
 
+    if (autoWriteActive) {
+      const payload = {
+        symbol_events: autoMetadata.events,
+      };
+      return [
+        `Mock agent: ${lastUserText || "hello"}`,
+        `<symbolic_control>${JSON.stringify(payload)}</symbolic_control>`,
+      ].join("\n");
+    }
+
     return `Mock agent: ${lastUserText || "hello"}`;
   };
 }
@@ -130,20 +193,36 @@ export class AgentCliRuntime {
   private store = new InMemorySymbolStore();
   private engine: VirtualContextEngine;
   private traceEnabled: boolean;
+  private autoSymbolMode: AutoSymbolMode;
+  private readonly recognizerConfig: RecognizerConfig;
   private threadId: string;
   private activeStages: EngineStage[] | null = null;
   private activeTelemetry: TelemetryEvent[] | null = null;
+  private activeAutoDecision: RecognitionDecision | null = null;
   private activeAgentMetadata: LangChainAgentMetadata | null = null;
+  private lastAutoDecision: RecognitionDecision | null = null;
   private lastAgentMetadata: LangChainAgentMetadata | null = null;
   private lastTrace: AgentTurnTrace | null = null;
   private turnInFlight = false;
 
   constructor(options: AgentCliRuntimeOptions = {}) {
     this.options = options;
+    const env = options.env ?? process.env;
     this.traceEnabled = options.traceEnabled ?? false;
+    this.autoSymbolMode = parseAutoSymbolMode(env.VCW_AUTO_SYMBOL_MODE, "active");
+    this.recognizerConfig = {
+      activeMinScore: parsePositiveFloat(
+        env.VCW_AUTO_SYMBOL_ACTIVE_MIN_SCORE,
+        DEFAULT_AUTO_ACTIVE_MIN_SCORE,
+      ),
+      shadowMinScore: parsePositiveFloat(
+        env.VCW_AUTO_SYMBOL_SHADOW_MIN_SCORE,
+        DEFAULT_AUTO_SHADOW_MIN_SCORE,
+      ),
+      maxEventsPerTurn: DEFAULT_AUTO_MAX_EVENTS_PER_TURN,
+    };
     this.threadId = options.threadId ?? makeThreadId();
 
-    const env = options.env ?? process.env;
     if (!options.mock && !options.assistantGenerate) {
       if (!env.VCW_OLLAMA_MODEL) {
         throw new Error("missing_env:VCW_OLLAMA_MODEL");
@@ -256,6 +335,95 @@ export class AgentCliRuntime {
     return records;
   }
 
+  private emptyAutoDecision(): RecognitionDecision {
+    return {
+      mode: this.autoSymbolMode,
+      triggered: false,
+      confidence: 0,
+      reason: "none",
+      shouldWrite: false,
+      suppressed: false,
+      events: [],
+      scoring: {
+        scorerVersion: RECOGNITION_SCORER_VERSION,
+        rawScore: 0,
+        probability: 0,
+        band: "suppress",
+        overrideApplied: false,
+        contributions: [],
+      },
+    };
+  }
+
+  private async buildAutoDecision(
+    userText: string,
+    writeIntentMode: WriteIntentMode,
+  ): Promise<RecognitionDecision | null> {
+    if (writeIntentMode === "strict") {
+      return null;
+    }
+
+    const initial = recognizeAutomaticSymbols({
+      latestUserText: userText,
+      mode: this.autoSymbolMode,
+      config: this.recognizerConfig,
+    });
+
+    if (initial.events.length === 0) {
+      return initial;
+    }
+
+    const dedupedEvents: typeof initial.events = [];
+    let duplicateSkipped = false;
+    for (const event of initial.events) {
+      const symbolId = event.symbol_id;
+      if (symbolId) {
+        const existing = await this.store.get(this.threadId, symbolId);
+        if (
+          existing &&
+          normalizeForComparison(existing.content) ===
+            normalizeForComparison(event.content)
+        ) {
+          duplicateSkipped = true;
+          continue;
+        }
+      }
+
+      dedupedEvents.push(event);
+      if (dedupedEvents.length >= this.recognizerConfig.maxEventsPerTurn) {
+        break;
+      }
+    }
+
+    const suppressed =
+      initial.suppressed || (initial.triggered && dedupedEvents.length === 0);
+    const reason =
+      initial.triggered && duplicateSkipped && dedupedEvents.length === 0
+        ? "duplicate_suppressed"
+        : initial.reason;
+    const scoring =
+      suppressed && initial.scoring.band !== "suppress"
+        ? {
+            ...initial.scoring,
+            band: "suppress" as const,
+            overrideApplied: false,
+          }
+        : initial.scoring;
+    const triggered = dedupedEvents.length > 0 && scoring.band !== "suppress";
+    const shouldWrite = initial.shouldWrite && !suppressed && dedupedEvents.length > 0;
+
+    return {
+      ...initial,
+      triggered,
+      confidence: scoring.probability,
+      reason,
+      suppressed,
+      shouldWrite,
+      events: dedupedEvents,
+      scoring,
+    };
+  }
+
   private async buildTrace(response: {
     content: string;
     rawModelContent: string;
@@ -269,6 +437,17 @@ export class AgentCliRuntime {
     };
   }): Promise<AgentTurnTrace> {
     const symbolTable = await this.collectSymbolTableSnapshot(this.threadId);
+    const auto = this.lastAutoDecision ?? this.emptyAutoDecision();
+    const post = this.activeTelemetry?.find(
+      (event) => event.type === "post_model",
+    );
+    const writeApplied =
+      (this.lastAgentMetadata?.writeTransport === "detector_bridge" &&
+        (post?.type !== "post_model" || post.eventsAccepted > 0)) ||
+      (post?.type === "post_model" &&
+        auto.mode === "active" &&
+        auto.triggered &&
+        post.eventsAccepted > 0);
     return {
       threadId: this.threadId,
       stages: this.activeStages ?? [],
@@ -278,13 +457,32 @@ export class AgentCliRuntime {
       rawModelContent: response.rawModelContent,
       visibleContent: response.content,
       diagnostics: response.diagnostics,
+      autoSymbol: {
+        mode: this.lastAgentMetadata?.autoMode ?? auto.mode,
+        triggered: this.lastAgentMetadata?.autoTriggered ?? auto.triggered,
+        confidence: this.lastAgentMetadata?.autoConfidence ?? auto.confidence,
+        reason: this.lastAgentMetadata?.autoReason ?? auto.reason,
+        eventCount: this.lastAgentMetadata?.autoEventCount ?? auto.events.length,
+        suppressed: this.lastAgentMetadata?.autoSuppressed ?? auto.suppressed,
+        writeApplied,
+        scorerVersion:
+          this.lastAgentMetadata?.autoScorerVersion ?? auto.scoring.scorerVersion,
+        score: this.lastAgentMetadata?.autoScore ?? auto.scoring.probability,
+        scoreBand: this.lastAgentMetadata?.autoScoreBand ?? auto.scoring.band,
+        overrideApplied:
+          this.lastAgentMetadata?.autoOverrideApplied ??
+          auto.scoring.overrideApplied,
+        topFeatures:
+          this.lastAgentMetadata?.autoTopFeatures ??
+          topFeaturesFromDecision(auto),
+      },
       agent: this.lastAgentMetadata,
     };
   }
 
   async processUserMessage(
     userInput: string,
-    options?: { writeIntentMode?: "none" | "strict" },
+    options?: { writeIntentMode?: WriteIntentMode },
   ): Promise<AgentTurnResult> {
     if (this.turnInFlight) {
       throw new Error("turn_in_progress");
@@ -297,18 +495,35 @@ export class AgentCliRuntime {
 
     const thread = this.getOrCreateThread(this.threadId);
     const requestMessages = [...thread.messages, { role: "user" as const, content: text }];
-    const writeIntentMode = options?.writeIntentMode ?? "none";
-    const metadata =
-      writeIntentMode === "strict"
+    const requestedWriteIntentMode = options?.writeIntentMode ?? "none";
+    const autoDecision = await this.buildAutoDecision(text, requestedWriteIntentMode);
+    const writeIntentMode =
+      requestedWriteIntentMode === "strict"
+        ? "strict"
+        : this.autoSymbolMode === "off"
+          ? "none"
+          : "auto";
+    const metadata: Record<string, unknown> | undefined =
+      requestedWriteIntentMode === "strict"
         ? {
             writeIntent: {
               mode: "strict",
             },
           }
-        : undefined;
+        : this.autoSymbolMode !== "off"
+          ? {
+              writeIntent: {
+                mode: "auto",
+              },
+              vcwAutoSymbol: toAutoSymbolMetadataEnvelope(
+                autoDecision ?? this.emptyAutoDecision(),
+              ),
+            }
+          : undefined;
 
     this.activeStages = [];
     this.activeTelemetry = [];
+    this.activeAutoDecision = autoDecision;
     this.activeAgentMetadata = null;
     this.turnInFlight = true;
 
@@ -319,6 +534,7 @@ export class AgentCliRuntime {
         metadata,
       });
       this.lastAgentMetadata = this.activeAgentMetadata;
+      this.lastAutoDecision = this.activeAutoDecision;
 
       thread.messages.push({ role: "user", content: text });
       thread.messages.push({ role: "assistant", content: response.content });
@@ -332,6 +548,7 @@ export class AgentCliRuntime {
     } finally {
       this.activeStages = null;
       this.activeTelemetry = null;
+      this.activeAutoDecision = null;
       this.activeAgentMetadata = null;
       this.turnInFlight = false;
     }
@@ -361,6 +578,17 @@ export class AgentCliRuntime {
         }
         this.traceEnabled = command.action === "on";
         return { output: `trace=${this.traceEnabled ? "on" : "off"}` };
+      case "auto":
+        if (command.action === "status") {
+          return { output: `autoSymbolMode=${this.autoSymbolMode}` };
+        }
+        this.autoSymbolMode =
+          command.action === "on"
+            ? "active"
+            : command.action === "off"
+              ? "off"
+              : "shadow";
+        return { output: `autoSymbolMode=${this.autoSymbolMode}` };
       case "state": {
         const state = this.getState();
         const symbolCount = (await this.store.list(this.threadId)).length;
@@ -368,6 +596,7 @@ export class AgentCliRuntime {
           output: [
             `threadId=${state.threadId}`,
             `trace=${state.traceMode}`,
+            `autoSymbolMode=${state.autoSymbolMode}`,
             `messageCount=${state.messageCount}`,
             `symbolCount=${symbolCount}`,
           ].join("\n"),
@@ -466,6 +695,7 @@ export class AgentCliRuntime {
     return {
       threadId: this.threadId,
       traceMode: this.traceEnabled ? "on" : "off",
+      autoSymbolMode: this.autoSymbolMode,
       messageCount: this.getOrCreateThread(this.threadId).messages.length,
     };
   }

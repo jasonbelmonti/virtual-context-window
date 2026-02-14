@@ -28,6 +28,21 @@ export function parseSlashCommand(input: string): CommandParseResult {
       }
       return { ok: false, error: "usage: /trace on|off|view|raw" };
     }
+    case "auto": {
+      const action = restTokens[0]?.toLowerCase();
+      if (
+        action === "on" ||
+        action === "off" ||
+        action === "shadow" ||
+        action === "status"
+      ) {
+        return {
+          ok: true,
+          command: { type: "auto", action },
+        };
+      }
+      return { ok: false, error: "usage: /auto on|off|shadow|status" };
+    }
     case "state":
       return { ok: true, command: { type: "state" } };
     case "remember": {
@@ -91,6 +106,7 @@ export function formatHelpText(): string {
     "Commands:",
     "  /help                          Show this help",
     "  /trace on|off|view|raw         Toggle trace, print last trace, or raw model output",
+    "  /auto on|off|shadow|status     Configure passive symbol recognition mode",
     "  /state                         Show current CLI state",
     "  /remember <text>               Persist memory via strict trailing control JSON",
     "  /symbols [limit]               List symbols in the current thread",

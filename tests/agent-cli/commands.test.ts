@@ -17,6 +17,11 @@ test("parseSlashCommand parses supported agent commands", () => {
     command: { type: "trace", action: "raw" },
   });
 
+  expect(parseSlashCommand("/auto on")).toEqual({
+    ok: true,
+    command: { type: "auto", action: "on" },
+  });
+
   expect(parseSlashCommand("/remember ship plan")).toEqual({
     ok: true,
     command: { type: "remember", content: "ship plan" },
@@ -78,11 +83,17 @@ test("parseSlashCommand returns useful errors for invalid input", () => {
     ok: false,
     error: "usage: /experiment vcw-only|chat-only",
   });
+
+  expect(parseSlashCommand("/auto nope")).toEqual({
+    ok: false,
+    error: "usage: /auto on|off|shadow|status",
+  });
 });
 
 test("formatHelpText includes command anchors", () => {
   const help = formatHelpText();
   expect(help).toContain("/trace on|off|view|raw");
+  expect(help).toContain("/auto on|off|shadow|status");
   expect(help).toContain("/remember <text>");
   expect(help).toContain("/symbols clear");
   expect(help).toContain("/history clear");

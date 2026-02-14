@@ -80,6 +80,30 @@ function renderDiagnosticsTable(trace: ChatTurnTrace): string {
   return table.toString();
 }
 
+function renderAutoSymbolTable(trace: ChatTurnTrace): string {
+  const table = createKeyValueTable([
+    ["autoMode", trace.autoSymbol.mode],
+    ["triggered", trace.autoSymbol.triggered],
+    ["confidence", trace.autoSymbol.confidence.toFixed(2)],
+    ["reason", trace.autoSymbol.reason],
+    ["eventCount", trace.autoSymbol.eventCount],
+    ["suppressed", trace.autoSymbol.suppressed],
+    ["writeApplied", trace.autoSymbol.writeApplied],
+    ["scorerVersion", trace.autoSymbol.scorerVersion],
+    ["score", trace.autoSymbol.score.toFixed(2)],
+    ["scoreBand", trace.autoSymbol.scoreBand],
+    ["overrideApplied", trace.autoSymbol.overrideApplied],
+    [
+      "topFeatures",
+      trace.autoSymbol.topFeatures.length > 0
+        ? trace.autoSymbol.topFeatures.join(", ")
+        : "(none)",
+    ],
+  ]);
+
+  return table.toString();
+}
+
 function renderTelemetryTables(trace: ChatTurnTrace): string[] {
   const { pre, post } = getTelemetryByType(trace.telemetry);
   const tables: string[] = [];
@@ -155,6 +179,8 @@ export function renderTurnTrace(
   lines.push(renderSummaryTable(trace));
   lines.push(theme.section("Diagnostics"));
   lines.push(renderDiagnosticsTable(trace));
+  lines.push(theme.section("Auto Symbol Recognition"));
+  lines.push(renderAutoSymbolTable(trace));
   lines.push(theme.section("Telemetry"));
 
   if (telemetryTables.length === 0) {

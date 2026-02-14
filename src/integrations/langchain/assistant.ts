@@ -1,5 +1,6 @@
 import { ChatOllama } from "@langchain/ollama";
 import type {
+  UpsertSymbolEvent,
   VirtualContextMessage,
   VirtualContextTurnRequest,
 } from "../../engine/contracts";
@@ -22,6 +23,11 @@ import {
   convertWriteToolArgsToPayload,
   getWriteToolDefinition,
 } from "./write-tool-bridge";
+import {
+  DEFAULT_RECOGNIZER_CONFIG,
+  parseAutoSymbolMetadataEnvelope,
+  type RecognitionScoring,
+} from "../../recognition";
 
 const DEFAULT_OLLAMA_BASE_URL = "http://127.0.0.1:11434";
 const DEFAULT_TEMPERATURE = 0;
@@ -398,13 +404,102 @@ export function resolveWriteIntentFromMetadata(
   if (direct?.mode === "strict") {
     return "strict";
   }
+  if (direct?.mode === "auto") {
+    return "auto";
+  }
 
   const scoped = asObject(metadata.vcwWriteIntent);
   if (scoped?.mode === "strict") {
     return "strict";
   }
+  if (scoped?.mode === "auto") {
+    return "auto";
+  }
 
   return "none";
+}
+
+type ResolvedAutoSymbolMetadata = {
+  mode: "off" | "shadow" | "active";
+  triggered: boolean;
+  confidence: number;
+  reason: string;
+  events: UpsertSymbolEvent[];
+  suppressed: boolean;
+  scoring?: RecognitionScoring;
+  valid: boolean;
+};
+
+function topScoringFeatures(scoring: RecognitionScoring | undefined): string[] {
+  if (!scoring) {
+    return [];
+  }
+
+  return scoring.contributions
+    .filter((item) => item.active && item.contribution !== 0)
+    .sort((a, b) => Math.abs(b.contribution) - Math.abs(a.contribution))
+    .slice(0, 3)
+    .map((item) => `${item.feature}:${item.contribution > 0 ? "+" : ""}${item.contribution.toFixed(2)}`);
+}
+
+function isAutoWriteDecision(auto: ResolvedAutoSymbolMetadata): boolean {
+  if (auto.scoring) {
+    return auto.scoring.band === "write";
+  }
+
+  return auto.confidence >= DEFAULT_RECOGNIZER_CONFIG.activeMinScore;
+}
+
+function resolveAutoSymbolMetadata(
+  request: VirtualContextTurnRequest,
+): ResolvedAutoSymbolMetadata | undefined {
+  const metadata = asObject(request.metadata);
+  const parsed = parseAutoSymbolMetadataEnvelope(metadata);
+  if (!parsed) {
+    return undefined;
+  }
+
+  if (!parsed.valid) {
+      return {
+        mode: parsed.mode,
+        triggered: parsed.triggered,
+        confidence: parsed.confidence,
+        reason: parsed.reason,
+        events: [],
+        suppressed: parsed.suppressed,
+        scoring: parsed.scoring,
+        valid: false,
+      };
+  }
+
+  try {
+    const events = convertWriteToolArgsToPayload({
+      assistant_response: "",
+      symbol_events: parsed.events,
+    }).symbol_events;
+
+    return {
+      mode: parsed.mode,
+      triggered: parsed.triggered,
+      confidence: parsed.confidence,
+      reason: parsed.reason,
+      events,
+      suppressed: parsed.suppressed,
+      scoring: parsed.scoring,
+      valid: true,
+    };
+  } catch {
+    return {
+      mode: parsed.mode,
+      triggered: parsed.triggered,
+      confidence: parsed.confidence,
+      reason: parsed.reason,
+      events: [],
+      suppressed: parsed.suppressed,
+      scoring: parsed.scoring,
+      valid: false,
+    };
+  }
 }
 
 export function createLangChainAssistantGenerate(
@@ -434,6 +529,7 @@ export function createLangChainAssistantGenerate(
 
   return async (input) => {
     const writeIntentMode = writeIntentResolver(input.request);
+    const autoSymbolMetadata = resolveAutoSymbolMetadata(input.request);
     const basePrompt = buildDeterministicPrompt(input);
     const prompt =
       writeIntentMode === "strict"
@@ -473,8 +569,10 @@ export function createLangChainAssistantGenerate(
       const resultObject = asObject(rawResult) ?? {};
 
       const writeToolExtraction = extractWriteToolArgs(rawResult);
-      let outputText: string;
-      let writeTransport: "plain_text" | "function_call_bridge" = "plain_text";
+      let middlewareInputText: string;
+      let controlEvents: UpsertSymbolEvent[] = [];
+      let writeTransport: "plain_text" | "function_call_bridge" | "detector_bridge" =
+        "plain_text";
       let writeIntentSatisfied = true;
 
       if (writeIntentMode === "strict") {
@@ -483,17 +581,48 @@ export function createLangChainAssistantGenerate(
         }
 
         const payload = convertWriteToolArgsToPayload(writeToolExtraction.args);
-        outputText = buildDeterministicControlEnvelope(payload);
+        middlewareInputText = payload.assistant_response;
+        controlEvents = payload.symbol_events;
         writeTransport = "function_call_bridge";
       } else {
-        outputText = coerceModelOutputText(rawResult);
+        middlewareInputText = coerceModelOutputText(rawResult);
+      }
+
+      const expectsAutoWrite =
+        writeIntentMode === "auto" &&
+        autoSymbolMetadata?.valid &&
+        autoSymbolMetadata.mode === "active" &&
+        autoSymbolMetadata.triggered &&
+        !autoSymbolMetadata.suppressed &&
+        autoSymbolMetadata.events.length > 0 &&
+        isAutoWriteDecision(autoSymbolMetadata);
+
+      if (expectsAutoWrite) {
+        controlEvents = autoSymbolMetadata.events;
+        writeTransport = "detector_bridge";
       }
 
       if (writeIntentMode === "strict") {
         writeIntentSatisfied = true;
+      } else if (writeIntentMode === "auto") {
+        if (!autoSymbolMetadata) {
+          writeIntentSatisfied = true;
+        } else if (!autoSymbolMetadata.valid) {
+          writeIntentSatisfied = false;
+        } else if (
+          autoSymbolMetadata.mode === "active" &&
+          autoSymbolMetadata.triggered &&
+          !autoSymbolMetadata.suppressed
+        ) {
+          writeIntentSatisfied = expectsAutoWrite
+            ? controlEvents.length > 0
+            : true;
+        } else {
+          writeIntentSatisfied = true;
+        }
       }
 
-      const metadata: LangChainAssistantResultMetadata = {
+      const provisionalMetadata: LangChainAssistantResultMetadata = {
         provider: "langchain_ollama",
         model,
         baseUrl,
@@ -503,6 +632,17 @@ export function createLangChainAssistantGenerate(
         writeTransport,
         toolCallDetected: writeToolExtraction.toolCallDetected,
         writeToolSchemaVersion,
+        autoMode: autoSymbolMetadata?.mode,
+        autoTriggered: autoSymbolMetadata?.triggered,
+        autoConfidence: autoSymbolMetadata?.confidence,
+        autoReason: autoSymbolMetadata?.reason,
+        autoEventCount: autoSymbolMetadata?.events.length ?? 0,
+        autoSuppressed: autoSymbolMetadata?.suppressed,
+        autoScore: autoSymbolMetadata?.scoring?.probability,
+        autoScoreBand: autoSymbolMetadata?.scoring?.band,
+        autoScorerVersion: autoSymbolMetadata?.scoring?.scorerVersion,
+        autoOverrideApplied: autoSymbolMetadata?.scoring?.overrideApplied,
+        autoTopFeatures: topScoringFeatures(autoSymbolMetadata?.scoring),
         responseMetadata:
           asObject(resultObject.responseMetadata) ??
           asObject(resultObject.response_metadata),
@@ -511,8 +651,25 @@ export function createLangChainAssistantGenerate(
           asObject(resultObject.usage_metadata),
       };
 
+      const processedVisibleText = await runAfterMiddleware(
+        middleware,
+        context,
+        middlewareInputText,
+        provisionalMetadata,
+      );
+      const outputText =
+        controlEvents.length > 0
+          ? buildDeterministicControlEnvelope({
+              assistant_response: processedVisibleText,
+              symbol_events: controlEvents,
+            })
+          : processedVisibleText;
+
+      const metadata: LangChainAssistantResultMetadata = {
+        ...provisionalMetadata,
+      };
       await notifyResultMetadata(options.onResultMetadata, metadata);
-      return runAfterMiddleware(middleware, context, outputText, metadata);
+      return outputText;
     } catch (error) {
       const durationMs = now() - startedAtMs;
       await runErrorMiddleware(middleware, context, error, durationMs);

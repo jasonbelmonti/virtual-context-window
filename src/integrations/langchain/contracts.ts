@@ -2,8 +2,11 @@ import type { VirtualContextTurnRequest } from "../../engine/contracts";
 import type { UpsertSymbolEvent } from "../../engine/contracts";
 import type { AssistantGenerateInput } from "../../engine/hooks";
 
-export type WriteIntentMode = "none" | "strict";
-export type WriteTransport = "plain_text" | "function_call_bridge";
+export type WriteIntentMode = "none" | "strict" | "auto";
+export type WriteTransport =
+  | "plain_text"
+  | "function_call_bridge"
+  | "detector_bridge";
 export type WriteToolSchemaVersion = "v1";
 
 export type WriteIntentContext = {
@@ -39,6 +42,17 @@ export type LangChainAssistantResultMetadata = {
   writeTransport: WriteTransport;
   toolCallDetected: boolean;
   writeToolSchemaVersion: WriteToolSchemaVersion;
+  autoMode?: "off" | "shadow" | "active";
+  autoTriggered?: boolean;
+  autoConfidence?: number;
+  autoReason?: string;
+  autoEventCount?: number;
+  autoSuppressed?: boolean;
+  autoScore?: number;
+  autoScoreBand?: "suppress" | "shadow" | "write";
+  autoScorerVersion?: "heuristic_v2";
+  autoOverrideApplied?: boolean;
+  autoTopFeatures?: string[];
   responseMetadata?: Record<string, unknown>;
   usageMetadata?: Record<string, unknown>;
 };

@@ -19,8 +19,9 @@ test("processUserMessage captures parse/apply/scrub telemetry and mutates symbol
   expect(turn.content).toContain("Visible reply with leak");
   expect(turn.content).not.toContain("<symbolic_control>");
   expect(turn.content).not.toContain("⟦S:");
-  expect(turn.trace.writeIntent.mode).toBe("none");
+  expect(turn.trace.writeIntent.mode).toBe("auto");
   expect(turn.trace.writeIntent.transport).toBe("plain_text");
+  expect(turn.trace.autoSymbol.mode).toBe("shadow");
   expect(turn.trace.symbolTable.length).toBe(1);
   expect(turn.trace.symbolTable[0]?.symbolId).toBe("sym_cli");
   expect(turn.trace.symbolTable[0]?.content).toBe("cli content");
