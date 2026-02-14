@@ -9,7 +9,7 @@ This directory contains the implementation handoff package for a clean-slate Vir
 4. `DECISION_LOG.md`
 5. `RISK_REGISTER.md`
 6. `OPERATIONS_SLO.md`
-7. `PHASE_RUNBOOK_0.md` -> `PHASE_RUNBOOK_6.md`
+7. `PHASE_RUNBOOK_0.md` -> `PHASE_RUNBOOK_9.md`
 
 ## Execution model
 - Treat these files as decision-complete implementation authority.

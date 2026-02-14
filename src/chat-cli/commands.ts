@@ -53,6 +53,24 @@ export function parseSlashCommand(input: string): CommandParseResult {
       };
     }
 
+    case "stream": {
+      const action = restTokens[0]?.toLowerCase();
+      if (action === "on" || action === "off" || action === "status") {
+        return {
+          ok: true,
+          command: {
+            type: "stream",
+            action,
+          },
+        };
+      }
+
+      return {
+        ok: false,
+        error: "usage: /stream on|off|status",
+      };
+    }
+
     case "auto": {
       const action = restTokens[0]?.toLowerCase();
       if (
@@ -227,6 +245,7 @@ export function formatHelpText(): string {
     "Commands:",
     "  /help                Show this help",
     "  /trace on|off|view|raw   Toggle trace, print last trace, or print last raw model output",
+    "  /stream on|off|status  Toggle streaming output in this session",
     "  /auto on|off|shadow|status  Configure passive symbol recognition mode",
     "  /experiment vcw-only|chat-only  Quick context-mode reset helpers",
     "  /history clear       Clear conversation history for current thread only",

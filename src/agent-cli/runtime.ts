@@ -18,6 +18,11 @@ import {
 } from "../integrations/langchain";
 import type { WriteIntentMode } from "../integrations/langchain";
 import {
+  createOpenAIEmbeddingProvider,
+  createOpenAIResponsesAgentAssistantGenerate,
+  type OpenAIResponsesAgentResultMetadata,
+} from "../integrations/openai";
+import {
   normalizeForComparison,
   parseAutoSymbolMetadataEnvelope,
   parseAutoSymbolMode,
@@ -43,6 +48,11 @@ const DEFAULT_SYMBOL_LIST_LIMIT = 20;
 const DEFAULT_AUTO_ACTIVE_MIN_SCORE = 0.84;
 const DEFAULT_AUTO_SHADOW_MIN_SCORE = 0.5;
 const DEFAULT_AUTO_MAX_EVENTS_PER_TURN = 1;
+
+type AgentProvider = "ollama" | "openai_responses";
+type AgentAssistantMetadata =
+  | LangChainAgentMetadata
+  | OpenAIResponsesAgentResultMetadata;
 
 function topFeaturesFromDecision(decision: RecognitionDecision | null): string[] {
   if (!decision) {
@@ -122,6 +132,7 @@ function classifyRuntimeError(error: unknown): string {
     const message = error.message.toLowerCase();
     if (
       message.includes("ollama") ||
+      message.includes("openai") ||
       message.includes("econn") ||
       message.includes("fetch") ||
       message.includes("provider")
@@ -140,8 +151,28 @@ function classifyRuntimeError(error: unknown): string {
   return "runtime_failure";
 }
 
+function parseProvider(
+  value: string | undefined,
+  fallback: AgentProvider,
+): AgentProvider {
+  if (!value) {
+    return fallback;
+  }
+
+  const normalized = value.toLowerCase();
+  if (normalized === "openai" || normalized === "openai_responses") {
+    return "openai_responses";
+  }
+  if (normalized === "ollama") {
+    return "ollama";
+  }
+  return fallback;
+}
+
 export type AgentCliRuntimeOptions = {
   mock?: boolean;
+  provider?: AgentProvider;
+  streamEnabled?: boolean;
   traceEnabled?: boolean;
   threadId?: string;
   env?: Record<string, string | undefined>;
@@ -203,6 +234,8 @@ export class AgentCliRuntime {
   private readonly sessions = new Map<string, AgentThreadState>();
   private store = new InMemorySymbolStore();
   private engine: VirtualContextEngine;
+  private readonly provider: AgentProvider;
+  private streamEnabled: boolean;
   private traceEnabled: boolean;
   private autoSymbolMode: AutoSymbolMode;
   private historyTurnLimit: number | null;
@@ -211,15 +244,20 @@ export class AgentCliRuntime {
   private activeStages: EngineStage[] | null = null;
   private activeTelemetry: TelemetryEvent[] | null = null;
   private activeAutoDecision: RecognitionDecision | null = null;
-  private activeAgentMetadata: LangChainAgentMetadata | null = null;
+  private activeAgentMetadata: AgentAssistantMetadata | null = null;
   private lastAutoDecision: RecognitionDecision | null = null;
-  private lastAgentMetadata: LangChainAgentMetadata | null = null;
+  private lastAgentMetadata: AgentAssistantMetadata | null = null;
   private lastTrace: AgentTurnTrace | null = null;
   private turnInFlight = false;
 
   constructor(options: AgentCliRuntimeOptions = {}) {
     this.options = options;
     const env = options.env ?? process.env;
+    this.provider = parseProvider(
+      options.provider ?? env.VCW_ASSISTANT_PROVIDER,
+      "ollama",
+    );
+    this.streamEnabled = options.streamEnabled ?? true;
     this.traceEnabled = options.traceEnabled ?? false;
     this.autoSymbolMode = parseAutoSymbolMode(env.VCW_AUTO_SYMBOL_MODE, "active");
     this.historyTurnLimit = parseOptionalPositiveInt(env.VCW_HISTORY_MAX_TURNS);
@@ -237,11 +275,23 @@ export class AgentCliRuntime {
     this.threadId = options.threadId ?? makeThreadId();
 
     if (!options.mock && !options.assistantGenerate) {
-      if (!env.VCW_OLLAMA_MODEL) {
-        throw new Error("missing_env:VCW_OLLAMA_MODEL");
-      }
-      if (!env.VCW_OLLAMA_EMBED_MODEL) {
-        throw new Error("missing_env:VCW_OLLAMA_EMBED_MODEL");
+      if (this.provider === "openai_responses") {
+        if (!env.OPENAI_API_KEY) {
+          throw new Error("missing_env:OPENAI_API_KEY");
+        }
+        if (!env.VCW_OPENAI_MODEL) {
+          throw new Error("missing_env:VCW_OPENAI_MODEL");
+        }
+        if (!env.VCW_OPENAI_EMBED_MODEL) {
+          throw new Error("missing_env:VCW_OPENAI_EMBED_MODEL");
+        }
+      } else {
+        if (!env.VCW_OLLAMA_MODEL) {
+          throw new Error("missing_env:VCW_OLLAMA_MODEL");
+        }
+        if (!env.VCW_OLLAMA_EMBED_MODEL) {
+          throw new Error("missing_env:VCW_OLLAMA_EMBED_MODEL");
+        }
       }
     }
 
@@ -258,6 +308,28 @@ export class AgentCliRuntime {
     }
 
     const env = this.options.env ?? process.env;
+    if (this.provider === "openai_responses") {
+      return createOpenAIResponsesAgentAssistantGenerate({
+        store: this.store,
+        env,
+        buildToolContext: (input) => ({
+          store: this.store,
+          threadId: input.threadId,
+          request: input.request,
+          trustedSymbolRefsEnabled: input.trustedSymbolRefsEnabled,
+          retrievalStrategy: "hybrid_v2",
+          webSearch: {
+            enabled: env.VCW_WEB_SEARCH_ENABLED !== "false",
+            endpoint: env.VCW_WEB_SEARCH_ENDPOINT,
+            source: "wikipedia_opensearch",
+          },
+        }),
+        onResultMetadata: (metadata) => {
+          this.activeAgentMetadata = metadata;
+        },
+      });
+    }
+
     return createLangChainAgentAssistantGenerate({
       store: this.store,
       env,
@@ -281,21 +353,30 @@ export class AgentCliRuntime {
 
   private createEngine(): VirtualContextEngine {
     const env = this.options.env ?? process.env;
-    const embedModel = env.VCW_OLLAMA_EMBED_MODEL;
+    const embedModel =
+      this.provider === "openai_responses"
+        ? env.VCW_OPENAI_EMBED_MODEL
+        : env.VCW_OLLAMA_EMBED_MODEL;
     const embedCacheEntries = parsePositiveInt(
       env.VCW_EMBED_CACHE_MAX_ENTRIES,
       2_000,
     );
+    const embeddingProvider = this.options.mock
+      ? undefined
+      : this.provider === "openai_responses"
+        ? createOpenAIEmbeddingProvider({
+            env,
+            defaultModel: embedModel,
+          })
+        : createOllamaEmbeddingProvider({
+            env,
+            defaultModel: embedModel,
+          });
 
     const hooks = createRetrievalHooks({
       store: this.store,
       strategy: "hybrid_v2",
-      embeddingProvider: this.options.mock
-        ? undefined
-        : createOllamaEmbeddingProvider({
-            env,
-            defaultModel: embedModel,
-          }),
+      embeddingProvider,
       embeddingModel: embedModel,
       failOnEmbeddingError: false,
       embeddingCacheMaxEntries: embedCacheEntries,
@@ -463,6 +544,7 @@ export class AgentCliRuntime {
     };
   }): Promise<AgentTurnTrace> {
     const symbolTable = await this.collectSymbolTableSnapshot(this.threadId);
+    const env = this.options.env ?? process.env;
     const auto = this.lastAutoDecision ?? this.emptyAutoDecision();
     const post = this.activeTelemetry?.find(
       (event) => event.type === "post_model",
@@ -502,13 +584,55 @@ export class AgentCliRuntime {
           this.lastAgentMetadata?.autoTopFeatures ??
           topFeaturesFromDecision(auto),
       },
-      agent: this.lastAgentMetadata,
+      agent: this.lastAgentMetadata
+        ? {
+            provider: this.lastAgentMetadata.provider,
+            model: this.lastAgentMetadata.model,
+            baseUrl: this.lastAgentMetadata.baseUrl,
+            durationMs: this.lastAgentMetadata.durationMs,
+            streamEnabled: this.lastAgentMetadata.streamEnabled ?? this.streamEnabled,
+            streamChunkCount: this.lastAgentMetadata.streamChunkCount ?? 0,
+            streamedTextChars: this.lastAgentMetadata.streamedTextChars ?? 0,
+            streamBuffered: this.lastAgentMetadata.streamBuffered ?? false,
+            streamProvider: this.lastAgentMetadata.streamProvider ?? "none",
+            agentModelCallCount: this.lastAgentMetadata.agentModelCallCount,
+            agentToolCallCount: this.lastAgentMetadata.agentToolCallCount,
+            agentToolNames: this.lastAgentMetadata.agentToolNames,
+            agentLoopDurationMs: this.lastAgentMetadata.agentLoopDurationMs,
+          }
+        : {
+            provider:
+              this.provider === "openai_responses"
+                ? "openai_responses"
+                : "langchain_create_agent_ollama",
+            model:
+              this.provider === "openai_responses"
+                ? env.VCW_OPENAI_MODEL ?? "(unknown)"
+                : env.VCW_OLLAMA_MODEL ?? "(unknown)",
+            baseUrl:
+              this.provider === "openai_responses"
+                ? env.VCW_OPENAI_BASE_URL ?? "https://api.openai.com/v1"
+                : env.VCW_OLLAMA_BASE_URL ?? "http://127.0.0.1:11434",
+            durationMs: 0,
+            streamEnabled: this.streamEnabled,
+            streamChunkCount: 0,
+            streamedTextChars: 0,
+            streamBuffered: false,
+            streamProvider: "none",
+            agentModelCallCount: 0,
+            agentToolCallCount: 0,
+            agentToolNames: [],
+            agentLoopDurationMs: 0,
+          },
     };
   }
 
   async processUserMessage(
     userInput: string,
-    options?: { writeIntentMode?: WriteIntentMode },
+    options?: {
+      writeIntentMode?: WriteIntentMode;
+      onAssistantDelta?: (delta: string) => void | Promise<void>;
+    },
   ): Promise<AgentTurnResult> {
     if (this.turnInFlight) {
       throw new Error("turn_in_progress");
@@ -555,11 +679,40 @@ export class AgentCliRuntime {
     this.turnInFlight = true;
 
     try {
-      const response = await this.engine.processTurn({
+      const request = {
         threadId: this.threadId,
         messages: requestMessages,
         metadata,
-      });
+      };
+      let response:
+        | {
+            content: string;
+            rawModelContent: string;
+            contextPackText: string;
+            diagnostics: {
+              generationCallCount: number;
+              preModelMs: number;
+              postModelMs: number;
+              retrievalStrategy: "lexical_v1" | "hybrid_v2";
+              retrievalDegraded: boolean;
+            };
+          }
+        | undefined;
+      if (this.streamEnabled) {
+        for await (const event of this.engine.processTurnStream(request)) {
+          if (event.type === "assistant_text_delta" && options?.onAssistantDelta) {
+            await options.onAssistantDelta(event.delta);
+          }
+          if (event.type === "turn_completed") {
+            response = event.response;
+          }
+        }
+      } else {
+        response = await this.engine.processTurn(request);
+      }
+      if (!response) {
+        throw new Error("turn_stream_missing_completion");
+      }
       this.lastAgentMetadata = this.activeAgentMetadata;
       this.lastAutoDecision = this.activeAutoDecision;
 
@@ -605,6 +758,16 @@ export class AgentCliRuntime {
         }
         this.traceEnabled = command.action === "on";
         return { output: `trace=${this.traceEnabled ? "on" : "off"}` };
+      case "stream":
+        if (command.action === "status") {
+          return {
+            output: `stream=${this.streamEnabled ? "on" : "off"}`,
+          };
+        }
+        this.streamEnabled = command.action === "on";
+        return {
+          output: `stream=${this.streamEnabled ? "on" : "off"}`,
+        };
       case "auto":
         if (command.action === "status") {
           return { output: `autoSymbolMode=${this.autoSymbolMode}` };
@@ -623,6 +786,8 @@ export class AgentCliRuntime {
           output: [
             `threadId=${state.threadId}`,
             `trace=${state.traceMode}`,
+            `provider=${state.provider}`,
+            `stream=${state.streamEnabled ? "on" : "off"}`,
             `autoSymbolMode=${state.autoSymbolMode}`,
             `historyTurnLimit=${state.historyTurnLimit ?? "off"}`,
             `messageCount=${state.messageCount}`,
@@ -739,6 +904,8 @@ export class AgentCliRuntime {
     return {
       threadId: this.threadId,
       traceMode: this.traceEnabled ? "on" : "off",
+      provider: this.provider,
+      streamEnabled: this.streamEnabled,
       autoSymbolMode: this.autoSymbolMode,
       historyTurnLimit: this.historyTurnLimit,
       messageCount: this.getOrCreateThread(this.threadId).messages.length,
@@ -747,6 +914,10 @@ export class AgentCliRuntime {
 
   getTraceEnabled(): boolean {
     return this.traceEnabled;
+  }
+
+  getStreamEnabled(): boolean {
+    return this.streamEnabled;
   }
 
   getLastTrace(): AgentTurnTrace | null {

@@ -27,8 +27,31 @@ export type VirtualContextTurnResponse = {
   };
 };
 
+export type EngineStage =
+  | "ResolveIdentity"
+  | "BuildTurnQuery"
+  | "InjectContextPack"
+  | "EmitPreTelemetry"
+  | "InvokeAssistant"
+  | "ParseControl"
+  | "ApplySymbolEvents"
+  | "SanitizeOutput"
+  | "EmitPostTelemetry"
+  | "ReturnResponse";
+
+export type VirtualContextTurnStreamEvent =
+  | { type: "turn_started"; threadId: string }
+  | { type: "stage"; threadId: string; stage: EngineStage }
+  | { type: "assistant_text_delta"; threadId: string; delta: string }
+  | { type: "telemetry"; threadId: string; event: TelemetryEvent }
+  | { type: "turn_completed"; threadId: string; response: VirtualContextTurnResponse }
+  | { type: "turn_error"; threadId: string; error: { name: string; message: string } };
+
 export interface VirtualContextEngine {
   processTurn(request: VirtualContextTurnRequest): Promise<VirtualContextTurnResponse>;
+  processTurnStream(
+    request: VirtualContextTurnRequest,
+  ): AsyncIterable<VirtualContextTurnStreamEvent>;
 }
 ```
 

@@ -10,6 +10,8 @@ export type ParsedAgentCliArgs = {
   once?: string;
   trace: boolean;
   mock: boolean;
+  provider?: "ollama" | "openai_responses";
+  stream: boolean;
   threadId?: string;
   help: boolean;
 };
@@ -22,6 +24,7 @@ export function parseAgentCliArgs(argv: string[]): ParsedAgentCliArgs {
   const parsed: ParsedAgentCliArgs = {
     trace: false,
     mock: false,
+    stream: true,
     help: false,
   };
 
@@ -44,6 +47,27 @@ export function parseAgentCliArgs(argv: string[]): ParsedAgentCliArgs {
       continue;
     }
 
+    if (token === "--provider") {
+      const value = (argv[index + 1] ?? "").toLowerCase();
+      if (value === "ollama") {
+        parsed.provider = "ollama";
+      } else if (value === "openai" || value === "openai_responses") {
+        parsed.provider = "openai_responses";
+      }
+      index += 1;
+      continue;
+    }
+
+    if (token === "--stream") {
+      parsed.stream = true;
+      continue;
+    }
+
+    if (token === "--no-stream") {
+      parsed.stream = false;
+      continue;
+    }
+
     if (token === "--thread") {
       parsed.threadId = argv[index + 1] ?? "";
       index += 1;
@@ -62,8 +86,8 @@ export function parseAgentCliArgs(argv: string[]): ParsedAgentCliArgs {
 export function formatAgentCliUsage(): string {
   return [
     "Usage:",
-    "  bun run agent:interactive [--mock] [--trace] [--thread <id>]",
-    "  bun run agent:interactive --once \"hello\" [--mock] [--trace]",
+    "  bun run agent:interactive [--mock] [--provider ollama|openai] [--stream|--no-stream] [--trace] [--thread <id>]",
+    "  bun run agent:interactive --once \"hello\" [--mock] [--provider ollama|openai] [--stream|--no-stream] [--trace]",
   ].join("\n");
 }
 
@@ -86,6 +110,8 @@ export async function runInteractiveAgentCli(
   try {
     runtime = new AgentCliRuntime({
       mock: options.mock,
+      provider: options.provider,
+      streamEnabled: options.stream,
       traceEnabled: options.trace,
       threadId: options.threadId,
       env: options.env,
@@ -101,8 +127,25 @@ export async function runInteractiveAgentCli(
 
   if (typeof options.once === "string") {
     try {
-      const turn = await runtime.processUserMessage(options.once);
-      writeLine(print, theme.assistant(turn.content));
+      let streamedText = "";
+      const streamToStdout = options.print === undefined;
+      const turn = await runtime.processUserMessage(options.once, {
+        onAssistantDelta: runtime.getStreamEnabled()
+          ? (delta: string) => {
+              streamedText += delta;
+              if (streamToStdout) {
+                process.stdout.write(theme.assistant(delta));
+              }
+            }
+          : undefined,
+      });
+      if (!runtime.getStreamEnabled() || streamedText.length === 0) {
+        writeLine(print, theme.assistant(turn.content));
+      } else if (!streamToStdout) {
+        writeLine(print, theme.assistant(streamedText));
+      } else {
+        process.stdout.write("\n");
+      }
       if (runtime.getTraceEnabled()) {
         writeLine(print, renderTurnTrace(turn.trace, { color: colorEnabled }));
       }
@@ -121,7 +164,7 @@ export async function runInteractiveAgentCli(
   writeLine(
     print,
     theme.subtitle(
-      "Type /help for commands. Use /remember <text> to test policy-routed memory writes.",
+      "Type /help for commands. Use /stream on|off to toggle streaming and /remember <text> for strict writes.",
     ),
   );
 
@@ -191,8 +234,25 @@ export async function runInteractiveAgentCli(
       }
 
       try {
-        const result = await runtime.processUserMessage(trimmed);
-        writeLine(print, theme.assistant(result.content));
+        let streamedText = "";
+        const streamToStdout = options.print === undefined;
+        const result = await runtime.processUserMessage(trimmed, {
+          onAssistantDelta: runtime.getStreamEnabled()
+            ? (delta: string) => {
+                streamedText += delta;
+                if (streamToStdout) {
+                  process.stdout.write(theme.assistant(delta));
+                }
+              }
+            : undefined,
+        });
+        if (!runtime.getStreamEnabled() || streamedText.length === 0) {
+          writeLine(print, theme.assistant(result.content));
+        } else if (!streamToStdout) {
+          writeLine(print, theme.assistant(streamedText));
+        } else {
+          process.stdout.write("\n");
+        }
         if (runtime.getTraceEnabled()) {
           writeLine(print, renderTurnTrace(result.trace, { color: colorEnabled }));
         }

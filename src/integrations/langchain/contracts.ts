@@ -8,6 +8,15 @@ export type WriteTransport =
   | "function_call_bridge"
   | "detector_bridge";
 export type WriteToolSchemaVersion = "v1";
+export type AssistantProvider =
+  | "langchain_ollama"
+  | "langchain_create_agent_ollama"
+  | "openai_responses";
+export type AssistantStreamProvider =
+  | "none"
+  | "langchain_stream"
+  | "sse"
+  | "buffered";
 
 export type WriteIntentContext = {
   mode: WriteIntentMode;
@@ -33,10 +42,15 @@ export type VcwLangChainBeforeContext = VcwLangChainMiddlewareContext & {
 };
 
 export type LangChainAssistantResultMetadata = {
-  provider: "langchain_ollama";
+  provider: AssistantProvider;
   model: string;
   baseUrl: string;
   durationMs: number;
+  streamEnabled?: boolean;
+  streamChunkCount?: number;
+  streamedTextChars?: number;
+  streamBuffered?: boolean;
+  streamProvider?: AssistantStreamProvider;
   writeIntentMode: WriteIntentMode;
   writeIntentSatisfied: boolean;
   writeTransport: WriteTransport;
@@ -87,6 +101,7 @@ export type LangChainInvokeResult = {
 
 export interface LangChainChatInvoker {
   invoke(prompt: string): Promise<LangChainInvokeResult | unknown>;
+  stream?(prompt: string): AsyncIterable<unknown>;
   invokeWithWriteTool?(
     prompt: string,
     options: { schemaVersion: WriteToolSchemaVersion },

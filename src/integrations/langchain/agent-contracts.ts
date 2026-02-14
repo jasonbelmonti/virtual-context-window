@@ -6,6 +6,12 @@ import type {
 import type { AssistantGenerateInput, AssistantGenerateFn } from "../../engine/hooks";
 import type { VcwLangChainMiddleware } from "./contracts";
 import type { LangChainAssistantOptions } from "./contracts";
+import type {
+  AssistantStreamProvider,
+  WriteIntentMode,
+  WriteToolSchemaVersion,
+  WriteTransport,
+} from "./contracts";
 
 export type AgentToolListResult = {
   symbols: Array<{
@@ -89,17 +95,24 @@ export type CreateLangChainAgentRuntimeInput = {
 };
 
 export type LangChainAgentMetadata = {
-  provider: "langchain_create_agent_ollama";
+  provider: "langchain_create_agent_ollama" | "openai_responses";
   model: string;
   baseUrl: string;
   durationMs: number;
+  streamEnabled?: boolean;
+  streamChunkCount?: number;
+  streamedTextChars?: number;
+  streamBuffered?: boolean;
+  streamProvider?: AssistantStreamProvider;
   agentModelCallCount: number;
   agentToolCallCount: number;
   agentToolNames: string[];
   agentLoopDurationMs: number;
-  writeIntentMode?: "none" | "strict" | "auto";
-  writeTransport?: "plain_text" | "function_call_bridge" | "detector_bridge";
-  writeIntentSatisfied?: boolean;
+  writeIntentMode: WriteIntentMode;
+  writeTransport: WriteTransport;
+  writeIntentSatisfied: boolean;
+  toolCallDetected: boolean;
+  writeToolSchemaVersion: WriteToolSchemaVersion;
   autoMode?: "off" | "shadow" | "active";
   autoTriggered?: boolean;
   autoConfidence?: number;

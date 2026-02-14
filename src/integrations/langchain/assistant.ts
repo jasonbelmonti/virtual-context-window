@@ -7,6 +7,7 @@ import type {
 import type {
   AssistantGenerateFn,
   AssistantGenerateInput,
+  AssistantGenerateStreamEvent,
 } from "../../engine/hooks";
 import type {
   LangChainAssistantOptions,
@@ -257,6 +258,12 @@ function createDefaultInvoker(config: {
     temperature: config.temperature,
     streaming: false,
   });
+  const streamModel = new ChatOllama({
+    model: config.model,
+    baseUrl: config.baseUrl,
+    temperature: config.temperature,
+    streaming: true,
+  });
 
   const strictModelBySchema = new Map<WriteToolSchemaVersion, unknown>();
 
@@ -297,6 +304,12 @@ function createDefaultInvoker(config: {
 
   return {
     invoke: async (prompt: string) => model.invoke(prompt),
+    stream: async function* (prompt: string) {
+      const stream = await streamModel.stream(prompt);
+      for await (const chunk of stream) {
+        yield chunk;
+      }
+    },
     invokeWithWriteTool: async (
       prompt: string,
       options: { schemaVersion: WriteToolSchemaVersion },
@@ -308,6 +321,20 @@ function createDefaultInvoker(config: {
       return strictModel.invoke(prompt);
     },
   };
+}
+
+function extractStreamChunkText(chunk: unknown): string {
+  if (typeof chunk === "string") {
+    return chunk;
+  }
+  const objectChunk = asObject(chunk);
+  if (!objectChunk) {
+    return "";
+  }
+  if (objectChunk.content !== undefined) {
+    return extractContentText(objectChunk.content);
+  }
+  return extractContentText(objectChunk);
 }
 
 async function runBeforeMiddleware(
@@ -527,7 +554,10 @@ export function createLangChainAssistantGenerate(
     temperature,
   });
 
-  return async (input) => {
+  const runTurn = async (
+    input: AssistantGenerateInput,
+    streamSink?: (delta: string) => void | Promise<void>,
+  ): Promise<string> => {
     const writeIntentMode = writeIntentResolver(input.request);
     const autoSymbolMetadata = resolveAutoSymbolMetadata(input.request);
     const basePrompt = buildDeterministicPrompt(input);
@@ -549,21 +579,49 @@ export function createLangChainAssistantGenerate(
 
     await runBeforeMiddleware(middleware, context);
 
-    try {
-      const rawResult =
-        writeIntentMode === "strict"
-          ? await (async () => {
-              if (!invoker.invokeWithWriteTool) {
-                throw new Error(
-                  "write_intent_protocol_violation:invoker_missing_write_tool_capability",
-                );
-              }
+    let streamChunkCount = 0;
+    let streamedTextChars = 0;
+    let streamProvider: "none" | "langchain_stream" | "buffered" = "none";
+    let streamBuffered = false;
 
-              return invoker.invokeWithWriteTool(prompt, {
-                schemaVersion: writeToolSchemaVersion,
-              });
-            })()
-          : await invoker.invoke(prompt);
+    try {
+      let rawResult: unknown;
+      if (writeIntentMode === "strict") {
+        if (!invoker.invokeWithWriteTool) {
+          throw new Error(
+            "write_intent_protocol_violation:invoker_missing_write_tool_capability",
+          );
+        }
+        if (streamSink) {
+          streamBuffered = true;
+          streamProvider = "buffered";
+        }
+        rawResult = await invoker.invokeWithWriteTool(prompt, {
+          schemaVersion: writeToolSchemaVersion,
+        });
+      } else if (streamSink && invoker.stream) {
+        streamProvider = "langchain_stream";
+        let streamedText = "";
+        for await (const chunk of invoker.stream(prompt)) {
+          const delta = extractStreamChunkText(chunk);
+          if (delta.length === 0) {
+            continue;
+          }
+          streamedText += delta;
+          streamChunkCount += 1;
+          streamedTextChars += delta.length;
+          await streamSink(delta);
+        }
+        rawResult = {
+          content: streamedText,
+        };
+      } else {
+        if (streamSink) {
+          streamBuffered = true;
+          streamProvider = "buffered";
+        }
+        rawResult = await invoker.invoke(prompt);
+      }
 
       const durationMs = now() - startedAtMs;
       const resultObject = asObject(rawResult) ?? {};
@@ -627,6 +685,11 @@ export function createLangChainAssistantGenerate(
         model,
         baseUrl,
         durationMs,
+        streamEnabled: streamSink !== undefined,
+        streamChunkCount,
+        streamedTextChars,
+        streamBuffered,
+        streamProvider,
         writeIntentMode,
         writeIntentSatisfied,
         writeTransport,
@@ -676,4 +739,68 @@ export function createLangChainAssistantGenerate(
       throw error;
     }
   };
+
+  const generate = (async (input: AssistantGenerateInput) => {
+    return runTurn(input);
+  }) as AssistantGenerateFn;
+
+  generate.stream = async function* (input: AssistantGenerateInput) {
+    const queue: AssistantGenerateStreamEvent[] = [];
+    let waitingResolver: (() => void) | null = null;
+    let runComplete = false;
+    let runError: unknown;
+    const flushWaitingResolver = () => {
+      const resolver = waitingResolver;
+      waitingResolver = null;
+      if (resolver) {
+        resolver();
+      }
+    };
+
+    const enqueue = (event: AssistantGenerateStreamEvent) => {
+      queue.push(event);
+      flushWaitingResolver();
+    };
+
+    const runPromise = (async () => {
+      try {
+        const outputText = await runTurn(input, async (delta) => {
+          enqueue({
+            type: "text_delta",
+            delta,
+          });
+        });
+        enqueue({
+          type: "final_text",
+          text: outputText,
+        });
+      } catch (error) {
+        runError = error;
+      } finally {
+        runComplete = true;
+        flushWaitingResolver();
+      }
+    })();
+
+    while (!runComplete || queue.length > 0) {
+      if (queue.length === 0) {
+        await new Promise<void>((resolve) => {
+          waitingResolver = resolve;
+        });
+        continue;
+      }
+
+      const event = queue.shift();
+      if (event) {
+        yield event;
+      }
+    }
+
+    await runPromise;
+    if (runError) {
+      throw runError;
+    }
+  };
+
+  return generate;
 }

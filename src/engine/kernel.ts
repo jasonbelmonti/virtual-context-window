@@ -1,10 +1,12 @@
 import type {
+  EngineStage,
   RetrievalStrategy,
   TelemetryEvent,
   TelemetrySink,
   VirtualContextEngine,
   VirtualContextTurnRequest,
   VirtualContextTurnResponse,
+  VirtualContextTurnStreamEvent,
 } from "./contracts";
 import {
   GenerationCallInvariantError,
@@ -18,6 +20,7 @@ import {
   defaultOutputSanitizer,
   defaultQueryBuilder,
   defaultSymbolEventApplier,
+  type AssistantGenerateStreamEvent,
   type AssistantGenerateFn,
   type AssistantInvokerHook,
   type ContextPackInjectorHook,
@@ -29,17 +32,7 @@ import {
 } from "./hooks";
 import { strictOutputSanitizer } from "./output-sanitizer";
 
-export type EngineStage =
-  | "ResolveIdentity"
-  | "BuildTurnQuery"
-  | "InjectContextPack"
-  | "EmitPreTelemetry"
-  | "InvokeAssistant"
-  | "ParseControl"
-  | "ApplySymbolEvents"
-  | "SanitizeOutput"
-  | "EmitPostTelemetry"
-  | "ReturnResponse";
+export type { EngineStage } from "./contracts";
 
 export type EngineKernelOptions = {
   assistantGenerate: AssistantGenerateFn;
@@ -61,11 +54,23 @@ export type EngineKernelOptions = {
 const defaultNow = () => Date.now();
 const defaultClock = () => performance.now();
 
+type StreamEventEmitter = (
+  event: VirtualContextTurnStreamEvent,
+) => void | Promise<void>;
+
 async function emitTelemetry(
   sink: TelemetrySink | undefined,
   event: TelemetryEvent,
+  emitStreamEvent?: StreamEventEmitter,
 ): Promise<void> {
   if (!sink) {
+    if (emitStreamEvent) {
+      await emitStreamEvent({
+        type: "telemetry",
+        threadId: event.threadId,
+        event,
+      });
+    }
     return;
   }
 
@@ -73,6 +78,14 @@ async function emitTelemetry(
     await sink.emit(event);
   } catch {
     // Telemetry must never fail turn processing.
+  }
+
+  if (emitStreamEvent) {
+    await emitStreamEvent({
+      type: "telemetry",
+      threadId: event.threadId,
+      event,
+    });
   }
 }
 
@@ -102,6 +115,46 @@ function fallbackParsedControl(assistantText: string) {
   };
 }
 
+function toStreamError(error: unknown): { name: string; message: string } {
+  if (error instanceof Error) {
+    return {
+      name: error.name,
+      message: error.message,
+    };
+  }
+
+  return {
+    name: "Error",
+    message: String(error),
+  };
+}
+
+function appendStreamMethod(
+  guardedGenerate: (
+    input: Parameters<AssistantGenerateFn>[0],
+  ) => Promise<string>,
+  options: EngineKernelOptions,
+  generationCallCountRef: { value: number },
+): AssistantGenerateFn {
+  const callable = guardedGenerate as AssistantGenerateFn;
+  if (!options.assistantGenerate.stream) {
+    return callable;
+  }
+
+  callable.stream = async function* (input) {
+    if (generationCallCountRef.value >= 1) {
+      throw new SecondGenerationCallError();
+    }
+
+    generationCallCountRef.value += 1;
+    for await (const event of options.assistantGenerate.stream!(input)) {
+      yield event;
+    }
+  };
+
+  return callable;
+}
+
 export function createVirtualContextEngine(
   options: EngineKernelOptions,
 ): VirtualContextEngine {
@@ -120,44 +173,65 @@ export function createVirtualContextEngine(
   const assistantInvoker =
     options.hooks?.assistantInvoker ?? defaultAssistantInvoker;
 
-  const markStage = (stage: EngineStage) => {
+  const markStage = async (
+    stage: EngineStage,
+    threadId: string,
+    emitStreamEvent?: StreamEventEmitter,
+  ) => {
     options.onStage?.(stage);
+    if (emitStreamEvent) {
+      await emitStreamEvent({
+        type: "stage",
+        threadId,
+        stage,
+      });
+    }
   };
 
-  return {
-    async processTurn(
-      request: VirtualContextTurnRequest,
-    ): Promise<VirtualContextTurnResponse> {
-      let generationCallCount = 0;
-      const preModelStart = clock();
-
-      markStage("ResolveIdentity");
-      const threadId = resolveThreadIdentity(request);
-      const trustedSymbolRefsEnabled = resolveTrustedSymbolRefs(request);
-
-      markStage("BuildTurnQuery");
-      const query = await queryBuilder({
-        messages: request.messages,
-        trustedSymbolRefsEnabled,
-      });
-
-      markStage("InjectContextPack");
-      const contextPack = await contextPackInjector({
+  const executeTurn = async (
+    request: VirtualContextTurnRequest,
+    executeOptions?: {
+      streamEvents?: StreamEventEmitter;
+      useAssistantStream?: boolean;
+    },
+  ): Promise<{ threadId: string; response: VirtualContextTurnResponse }> => {
+    const generationCallCountRef = { value: 0 };
+    const preModelStart = clock();
+    const threadId = resolveThreadIdentity(request);
+    if (executeOptions?.streamEvents) {
+      await executeOptions.streamEvents({
+        type: "turn_started",
         threadId,
-        request,
-        query,
-        trustedSymbolRefsEnabled,
       });
-      const retrievalStrategy =
-        contextPack.diagnostics.retrievalStrategy ??
-        configuredRetrievalStrategy ??
-        "lexical_v1";
-      const retrievalDegraded = contextPack.diagnostics.retrievalDegraded ?? false;
+    }
+    await markStage("ResolveIdentity", threadId, executeOptions?.streamEvents);
+    const trustedSymbolRefsEnabled = resolveTrustedSymbolRefs(request);
 
-      const preModelMs = clock() - preModelStart;
+    await markStage("BuildTurnQuery", threadId, executeOptions?.streamEvents);
+    const query = await queryBuilder({
+      messages: request.messages,
+      trustedSymbolRefsEnabled,
+    });
 
-      markStage("EmitPreTelemetry");
-      await emitTelemetry(options.telemetry, {
+    await markStage("InjectContextPack", threadId, executeOptions?.streamEvents);
+    const contextPack = await contextPackInjector({
+      threadId,
+      request,
+      query,
+      trustedSymbolRefsEnabled,
+    });
+    const retrievalStrategy =
+      contextPack.diagnostics.retrievalStrategy ??
+      configuredRetrievalStrategy ??
+      "lexical_v1";
+    const retrievalDegraded = contextPack.diagnostics.retrievalDegraded ?? false;
+
+    const preModelMs = clock() - preModelStart;
+
+    await markStage("EmitPreTelemetry", threadId, executeOptions?.streamEvents);
+    await emitTelemetry(
+      options.telemetry,
+      {
         type: "pre_model",
         threadId,
         timestamp: now(),
@@ -175,92 +249,137 @@ export function createVirtualContextEngine(
         recallInjectedCount: contextPack.diagnostics.recallInjectedCount,
         trustedSymbolRefsEnabled,
         trustedRefIdsUsed: contextPack.diagnostics.trustedRefIdsUsed,
-      });
+      },
+      executeOptions?.streamEvents,
+    );
 
-      const guardedGenerate: AssistantGenerateFn = async (input) => {
-        if (generationCallCount >= 1) {
+    const guardedGenerate = appendStreamMethod(
+      async (input) => {
+        if (generationCallCountRef.value >= 1) {
           throw new SecondGenerationCallError();
         }
 
-        generationCallCount += 1;
+        generationCallCountRef.value += 1;
         return options.assistantGenerate(input);
-      };
+      },
+      options,
+      generationCallCountRef,
+    );
 
-      markStage("InvokeAssistant");
-      let rawModelContent = "";
-      let invokeError: unknown;
+    await markStage("InvokeAssistant", threadId, executeOptions?.streamEvents);
+    let rawModelContent = "";
+    let invokeError: unknown;
+    let emittedAssistantDeltaCount = 0;
+    let shouldEmitSanitizedFallbackDelta = false;
 
-      try {
-        rawModelContent = await assistantInvoker({
-          request,
-          threadId,
-          trustedSymbolRefsEnabled,
-          query,
-          contextPackText: contextPack.contextPackText,
-          generate: guardedGenerate,
-        });
-      } catch (error) {
-        invokeError = error;
-      }
-
-      const postModelStart = clock();
-
-      let parsedControl = defaultControlParser(rawModelContent);
-      if (!invokeError) {
-        markStage("ParseControl");
-        try {
-          parsedControl = await controlParser(rawModelContent);
-        } catch {
-          parsedControl = fallbackParsedControl(rawModelContent);
-        }
-      }
-
-      let symbolEventApply: SymbolEventApplyOutput = {
-        eventsAccepted: 0,
-        eventsRejected: 0,
-        writeFailures: 0,
-      };
-      if (!invokeError) {
-        markStage("ApplySymbolEvents");
-        try {
-          symbolEventApply = await symbolEventApplier({
+    const onStreamEvent = executeOptions?.streamEvents
+      ? async (event: AssistantGenerateStreamEvent) => {
+          if (event.type !== "text_delta") {
+            return;
+          }
+          emittedAssistantDeltaCount += 1;
+          await executeOptions.streamEvents!({
+            type: "assistant_text_delta",
             threadId,
-            request,
-            trustedSymbolRefsEnabled,
-            events: parsedControl.events,
+            delta: event.delta,
           });
-        } catch {
-          symbolEventApply = {
-            eventsAccepted: 0,
-            eventsRejected: parsedControl.events.length,
-            writeFailures: parsedControl.events.length,
-          };
         }
-      }
+      : undefined;
 
-      let sanitized = defaultOutputSanitizer({
-        cleanText: parsedControl.cleanText,
+    try {
+      rawModelContent = await assistantInvoker({
+        request,
+        threadId,
         trustedSymbolRefsEnabled,
+        query,
+        contextPackText: contextPack.contextPackText,
+        generate: guardedGenerate,
+        useStream: executeOptions?.useAssistantStream,
+        onStreamEvent,
       });
-      if (!invokeError) {
-        markStage("SanitizeOutput");
-        try {
-          sanitized = await outputSanitizer({
-            cleanText: parsedControl.cleanText,
-            trustedSymbolRefsEnabled,
-          });
-        } catch {
-          sanitized = await strictOutputSanitizer({
-            cleanText: parsedControl.cleanText,
-            trustedSymbolRefsEnabled,
-          });
-        }
+    } catch (error) {
+      invokeError = error;
+    }
+
+    shouldEmitSanitizedFallbackDelta =
+      !invokeError &&
+      executeOptions?.useAssistantStream === true &&
+      executeOptions.streamEvents !== undefined &&
+      emittedAssistantDeltaCount === 0 &&
+      rawModelContent.length > 0;
+
+    const postModelStart = clock();
+
+    let parsedControl = defaultControlParser(rawModelContent);
+    if (!invokeError) {
+      await markStage("ParseControl", threadId, executeOptions?.streamEvents);
+      try {
+        parsedControl = await controlParser(rawModelContent);
+      } catch {
+        parsedControl = fallbackParsedControl(rawModelContent);
       }
+    }
 
-      const postModelMs = clock() - postModelStart;
+    let symbolEventApply: SymbolEventApplyOutput = {
+      eventsAccepted: 0,
+      eventsRejected: 0,
+      writeFailures: 0,
+    };
+    if (!invokeError) {
+      await markStage("ApplySymbolEvents", threadId, executeOptions?.streamEvents);
+      try {
+        symbolEventApply = await symbolEventApplier({
+          threadId,
+          request,
+          trustedSymbolRefsEnabled,
+          events: parsedControl.events,
+        });
+      } catch {
+        symbolEventApply = {
+          eventsAccepted: 0,
+          eventsRejected: parsedControl.events.length,
+          writeFailures: parsedControl.events.length,
+        };
+      }
+    }
 
-      markStage("EmitPostTelemetry");
-      await emitTelemetry(options.telemetry, {
+    let sanitized = defaultOutputSanitizer({
+      cleanText: parsedControl.cleanText,
+      trustedSymbolRefsEnabled,
+    });
+    if (!invokeError) {
+      await markStage("SanitizeOutput", threadId, executeOptions?.streamEvents);
+      try {
+        sanitized = await outputSanitizer({
+          cleanText: parsedControl.cleanText,
+          trustedSymbolRefsEnabled,
+        });
+      } catch {
+        sanitized = await strictOutputSanitizer({
+          cleanText: parsedControl.cleanText,
+          trustedSymbolRefsEnabled,
+        });
+      }
+    }
+
+    if (
+      shouldEmitSanitizedFallbackDelta &&
+      executeOptions?.streamEvents &&
+      sanitized.content.length > 0
+    ) {
+      await executeOptions.streamEvents({
+        type: "assistant_text_delta",
+        threadId,
+        delta: sanitized.content,
+      });
+    }
+
+    const postModelMs = clock() - postModelStart;
+
+    await markStage("EmitPostTelemetry", threadId, executeOptions?.streamEvents);
+    await emitTelemetry(
+      options.telemetry,
+      {
         type: "post_model",
         threadId,
         timestamp: now(),
@@ -277,29 +396,109 @@ export function createVirtualContextEngine(
         writeFailures: symbolEventApply.writeFailures,
         scrubbedControlLeakCount: sanitized.scrubbedControlLeakCount,
         scrubbedSymbolEchoCount: sanitized.scrubbedSymbolEchoCount,
-      });
+      },
+      executeOptions?.streamEvents,
+    );
 
-      if (invokeError) {
-        throw invokeError;
-      }
+    if (invokeError) {
+      throw invokeError;
+    }
 
-      if (generationCallCount !== 1) {
-        throw new GenerationCallInvariantError(generationCallCount);
-      }
+    if (generationCallCountRef.value !== 1) {
+      throw new GenerationCallInvariantError(generationCallCountRef.value);
+    }
 
-      markStage("ReturnResponse");
-      return {
-        content: sanitized.content,
-        rawModelContent,
-        contextPackText: contextPack.contextPackText,
-        diagnostics: {
-          generationCallCount,
-          preModelMs,
-          postModelMs,
-          retrievalStrategy,
-          retrievalDegraded,
-        },
+    await markStage("ReturnResponse", threadId, executeOptions?.streamEvents);
+    const response: VirtualContextTurnResponse = {
+      content: sanitized.content,
+      rawModelContent,
+      contextPackText: contextPack.contextPackText,
+      diagnostics: {
+        generationCallCount: generationCallCountRef.value,
+        preModelMs,
+        postModelMs,
+        retrievalStrategy,
+        retrievalDegraded,
+      },
+    };
+    return {
+      threadId,
+      response,
+    };
+  };
+
+  return {
+    async processTurn(
+      request: VirtualContextTurnRequest,
+    ): Promise<VirtualContextTurnResponse> {
+      const result = await executeTurn(request);
+      return result.response;
+    },
+    async *processTurnStream(
+      request: VirtualContextTurnRequest,
+    ): AsyncIterable<VirtualContextTurnStreamEvent> {
+      const queue: VirtualContextTurnStreamEvent[] = [];
+      let waitingResolver: (() => void) | null = null;
+      let runComplete = false;
+      let runError: unknown;
+      let resolvedThreadId = "unknown";
+      const flushWaitingResolver = () => {
+        const resolver = waitingResolver;
+        waitingResolver = null;
+        if (resolver) {
+          resolver();
+        }
       };
+
+      const enqueue = async (event: VirtualContextTurnStreamEvent) => {
+        resolvedThreadId = event.threadId;
+        queue.push(event);
+        flushWaitingResolver();
+      };
+
+      const runPromise = (async () => {
+        try {
+          const result = await executeTurn(request, {
+            streamEvents: enqueue,
+            useAssistantStream: true,
+          });
+          resolvedThreadId = result.threadId;
+          await enqueue({
+            type: "turn_completed",
+            threadId: result.threadId,
+            response: result.response,
+          });
+        } catch (error) {
+          await enqueue({
+            type: "turn_error",
+            threadId: resolvedThreadId,
+            error: toStreamError(error),
+          });
+          runError = error;
+        } finally {
+          runComplete = true;
+          flushWaitingResolver();
+        }
+      })();
+
+      while (!runComplete || queue.length > 0) {
+        if (queue.length === 0) {
+          await new Promise<void>((resolve) => {
+            waitingResolver = resolve;
+          });
+          continue;
+        }
+
+        const event = queue.shift();
+        if (event) {
+          yield event;
+        }
+      }
+
+      await runPromise;
+      if (runError) {
+        throw runError;
+      }
     },
   };
 }

@@ -13,6 +13,8 @@ export type AgentCliLaunchOptions = {
   once?: string;
   trace?: boolean;
   mock?: boolean;
+  provider?: "ollama" | "openai_responses";
+  stream?: boolean;
   threadId?: string;
   env?: Record<string, string | undefined>;
   assistantGenerate?: AssistantGenerateFn;
@@ -30,6 +32,11 @@ export type AgentAssistantTraceMetadata = {
   model: string;
   baseUrl: string;
   durationMs: number;
+  streamEnabled: boolean;
+  streamChunkCount: number;
+  streamedTextChars: number;
+  streamBuffered: boolean;
+  streamProvider: string;
   agentModelCallCount: number;
   agentToolCallCount: number;
   agentToolNames: string[];
@@ -76,6 +83,8 @@ export type AgentTurnResult = {
 export type AgentCliStateView = {
   threadId: string;
   traceMode: TraceMode;
+  provider: "ollama" | "openai_responses";
+  streamEnabled: boolean;
   autoSymbolMode: AutoSymbolMode;
   historyTurnLimit: number | null;
   messageCount: number;
@@ -84,6 +93,7 @@ export type AgentCliStateView = {
 export type AgentCliCommand =
   | { type: "help" }
   | { type: "trace"; action: "on" | "off" | "view" | "raw" }
+  | { type: "stream"; action: "on" | "off" | "status" }
   | { type: "auto"; action: "on" | "off" | "shadow" | "status" }
   | { type: "state" }
   | { type: "remember"; content: string }

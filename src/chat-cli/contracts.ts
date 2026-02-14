@@ -18,6 +18,8 @@ export type ChatCliLaunchOptions = {
   once?: string;
   trace?: boolean;
   mock?: boolean;
+  provider?: "ollama" | "openai_responses";
+  stream?: boolean;
   threadId?: string;
   trustedSymbolRefs?: boolean;
   env?: Record<string, string | undefined>;
@@ -45,6 +47,16 @@ export type ChatTurnTrace = {
     satisfied: boolean;
     toolCallDetected: boolean;
     schemaVersion: WriteToolSchemaVersion;
+  };
+  assistant: {
+    provider: string;
+    model: string;
+    baseUrl: string;
+    streamEnabled: boolean;
+    streamChunkCount: number;
+    streamedTextChars: number;
+    streamBuffered: boolean;
+    streamProvider: string;
   };
   autoSymbol: {
     mode: AutoSymbolMode;
@@ -78,6 +90,8 @@ export type ChatCliStateView = {
   threadId: string;
   traceMode: TraceMode;
   trustedSymbolRefs: boolean;
+  provider: "ollama" | "openai_responses";
+  streamEnabled: boolean;
   autoSymbolMode: AutoSymbolMode;
   messageCount: number;
 };
@@ -85,6 +99,7 @@ export type ChatCliStateView = {
 export type ChatCliCommand =
   | { type: "help" }
   | { type: "trace"; action: "on" | "off" | "view" | "raw" }
+  | { type: "stream"; action: "on" | "off" | "status" }
   | { type: "auto"; action: "on" | "off" | "shadow" | "status" }
   | { type: "experiment"; mode: "vcw-only" | "chat-only" }
   | { type: "history"; action: "clear" }
