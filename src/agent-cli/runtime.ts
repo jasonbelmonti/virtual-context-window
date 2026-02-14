@@ -106,6 +106,17 @@ function parsePositiveFloat(value: string | undefined, fallback: number): number
   return parsed;
 }
 
+function parseOptionalPositiveInt(value: string | undefined): number | null {
+  if (!value) {
+    return null;
+  }
+  const parsed = Number.parseInt(value, 10);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    return null;
+  }
+  return parsed;
+}
+
 function classifyRuntimeError(error: unknown): string {
   if (error instanceof Error) {
     const message = error.message.toLowerCase();
@@ -194,6 +205,7 @@ export class AgentCliRuntime {
   private engine: VirtualContextEngine;
   private traceEnabled: boolean;
   private autoSymbolMode: AutoSymbolMode;
+  private historyTurnLimit: number | null;
   private readonly recognizerConfig: RecognizerConfig;
   private threadId: string;
   private activeStages: EngineStage[] | null = null;
@@ -210,6 +222,7 @@ export class AgentCliRuntime {
     const env = options.env ?? process.env;
     this.traceEnabled = options.traceEnabled ?? false;
     this.autoSymbolMode = parseAutoSymbolMode(env.VCW_AUTO_SYMBOL_MODE, "active");
+    this.historyTurnLimit = parseOptionalPositiveInt(env.VCW_HISTORY_MAX_TURNS);
     this.recognizerConfig = {
       activeMinScore: parsePositiveFloat(
         env.VCW_AUTO_SYMBOL_ACTIVE_MIN_SCORE,
@@ -321,6 +334,19 @@ export class AgentCliRuntime {
     };
     this.sessions.set(threadId, created);
     return created;
+  }
+
+  private getWindowedHistory(messages: VirtualContextMessage[]): VirtualContextMessage[] {
+    if (!this.historyTurnLimit) {
+      return messages;
+    }
+
+    const maxMessages = this.historyTurnLimit * 2;
+    if (messages.length <= maxMessages) {
+      return messages;
+    }
+
+    return messages.slice(-maxMessages);
   }
 
   private async collectSymbolTableSnapshot(threadId: string): Promise<SymbolRecord[]> {
@@ -494,7 +520,8 @@ export class AgentCliRuntime {
     }
 
     const thread = this.getOrCreateThread(this.threadId);
-    const requestMessages = [...thread.messages, { role: "user" as const, content: text }];
+    const historyForRequest = this.getWindowedHistory(thread.messages);
+    const requestMessages = [...historyForRequest, { role: "user" as const, content: text }];
     const requestedWriteIntentMode = options?.writeIntentMode ?? "none";
     const autoDecision = await this.buildAutoDecision(text, requestedWriteIntentMode);
     const writeIntentMode =
@@ -597,6 +624,7 @@ export class AgentCliRuntime {
             `threadId=${state.threadId}`,
             `trace=${state.traceMode}`,
             `autoSymbolMode=${state.autoSymbolMode}`,
+            `historyTurnLimit=${state.historyTurnLimit ?? "off"}`,
             `messageCount=${state.messageCount}`,
             `symbolCount=${symbolCount}`,
           ].join("\n"),
@@ -612,12 +640,28 @@ export class AgentCliRuntime {
         };
       }
       case "history": {
+        if (command.action === "status") {
+          return {
+            output: `historyTurnLimit=${this.historyTurnLimit ?? "off"}`,
+          };
+        }
+        if (command.action === "off") {
+          this.historyTurnLimit = null;
+          return {
+            output: "historyTurnLimit=off",
+          };
+        }
         const thread = this.getOrCreateThread(this.threadId);
         thread.messages = [];
         return {
           output: "Cleared conversation history for current thread. Symbol table preserved.",
         };
       }
+      case "history_limit":
+        this.historyTurnLimit = command.turns;
+        return {
+          output: `historyTurnLimit=${this.historyTurnLimit}`,
+        };
       case "experiment":
         if (command.mode === "vcw-only") {
           const thread = this.getOrCreateThread(this.threadId);
@@ -696,6 +740,7 @@ export class AgentCliRuntime {
       threadId: this.threadId,
       traceMode: this.traceEnabled ? "on" : "off",
       autoSymbolMode: this.autoSymbolMode,
+      historyTurnLimit: this.historyTurnLimit,
       messageCount: this.getOrCreateThread(this.threadId).messages.length,
     };
   }
