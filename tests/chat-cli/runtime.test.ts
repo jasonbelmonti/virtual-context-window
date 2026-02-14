@@ -114,3 +114,25 @@ test("remember command uses strict write intent and mutates symbol state in mock
   const symbols = await runtime.executeCommand({ type: "symbols" });
   expect(symbols.output).toContain("Buy milk and eggs");
 });
+
+test("history clear wipes conversation but preserves symbol table", async () => {
+  const runtime = new ChatCliRuntime({
+    mock: true,
+  });
+
+  await runtime.executeCommand({
+    type: "remember",
+    content: "Plan Omega is important",
+  });
+  expect(runtime.getState().messageCount).toBeGreaterThan(0);
+
+  const history = await runtime.executeCommand({
+    type: "history",
+    action: "clear",
+  });
+  expect(history.output).toContain("conversation history");
+  expect(runtime.getState().messageCount).toBe(0);
+
+  const symbols = await runtime.executeCommand({ type: "symbols" });
+  expect(symbols.output).toContain("Plan Omega is important");
+});

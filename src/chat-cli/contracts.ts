@@ -69,6 +69,7 @@ export type ChatCliStateView = {
 export type ChatCliCommand =
   | { type: "help" }
   | { type: "trace"; action: "on" | "off" | "view" | "raw" }
+  | { type: "history"; action: "clear" }
   | { type: "remember"; content: string }
   | { type: "state" }
   | { type: "symbols"; limit?: number }

@@ -56,6 +56,18 @@ export function parseSlashCommand(input: string): CommandParseResult {
     case "state":
       return { ok: true, command: { type: "state" } };
 
+    case "history": {
+      const action = restTokens[0]?.toLowerCase();
+      if (action === "clear") {
+        return { ok: true, command: { type: "history", action: "clear" } };
+      }
+
+      return {
+        ok: false,
+        error: "usage: /history clear",
+      };
+    }
+
     case "remember": {
       const content = restTokens.join(" ").trim();
       if (!content) {
@@ -170,6 +182,7 @@ export function formatHelpText(): string {
     "Commands:",
     "  /help                Show this help",
     "  /trace on|off|view|raw   Toggle trace, print last trace, or print last raw model output",
+    "  /history clear       Clear conversation history for current thread only",
     "  /remember <text>     Strict write-intent memory turn",
     "  /state               Show current CLI state",
     "  /symbols [limit]     List symbols in the current thread",

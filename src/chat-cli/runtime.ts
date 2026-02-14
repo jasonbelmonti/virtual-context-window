@@ -407,6 +407,14 @@ export class ChatCliRuntime {
         };
       }
 
+      case "history": {
+        const thread = this.getOrCreateThread(this.threadId);
+        thread.messages = [];
+        return {
+          output: "Cleared conversation history for current thread. Symbol table preserved.",
+        };
+      }
+
       case "symbols": {
         const list = await this.store.list(this.threadId);
         if (list.length === 0) {

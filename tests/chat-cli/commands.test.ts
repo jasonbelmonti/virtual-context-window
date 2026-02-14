@@ -36,6 +36,11 @@ test("parseSlashCommand parses supported commands", () => {
     ok: true,
     command: { type: "remember", content: "this is important" },
   });
+
+  expect(parseSlashCommand("/history clear")).toEqual({
+    ok: true,
+    command: { type: "history", action: "clear" },
+  });
 });
 
 test("parseSlashCommand returns useful errors for invalid input", () => {
@@ -62,11 +67,18 @@ test("parseSlashCommand returns useful errors for invalid input", () => {
     ok: false,
     error: "usage: /remember <text>",
   });
+
+  const invalidHistory = parseSlashCommand("/history nope");
+  expect(invalidHistory).toEqual({
+    ok: false,
+    error: "usage: /history clear",
+  });
 });
 
 test("formatHelpText includes all command anchors", () => {
   const help = formatHelpText();
   expect(help).toContain("/trace on|off|view|raw");
+  expect(help).toContain("/history clear");
   expect(help).toContain("/remember <text>");
   expect(help).toContain("/symbols [limit]");
   expect(help).toContain("/quit");
