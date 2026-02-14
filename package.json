@@ -10,6 +10,8 @@
     "test:context-pack": "bun test tests/engine/context-pack.test.ts",
     "test:parser": "bun test tests/engine/parser.test.ts",
     "test:write-path": "bun test tests/engine/write-path.test.ts",
+    "test:chat-cli": "bun test tests/chat-cli tests/langchain",
+    "chat:interactive": "bun run scripts/chat.ts",
     "validate:quick": "bun run scripts/validate-quick.ts",
     "validate:quick:live": "bun run scripts/validate-quick-live.ts",
     "validate:stability": "bun run scripts/validate-stability.ts",
@@ -22,5 +24,9 @@
   },
   "peerDependencies": {
     "typescript": "^5"
+  },
+  "dependencies": {
+    "@langchain/ollama": "^1.2.2",
+    "langchain": "^1.2.24"
   }
 }

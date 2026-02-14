@@ -130,3 +130,13 @@ Phase 5 certification uses a locked execution protocol to reduce variance while 
 4. Two production-signal runs are executed back-to-back under identical provider settings.
 5. Baseline-v2 and stability checks are evaluated against the same certification pair.
 6. This section defines execution protocol only; it does not alter drift/threshold comparator policy.
+
+## 11) Chat CLI Observability Mode (Non-Gating)
+Phase 6 introduces an interactive chat CLI intended for operator visibility and debugging:
+1. Default output mode is concise assistant text.
+2. `/trace on` enables human-readable internals:
+   - deterministic stage timeline
+   - pre/post telemetry summaries
+   - parse/apply/scrub outcome counters
+3. CLI trace output is diagnostic-only and does not alter release-gate policy.
+4. `--mock` mode is permitted for local smoke checks when live provider access is unavailable.

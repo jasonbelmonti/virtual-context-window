@@ -124,6 +124,15 @@
   - Strict live provider requirement for all live commands: rejected due local/dev friction.
   - Unlimited drift tolerance: rejected due weak regression protection.
 
+## ADR-015: Phase 6 Uses Single-Invoke LangChain Adapter with Deferred createAgent Loop Adoption
+- Date: 2026-02-14
+- Status: Accepted
+- Decision: Integrate LangChain through the engine `assistantGenerate` seam using a single non-streaming model invoke per turn; add a typed createAgent middleware bridge contract but defer full createAgent runtime loop adoption to a subsequent phase.
+- Rationale: Preserves the one-call invariant while enabling immediate interactive chat capability and future-compatible middleware integration.
+- Rejected alternatives:
+  - Full createAgent loop adoption in Phase 6: rejected due higher invariant regression risk and broader scope.
+  - Non-LangChain direct-only adapter: rejected because stack baseline already locks LangChain compatibility.
+
 ## Phase 0 Sign-off
 - Date: 2026-02-13
 - Status: PASS
@@ -234,6 +243,31 @@
 - Freeze commit SHA reference:
   - `71815b8` (Phase 5 certification workflow, risk snapshot, release checklist, and sign-off closure).
 - Handoff note: MVP stabilization and operations readiness are complete; post-MVP roadmap planning may proceed.
+
+## Phase 6 Sign-off
+- Date: 2026-02-14
+- Status: PASS
+- Checklist summary:
+  - Added LangChain integration module (`src/integrations/langchain/`) with one-call-safe assistant adapter (`createLangChainAssistantGenerate`) and deterministic middleware ordering (`before` forward, `after` reverse, `onError` reverse).
+  - Added typed createAgent compatibility bridge (`buildVcwCreateAgentMiddlewareSpec`, `toLangChainAgentMiddleware`) without adopting agent-loop runtime semantics in this phase.
+  - Added interactive chat CLI module (`src/chat-cli/`) with slash commands, trace renderer, non-interactive `--once`, and local `--mock` mode.
+  - Added CLI entry script and package commands:
+    - `chat:interactive`
+    - `test:chat-cli`
+  - Added deterministic tests under `tests/langchain/` and `tests/chat-cli/`.
+  - Phase 6 command gate executed:
+    - `bun test`
+    - `bun run test:chat-cli`
+    - `bun run chat:interactive --mock --once "hello"`
+    - `VCW_OLLAMA_MODEL=gpt-oss:20b VCW_OLLAMA_BASE_URL=http://192.168.4.43:11434 bun run chat:interactive --once "hello live" --trace`
+    - `bun x tsc --noEmit`
+    - `rg -n "createLangChainAssistantGenerate|VcwLangChainMiddleware|runInteractiveChatCli" src`
+- Ambiguities resolved during Phase 6:
+  - Locked single-invoke LangChain execution for invariant safety.
+  - Deferred full createAgent runtime loop adoption to Phase 7+.
+- Freeze commit SHA reference:
+  - `PENDING_COMMIT_SHA` (to be updated at commit time for Phase 6 freeze point).
+- Handoff note: Phase 7 may layer full createAgent runtime composition, streaming, and persistence on the Phase 6 adapter + CLI foundation.
 
 ## Template for New ADRs
 ```md
