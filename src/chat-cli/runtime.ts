@@ -293,6 +293,25 @@ export class ChatCliRuntime {
     return records;
   }
 
+  private getActiveContextModeBadge(
+    messageCount: number,
+    symbolCount: number,
+  ): string {
+    if (messageCount > 0 && symbolCount > 0) {
+      return "[VCW+CHAT] combined";
+    }
+
+    if (messageCount === 0 && symbolCount > 0) {
+      return "[VCW] vcw-only";
+    }
+
+    if (messageCount > 0 && symbolCount === 0) {
+      return "[CHAT] chat-only";
+    }
+
+    return "[EMPTY] cold-start";
+  }
+
   async processUserMessage(
     userInput: string,
     options?: { writeIntentMode?: WriteIntentMode },
@@ -397,21 +416,62 @@ export class ChatCliRuntime {
 
       case "state": {
         const state = this.getState();
+        const symbolCount = (await this.store.list(this.threadId)).length;
+        const activeMode = this.getActiveContextModeBadge(
+          state.messageCount,
+          symbolCount,
+        );
         return {
           output: [
             `threadId=${state.threadId}`,
             `trace=${state.traceMode}`,
             `trustedSymbolRefs=${state.trustedSymbolRefs}`,
             `messageCount=${state.messageCount}`,
+            `symbolCount=${symbolCount}`,
+            `activeMode=${activeMode}`,
           ].join("\n"),
         };
       }
+
+      case "experiment":
+        if (command.mode === "vcw-only") {
+          const thread = this.getOrCreateThread(this.threadId);
+          thread.messages = [];
+          return {
+            output:
+              "Experiment mode set: VCW-only. Conversation history cleared; symbol table preserved.",
+          };
+        }
+
+        if (command.mode === "chat-only") {
+          const removedCount = await this.store.clearThread(this.threadId);
+          return {
+            output:
+              removedCount > 0
+                ? `Experiment mode set: chat-only. Cleared ${removedCount} symbol(s); conversation history preserved.`
+                : "Experiment mode set: chat-only. No symbols found; conversation history preserved.",
+          };
+        }
+
+        return {
+          output: "unknown_experiment_mode",
+        };
 
       case "history": {
         const thread = this.getOrCreateThread(this.threadId);
         thread.messages = [];
         return {
           output: "Cleared conversation history for current thread. Symbol table preserved.",
+        };
+      }
+
+      case "symbols_clear": {
+        const removedCount = await this.store.clearThread(this.threadId);
+        return {
+          output:
+            removedCount > 0
+              ? `Cleared ${removedCount} symbol(s) for current thread. Conversation history preserved.`
+              : "No symbols to clear for current thread.",
         };
       }
 

@@ -136,3 +136,97 @@ test("history clear wipes conversation but preserves symbol table", async () => 
   const symbols = await runtime.executeCommand({ type: "symbols" });
   expect(symbols.output).toContain("Plan Omega is important");
 });
+
+test("symbols clear wipes symbol table but preserves conversation history", async () => {
+  const runtime = new ChatCliRuntime({
+    mock: true,
+  });
+
+  await runtime.executeCommand({
+    type: "remember",
+    content: "Keep launch checklist",
+  });
+  const messageCountBefore = runtime.getState().messageCount;
+  expect(messageCountBefore).toBeGreaterThan(0);
+
+  const cleared = await runtime.executeCommand({
+    type: "symbols_clear",
+  });
+  expect(cleared.output).toContain("Conversation history preserved");
+
+  const symbolsAfter = await runtime.executeCommand({ type: "symbols" });
+  expect(symbolsAfter.output).toContain("No symbols in current thread.");
+  expect(runtime.getState().messageCount).toBe(messageCountBefore);
+});
+
+test("experiment vcw-only clears history and keeps symbols", async () => {
+  const runtime = new ChatCliRuntime({
+    mock: true,
+  });
+
+  await runtime.executeCommand({
+    type: "remember",
+    content: "Plan Orion is active",
+  });
+  expect(runtime.getState().messageCount).toBeGreaterThan(0);
+
+  const result = await runtime.executeCommand({
+    type: "experiment",
+    mode: "vcw-only",
+  });
+  expect(result.output).toContain("VCW-only");
+  expect(runtime.getState().messageCount).toBe(0);
+
+  const symbols = await runtime.executeCommand({ type: "symbols" });
+  expect(symbols.output).toContain("Plan Orion is active");
+});
+
+test("experiment chat-only clears symbols and keeps history", async () => {
+  const runtime = new ChatCliRuntime({
+    mock: true,
+  });
+
+  await runtime.executeCommand({
+    type: "remember",
+    content: "Plan Delta is approved",
+  });
+  const messageCountBefore = runtime.getState().messageCount;
+  expect(messageCountBefore).toBeGreaterThan(0);
+
+  const result = await runtime.executeCommand({
+    type: "experiment",
+    mode: "chat-only",
+  });
+  expect(result.output).toContain("chat-only");
+
+  const symbols = await runtime.executeCommand({ type: "symbols" });
+  expect(symbols.output).toContain("No symbols in current thread.");
+  expect(runtime.getState().messageCount).toBe(messageCountBefore);
+});
+
+test("state output includes active mode badge", async () => {
+  const runtime = new ChatCliRuntime({
+    mock: true,
+  });
+
+  const emptyState = await runtime.executeCommand({ type: "state" });
+  expect(emptyState.output).toContain("activeMode=[EMPTY] cold-start");
+
+  await runtime.processUserMessage("hello chat only");
+  const chatOnlyState = await runtime.executeCommand({ type: "state" });
+  expect(chatOnlyState.output).toContain("activeMode=[CHAT] chat-only");
+
+  await runtime.executeCommand({
+    type: "remember",
+    content: "Project Vega has a launch date",
+  });
+  const combinedState = await runtime.executeCommand({ type: "state" });
+  expect(combinedState.output).toContain("activeMode=[VCW+CHAT] combined");
+
+  await runtime.executeCommand({
+    type: "experiment",
+    mode: "vcw-only",
+  });
+  const vcwOnlyState = await runtime.executeCommand({ type: "state" });
+  expect(vcwOnlyState.output).toContain("activeMode=[VCW] vcw-only");
+});

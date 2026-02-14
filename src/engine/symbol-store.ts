@@ -265,6 +265,17 @@ export class InMemorySymbolStore implements SymbolStore {
     };
   }
 
+  async clearThread(threadId: string): Promise<number> {
+    const thread = this.threads.get(threadId);
+    if (!thread) {
+      return 0;
+    }
+
+    const removedCount = thread.size;
+    this.threads.delete(threadId);
+    return removedCount;
+  }
+
   private getOrCreateThread(threadId: string): StoredThread {
     let thread = this.threads.get(threadId);
     if (!thread) {

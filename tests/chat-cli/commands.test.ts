@@ -17,9 +17,24 @@ test("parseSlashCommand parses supported commands", () => {
     command: { type: "trace", action: "raw" },
   });
 
+  expect(parseSlashCommand("/experiment vcw-only")).toEqual({
+    ok: true,
+    command: { type: "experiment", mode: "vcw-only" },
+  });
+
+  expect(parseSlashCommand("/experiment chat-only")).toEqual({
+    ok: true,
+    command: { type: "experiment", mode: "chat-only" },
+  });
+
   expect(parseSlashCommand("/symbols 5")).toEqual({
     ok: true,
     command: { type: "symbols", limit: 5 },
+  });
+
+  expect(parseSlashCommand("/symbols clear")).toEqual({
+    ok: true,
+    command: { type: "symbols_clear" },
   });
 
   expect(parseSlashCommand("/trust off")).toEqual({
@@ -59,7 +74,7 @@ test("parseSlashCommand returns useful errors for invalid input", () => {
   const invalidLimit = parseSlashCommand("/symbols nope");
   expect(invalidLimit).toEqual({
     ok: false,
-    error: "usage: /symbols [positive-limit]",
+    error: "usage: /symbols [positive-limit|clear]",
   });
 
   const invalidRemember = parseSlashCommand("/remember");
@@ -73,13 +88,21 @@ test("parseSlashCommand returns useful errors for invalid input", () => {
     ok: false,
     error: "usage: /history clear",
   });
+
+  const invalidExperiment = parseSlashCommand("/experiment weird-mode");
+  expect(invalidExperiment).toEqual({
+    ok: false,
+    error: "usage: /experiment vcw-only|chat-only",
+  });
 });
 
 test("formatHelpText includes all command anchors", () => {
   const help = formatHelpText();
   expect(help).toContain("/trace on|off|view|raw");
+  expect(help).toContain("/experiment vcw-only|chat-only");
   expect(help).toContain("/history clear");
   expect(help).toContain("/remember <text>");
   expect(help).toContain("/symbols [limit]");
+  expect(help).toContain("/symbols clear");
   expect(help).toContain("/quit");
 });

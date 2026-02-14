@@ -69,10 +69,12 @@ export type ChatCliStateView = {
 export type ChatCliCommand =
   | { type: "help" }
   | { type: "trace"; action: "on" | "off" | "view" | "raw" }
+  | { type: "experiment"; mode: "vcw-only" | "chat-only" }
   | { type: "history"; action: "clear" }
   | { type: "remember"; content: string }
   | { type: "state" }
   | { type: "symbols"; limit?: number }
+  | { type: "symbols_clear" }
   | { type: "show"; symbolId: string }
   | { type: "trust"; enabled: boolean }
   | { type: "thread"; threadId: string }

@@ -56,6 +56,24 @@ export function parseSlashCommand(input: string): CommandParseResult {
     case "state":
       return { ok: true, command: { type: "state" } };
 
+    case "experiment": {
+      const mode = restTokens[0]?.toLowerCase();
+      if (mode === "vcw-only" || mode === "chat-only") {
+        return {
+          ok: true,
+          command: {
+            type: "experiment",
+            mode,
+          },
+        };
+      }
+
+      return {
+        ok: false,
+        error: "usage: /experiment vcw-only|chat-only",
+      };
+    }
+
     case "history": {
       const action = restTokens[0]?.toLowerCase();
       if (action === "clear") {
@@ -91,11 +109,15 @@ export function parseSlashCommand(input: string): CommandParseResult {
         return { ok: true, command: { type: "symbols" } };
       }
 
+      if (restTokens.length === 1 && restTokens[0]?.toLowerCase() === "clear") {
+        return { ok: true, command: { type: "symbols_clear" } };
+      }
+
       const limit = Number.parseInt(restTokens[0] ?? "", 10);
       if (!Number.isFinite(limit) || limit <= 0) {
         return {
           ok: false,
-          error: "usage: /symbols [positive-limit]",
+          error: "usage: /symbols [positive-limit|clear]",
         };
       }
 
@@ -182,10 +204,12 @@ export function formatHelpText(): string {
     "Commands:",
     "  /help                Show this help",
     "  /trace on|off|view|raw   Toggle trace, print last trace, or print last raw model output",
+    "  /experiment vcw-only|chat-only  Quick context-mode reset helpers",
     "  /history clear       Clear conversation history for current thread only",
     "  /remember <text>     Strict write-intent memory turn",
     "  /state               Show current CLI state",
     "  /symbols [limit]     List symbols in the current thread",
+    "  /symbols clear       Clear symbols for current thread only",
     "  /show <symbol_id>    Show full symbol content",
     "  /trust on|off        Toggle trusted symbol refs",
     "  /thread <thread_id>  Switch active thread",
