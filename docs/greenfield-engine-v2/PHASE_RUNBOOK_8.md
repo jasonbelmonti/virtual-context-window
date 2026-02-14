@@ -29,6 +29,28 @@ Enable passive symbol capture without requiring `/remember`, while preserving en
 7. Add/expand tests for detector behavior, auto bridge integration, CLI mode behavior, and strict regression safety.
 8. Update README and ADR/sign-off artifacts.
 
+### 3A) Runtime Flow Clarification (Pre-Model Detector, Post-Model Envelope)
+```mermaid
+flowchart TD
+    U["User message"] --> D["CLI detector (pre-model)"]
+    D --> M["metadata.vcwAutoSymbol + writeIntent"]
+    M --> E["engine.processTurn(...)"]
+    E --> I["InvokeAssistant"]
+    I --> A["Adapter finalization (post-model)"]
+    A --> S{"strict intent + valid tool payload?"}
+    S -- "yes" --> C1["append trailing control envelope"]
+    S -- "no" --> AU{"auto=active + triggered + valid + not suppressed + events?"}
+    AU -- "yes" --> C2["append trailing control envelope (detector_bridge)"]
+    AU -- "no (shadow/off/low-signal)" --> P["plain text only (no envelope)"]
+    C1 --> K["ParseControl -> ApplySymbolEvents -> SanitizeOutput"]
+    C2 --> K
+    P --> K
+```
+
+Clarifications:
+- `shadow` is detect-only. It records recognition diagnostics and never writes.
+- Detector execution is pre-model; write application remains in kernel parse/apply stages.
+
 ## 4) Required Commands and Checks
 ```bash
 bun test

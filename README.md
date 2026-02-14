@@ -74,6 +74,31 @@ VCW_AUTO_SYMBOL_ACTIVE_MIN_SCORE=0.70
 VCW_AUTO_SYMBOL_SHADOW_MIN_SCORE=0.45
 ```
 
+Phase 8 flow (detector + control envelope):
+
+```mermaid
+flowchart TD
+    U["User message"] --> D["CLI pre-model detector<br/>recognizeAutomaticSymbols(...)"]
+    D --> M["Attach metadata<br/>metadata.vcwAutoSymbol + writeIntent"]
+    M --> E["Engine processTurn"]
+    E --> R["ResolveIdentity -> BuildTurnQuery -> InjectContextPack"]
+    R --> I["InvokeAssistant"]
+    I --> A["Adapter post-model finalization"]
+    A --> S{"Strict intent?"}
+    S -- "yes + valid tool args" --> C1["Append trailing <symbolic_control> (function_call_bridge)"]
+    S -- "no" --> AU{"Auto intent active + triggered + valid + not suppressed + events?"}
+    AU -- "yes" --> C2["Append trailing <symbolic_control> (detector_bridge)"]
+    AU -- "no (including shadow/off)" --> P["No control envelope"]
+    C1 --> K["Kernel ParseControl -> ApplySymbolEvents -> SanitizeOutput"]
+    C2 --> K
+    P --> K
+    K --> O["Assistant visible output + telemetry/trace"]
+```
+
+Notes:
+- `shadow` means detect-only: decision/diagnostics are recorded, but no envelope is appended and no write occurs.
+- The detector runs pre-model; envelope append decision is applied post-model from detector metadata.
+
 createAgent bridge (Phase 6 compatibility surface):
 
 ```ts
