@@ -304,6 +304,26 @@ function extractPostModel(trace: AgentTurnTrace): PostModelTelemetry | undefined
   return post;
 }
 
+function projectionOriginFromTrace(trace: AgentTurnTrace): {
+  origin: "MODEL_RENDERED" | "BRIDGE_FUNCTION_CALL" | "DETECTOR_BRIDGE";
+  transport: "plain_text" | "function_call_bridge" | "detector_bridge";
+  trigger: string;
+} {
+  const transport = trace.agent?.writeTransport ?? "plain_text";
+  const origin =
+    transport === "plain_text"
+      ? "MODEL_RENDERED"
+      : transport === "function_call_bridge"
+        ? "BRIDGE_FUNCTION_CALL"
+        : "DETECTOR_BRIDGE";
+  const trigger = trace.autoSymbol.writeApplied
+    ? `auto:${trace.autoSymbol.reason}`
+    : trace.agent?.writeIntentMode === "strict"
+      ? "strict"
+      : "explicit";
+  return { origin, transport, trigger };
+}
+
 function timelinePush(
   timeline: ShowdownTimelineEvent[],
   phase: string,
@@ -524,11 +544,21 @@ async function executeLane(options: {
 
     const rememberPost = remember.turn ? extractPostModel(remember.turn.trace) : undefined;
     if (rememberPost && rememberPost.eventsAccepted > 0) {
+      const projection = remember.turn
+        ? projectionOriginFromTrace(remember.turn.trace)
+        : {
+            origin: "MODEL_RENDERED" as const,
+            transport: "plain_text" as const,
+            trigger: "strict",
+          };
       emitProgress(options.progressReporter, {
         kind: "projection",
         lane: options.lane,
         message: "control envelope accepted",
-        detail: `eventsAccepted=${rememberPost.eventsAccepted} parseOutcome=${rememberPost.parseOutcome} key=${fact.key}`,
+        detail:
+          `eventsAccepted=${rememberPost.eventsAccepted} parseOutcome=${rememberPost.parseOutcome} ` +
+          `origin=${projection.origin} transport=${projection.transport} trigger=${projection.trigger} ` +
+          `key=${fact.key}`,
       });
     }
 
@@ -644,11 +674,15 @@ async function executeLane(options: {
 
     const turnPost = extractPostModel(turn.trace);
     if (turnPost && turnPost.eventsAccepted > 0) {
+      const projection = projectionOriginFromTrace(turn.trace);
       emitProgress(options.progressReporter, {
         kind: "projection",
         lane: options.lane,
         message: "control envelope accepted",
-        detail: `eventsAccepted=${turnPost.eventsAccepted} parseOutcome=${turnPost.parseOutcome} attempt=${attempt}`,
+        detail:
+          `eventsAccepted=${turnPost.eventsAccepted} parseOutcome=${turnPost.parseOutcome} ` +
+          `origin=${projection.origin} transport=${projection.transport} trigger=${projection.trigger} ` +
+          `attempt=${attempt}`,
       });
     }
 

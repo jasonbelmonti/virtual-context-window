@@ -101,7 +101,12 @@ test("incident showdown records chat lane failure and vcw lane pass with strict 
   });
 
   const outputDir = await mkdtemp(path.join(os.tmpdir(), "vcw-showdown-v2-"));
-  const progressEvents: Array<{ kind: string; lane?: string; message: string }> = [];
+  const progressEvents: Array<{
+    kind: string;
+    lane?: string;
+    message: string;
+    detail?: string;
+  }> = [];
 
   const result = await runShowdown({
     provider: "ollama",
@@ -123,6 +128,7 @@ test("incident showdown records chat lane failure and vcw lane pass with strict 
         kind: event.kind,
         lane: event.lane,
         message: event.message,
+        detail: event.detail,
       });
     },
   });
@@ -170,7 +176,8 @@ test("incident showdown records chat lane failure and vcw lane pass with strict 
     progressEvents.some(
       (event) =>
         event.kind === "projection" &&
-        event.message.includes("control envelope accepted"),
+        event.message.includes("control envelope accepted") &&
+        event.detail?.includes("origin=MODEL_RENDERED"),
     ),
   ).toBe(true);
 });

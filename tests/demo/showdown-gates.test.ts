@@ -50,6 +50,11 @@ function makeTrace(toolNames: string[]): AgentTurnTrace {
       agentToolCallCount: toolNames.length,
       agentToolNames: toolNames,
       agentLoopDurationMs: 1,
+      writeIntentMode: "none",
+      writeTransport: "plain_text",
+      writeIntentSatisfied: true,
+      toolCallDetected: false,
+      writeToolSchemaVersion: "v1",
     },
   };
 }

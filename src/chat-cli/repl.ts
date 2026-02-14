@@ -123,7 +123,13 @@ function renderProjectionCallout(
     return null;
   }
 
-  const source = trace.autoSymbol.writeApplied
+  const provenance =
+    trace.writeIntent.transport === "plain_text"
+      ? "MODEL_RENDERED"
+      : trace.writeIntent.transport === "function_call_bridge"
+        ? "BRIDGE_FUNCTION_CALL"
+        : "DETECTOR_BRIDGE";
+  const trigger = trace.autoSymbol.writeApplied
     ? `auto:${trace.autoSymbol.reason}`
     : trace.writeIntent.mode === "strict"
       ? "strict"
@@ -131,7 +137,9 @@ function renderProjectionCallout(
   const detailParts = [
     `eventsAccepted=${post.eventsAccepted}`,
     `parseOutcome=${post.parseOutcome}`,
-    `source=${source}`,
+    `origin=${provenance}`,
+    `transport=${trace.writeIntent.transport}`,
+    `trigger=${trigger}`,
   ];
   if (post.eventsRejected > 0) {
     detailParts.push(`eventsRejected=${post.eventsRejected}`);

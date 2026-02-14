@@ -39,6 +39,8 @@ test("--once with --trace prints trace output in mock mode", async () => {
   const output = printed.join("\n");
   expect(output).toContain("Got it.");
   expect(output).toContain("PROJECTION ACCEPTED");
+  expect(output).toContain("origin=MODEL_RENDERED");
+  expect(output).toContain("transport=plain_text");
   expect(output).toContain("--- Agent Turn Trace ---");
   expect(output).toContain("parseOutcome");
   expect(output).toContain("control_channel_valid");
