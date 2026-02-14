@@ -193,10 +193,16 @@
     - `bun run validate:stability`
     - `VCW_OLLAMA_MODEL=deepseek-r1:1.5b VCW_OLLAMA_BASE_URL=http://127.0.0.1:11434 bun run validate:production`
     - `bun run validate:baseline-v2`
+  - Phase 4 certification rerun executed on `2026-02-14` with live provider:
+    - Runtime config: `VCW_OLLAMA_MODEL=gpt-oss:20b`, `VCW_OLLAMA_BASE_URL=http://192.168.4.43:11434`, `VCW_VALIDATE_TIMEOUT_MS=60000`, `VCW_VALIDATE_CONCURRENCY=1`.
+    - Production run A: `production-2026-02-14T00-43-25-696Z` (`23/23` pass).
+    - Production run B: `production-2026-02-14T00-43-42-322Z` (`23/23` pass).
+    - Baseline-v2 gate: `reports/baseline-v2/2026-02-14T00-43-57-880Z/gate.md` (`Status: PASS`).
+    - Stability gate: `reports/baseline-v2/2026-02-14T00-44-01-550Z/gate.md` (no drift failures).
 - Ambiguities resolved during Phase 4:
   - Locked drift and live strictness defaults in ADR-014.
 - Freeze commit SHA reference:
-  - `TBD` (set to the Phase 4 freeze commit SHA at commit time).
+  - `93f59e2` (Phase 4 validation subsystem, gate engine, scripts, tests, and docs freeze point).
 - Handoff note: Phase 5 (`MVP Stabilization and Ops Readiness`) is authorized to begin with baseline-v2 gate artifacts as input.
 
 ## Template for New ADRs
