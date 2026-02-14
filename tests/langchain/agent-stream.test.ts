@@ -126,6 +126,49 @@ test("agent adapter emits text deltas when runtime exposes streamEvents", async 
   expect(streamChunkCount).toBe(2);
 });
 
+test("agent adapter falls back to invoke when stream events have no usable output", async () => {
+  const store = new InMemorySymbolStore();
+  let invokeCalls = 0;
+  const generate = createLangChainAgentAssistantGenerate({
+    store,
+    model: "mock-model",
+    baseUrl: "http://example.local",
+    createAgentRuntime: () => ({
+      invoke: async () => {
+        invokeCalls += 1;
+        return {
+          messages: [{ role: "assistant", content: "invoke fallback reply" }],
+        };
+      },
+      streamEvents: async function* () {
+        yield {
+          event: "on_chat_model_start",
+          name: "ChatOllama",
+          data: {},
+        };
+        yield {
+          event: "on_chat_model_end",
+          name: "ChatOllama",
+          data: {},
+        };
+      },
+    }),
+  });
+
+  const events = [];
+  for await (const event of generate.stream!(makeInput())) {
+    events.push(event);
+  }
+
+  expect(events).toEqual([
+    {
+      type: "final_text",
+      text: "invoke fallback reply",
+    },
+  ]);
+  expect(invokeCalls).toBe(1);
+});
+
 test("engine stream with agent adapter still reports generationCallCount=1", async () => {
   const store = new InMemorySymbolStore();
   const assistantGenerate = createLangChainAgentAssistantGenerate({

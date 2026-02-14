@@ -329,7 +329,9 @@ async function invokeAgentResponse(options: {
   let streamChunkCount = 0;
   let streamedTextChars = 0;
   let streamedText = "";
+  const pendingDeltas: string[] = [];
   let responsePayload: unknown;
+  let completedResponseReceived = false;
 
   for await (const eventValue of responseOrStream) {
     const event = asObject(eventValue);
@@ -342,16 +344,13 @@ async function invokeAgentResponse(options: {
       typeof event.delta === "string"
     ) {
       streamedText += event.delta;
-      streamChunkCount += 1;
-      streamedTextChars += event.delta.length;
-      if (options.streamSink) {
-        await options.streamSink(event.delta);
-      }
+      pendingDeltas.push(event.delta);
       continue;
     }
 
     if (event.type === "response.completed") {
       responsePayload = event.response;
+      completedResponseReceived = true;
     }
   }
 
@@ -359,6 +358,20 @@ async function invokeAgentResponse(options: {
     responsePayload = {
       output_text: streamedText,
     };
+  }
+
+  const shouldEmitDeltas =
+    completedResponseReceived &&
+    extractToolCalls(responsePayload).length === 0 &&
+    options.streamSink !== undefined;
+  const streamSink = options.streamSink;
+
+  if (shouldEmitDeltas && streamSink) {
+    for (const delta of pendingDeltas) {
+      await streamSink(delta);
+      streamChunkCount += 1;
+      streamedTextChars += delta.length;
+    }
   }
 
   return {

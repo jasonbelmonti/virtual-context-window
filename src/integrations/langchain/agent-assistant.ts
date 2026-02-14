@@ -1067,6 +1067,18 @@ export function createLangChainAgentAssistantGenerate(
         if (!visibleText.trim() && streamedVisibleText.trim()) {
           visibleText = streamedVisibleText;
         }
+        if (!visibleText.trim() && !streamedVisibleText.trim()) {
+          const invokeResult = await runtime.invoke(
+            {
+              messages: invokeMessages,
+            },
+            {
+              recursionLimit,
+            },
+          );
+          visibleText = extractFinalAssistantText(invokeResult);
+          loopStats = collectAgentLoopMetadata(invokeResult);
+        }
         if (
           loopStats.agentModelCallCount === 0 &&
           streamedLoopStats.agentModelCallCount > 0
