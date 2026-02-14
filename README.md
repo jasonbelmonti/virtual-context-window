@@ -52,6 +52,9 @@ Agent CLI auto-symbol mode defaults to `active` (passive writes allowed for high
 /auto on
 /auto shadow
 /auto off
+/history status
+/history limit 2
+/history off
 ```
 
 One-shot agent (mock):
@@ -72,6 +75,7 @@ Auto-mode env controls:
 VCW_AUTO_SYMBOL_MODE=off|shadow|active
 VCW_AUTO_SYMBOL_ACTIVE_MIN_SCORE=0.84
 VCW_AUTO_SYMBOL_SHADOW_MIN_SCORE=0.50
+VCW_HISTORY_MAX_TURNS=<positive-integer>
 ```
 
 Phase 8 flow (detector + control envelope):

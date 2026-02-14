@@ -42,6 +42,21 @@ test("parseSlashCommand parses supported agent commands", () => {
     command: { type: "history", action: "clear" },
   });
 
+  expect(parseSlashCommand("/history status")).toEqual({
+    ok: true,
+    command: { type: "history", action: "status" },
+  });
+
+  expect(parseSlashCommand("/history off")).toEqual({
+    ok: true,
+    command: { type: "history", action: "off" },
+  });
+
+  expect(parseSlashCommand("/history limit 2")).toEqual({
+    ok: true,
+    command: { type: "history_limit", turns: 2 },
+  });
+
   expect(parseSlashCommand("/experiment vcw-only")).toEqual({
     ok: true,
     command: { type: "experiment", mode: "vcw-only" },
@@ -76,7 +91,12 @@ test("parseSlashCommand returns useful errors for invalid input", () => {
 
   expect(parseSlashCommand("/history nope")).toEqual({
     ok: false,
-    error: "usage: /history clear",
+    error: "usage: /history clear|status|off|limit <positive-turns>",
+  });
+
+  expect(parseSlashCommand("/history limit nope")).toEqual({
+    ok: false,
+    error: "usage: /history clear|status|off|limit <positive-turns>",
   });
 
   expect(parseSlashCommand("/experiment weird")).toEqual({
@@ -96,6 +116,7 @@ test("formatHelpText includes command anchors", () => {
   expect(help).toContain("/auto on|off|shadow|status");
   expect(help).toContain("/remember <text>");
   expect(help).toContain("/symbols clear");
-  expect(help).toContain("/history clear");
+  expect(help).toContain("/history clear|status|off");
+  expect(help).toContain("/history limit <turns>");
   expect(help).toContain("/experiment vcw-only|chat-only");
 });

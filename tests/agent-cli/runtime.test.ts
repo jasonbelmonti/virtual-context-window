@@ -91,3 +91,60 @@ test("history and symbol clear commands isolate chat and VCW state", async () =>
   const symbolsAfter = await runtime.executeCommand({ type: "symbols" });
   expect(symbolsAfter.output).toContain("No symbols in current thread.");
 });
+
+test("history limit constrains model context to last N turns while preserving symbols", async () => {
+  const seenMessageCounts: number[] = [];
+  const inspectorAssistant: AssistantGenerateFn = async (input) => {
+    seenMessageCounts.push(input.request.messages.length);
+    return `seen_messages=${input.request.messages.length}`;
+  };
+
+  const runtime = new AgentCliRuntime({
+    assistantGenerate: inspectorAssistant,
+  });
+
+  const defaultStatus = await runtime.executeCommand({
+    type: "history",
+    action: "status",
+  });
+  expect(defaultStatus.output).toContain("historyTurnLimit=off");
+
+  const setLimit = await runtime.executeCommand({
+    type: "history_limit",
+    turns: 1,
+  });
+  expect(setLimit.output).toContain("historyTurnLimit=1");
+
+  await runtime.processUserMessage("turn one");
+  await runtime.processUserMessage("turn two");
+  await runtime.processUserMessage("turn three");
+
+  expect(seenMessageCounts).toEqual([1, 3, 3]);
+
+  const state = runtime.getState();
+  expect(state.historyTurnLimit).toBe(1);
+  expect(state.messageCount).toBe(6);
+
+  const off = await runtime.executeCommand({
+    type: "history",
+    action: "off",
+  });
+  expect(off.output).toContain("historyTurnLimit=off");
+});
+
+test("history window can be set via environment variable", async () => {
+  const runtime = new AgentCliRuntime({
+    env: {
+      VCW_OLLAMA_MODEL: "mock",
+      VCW_OLLAMA_EMBED_MODEL: "mock",
+      VCW_HISTORY_MAX_TURNS: "2",
+    },
+    assistantGenerate: async () => "ok",
+  });
+
+  const status = await runtime.executeCommand({
+    type: "history",
+    action: "status",
+  });
+  expect(status.output).toContain("historyTurnLimit=2");
+});

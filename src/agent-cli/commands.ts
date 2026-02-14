@@ -77,7 +77,20 @@ export function parseSlashCommand(input: string): CommandParseResult {
       if (action === "clear") {
         return { ok: true, command: { type: "history", action: "clear" } };
       }
-      return { ok: false, error: "usage: /history clear" };
+      if (action === "status") {
+        return { ok: true, command: { type: "history", action: "status" } };
+      }
+      if (action === "off") {
+        return { ok: true, command: { type: "history", action: "off" } };
+      }
+      if (action === "limit") {
+        const turns = Number.parseInt(restTokens[1] ?? "", 10);
+        if (!Number.isFinite(turns) || turns <= 0) {
+          return { ok: false, error: "usage: /history clear|status|off|limit <positive-turns>" };
+        }
+        return { ok: true, command: { type: "history_limit", turns } };
+      }
+      return { ok: false, error: "usage: /history clear|status|off|limit <positive-turns>" };
     }
     case "experiment": {
       const mode = restTokens[0]?.toLowerCase();
@@ -112,7 +125,8 @@ export function formatHelpText(): string {
     "  /symbols [limit]               List symbols in the current thread",
     "  /symbols clear                 Clear symbols for current thread only",
     "  /show <symbol_id>              Show full symbol content",
-    "  /history clear                 Clear conversation history for current thread",
+    "  /history clear|status|off     Clear or inspect history window mode",
+    "  /history limit <turns>         Keep only last N turns in model context",
     "  /experiment vcw-only|chat-only Reset history or symbols for quick experiments",
     "  /thread <thread_id>            Switch active thread",
     "  /quit                          Exit the CLI",

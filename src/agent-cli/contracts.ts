@@ -77,6 +77,7 @@ export type AgentCliStateView = {
   threadId: string;
   traceMode: TraceMode;
   autoSymbolMode: AutoSymbolMode;
+  historyTurnLimit: number | null;
   messageCount: number;
 };
 
@@ -89,7 +90,8 @@ export type AgentCliCommand =
   | { type: "symbols"; limit?: number }
   | { type: "symbols_clear" }
   | { type: "show"; symbolId: string }
-  | { type: "history"; action: "clear" }
+  | { type: "history"; action: "clear" | "status" | "off" }
+  | { type: "history_limit"; turns: number }
   | { type: "experiment"; mode: "vcw-only" | "chat-only" }
   | { type: "thread"; threadId: string }
   | { type: "quit" };
