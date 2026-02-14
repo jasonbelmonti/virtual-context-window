@@ -97,6 +97,7 @@ function coerceEvent(input: unknown): UpsertSymbolEvent {
 
   if (
     objectValue.symbol_id !== undefined &&
+    objectValue.symbol_id !== null &&
     typeof objectValue.symbol_id !== "string"
   ) {
     throw new Error("write_intent_protocol_violation:event_symbol_id_invalid");
@@ -104,6 +105,7 @@ function coerceEvent(input: unknown): UpsertSymbolEvent {
 
   if (
     objectValue.summary !== undefined &&
+    objectValue.summary !== null &&
     typeof objectValue.summary !== "string"
   ) {
     throw new Error("write_intent_protocol_violation:event_summary_invalid");
@@ -111,12 +113,13 @@ function coerceEvent(input: unknown): UpsertSymbolEvent {
 
   if (
     objectValue.key_hint !== undefined &&
+    objectValue.key_hint !== null &&
     typeof objectValue.key_hint !== "string"
   ) {
     throw new Error("write_intent_protocol_violation:event_key_hint_invalid");
   }
 
-  if (objectValue.kind !== undefined) {
+  if (objectValue.kind !== undefined && objectValue.kind !== null) {
     if (
       typeof objectValue.kind !== "string" ||
       !ALLOWED_KINDS.has(objectValue.kind)
@@ -207,20 +210,38 @@ export function getWriteToolDefinition(
             items: {
               type: "object",
               additionalProperties: false,
-              required: ["type", "content"],
+              required: [
+                "type",
+                "symbol_id",
+                "summary",
+                "content",
+                "kind",
+                "key_hint",
+              ],
               properties: {
                 type: {
                   type: "string",
                   enum: ["upsert_symbol"],
                 },
-                symbol_id: { type: "string" },
-                summary: { type: "string" },
+                symbol_id: {
+                  anyOf: [{ type: "string" }, { type: "null" }],
+                },
+                summary: {
+                  anyOf: [{ type: "string" }, { type: "null" }],
+                },
                 content: { type: "string" },
                 kind: {
-                  type: "string",
-                  enum: ["memory", "fact", "plan", "note"],
+                  anyOf: [
+                    {
+                      type: "string",
+                      enum: ["memory", "fact", "plan", "note"],
+                    },
+                    { type: "null" },
+                  ],
                 },
-                key_hint: { type: "string" },
+                key_hint: {
+                  anyOf: [{ type: "string" }, { type: "null" }],
+                },
               },
             },
           },

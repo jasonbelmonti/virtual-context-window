@@ -204,13 +204,77 @@ function parseToolArguments(args: string): Record<string, unknown> {
   return objectValue;
 }
 
+function normalizeSchemaForOpenAIStrict(
+  schema: Record<string, unknown>,
+): Record<string, unknown> {
+  const schemaObject = asObject(schema);
+  if (!schemaObject) {
+    return schema;
+  }
+
+  const propertiesObject = asObject(schemaObject.properties);
+  if (!propertiesObject) {
+    return schemaObject;
+  }
+
+  const propertyEntries = Object.entries(propertiesObject);
+  const propertyKeys = propertyEntries.map(([key]) => key);
+  const existingRequired = Array.isArray(schemaObject.required)
+    ? schemaObject.required.filter(
+        (value): value is string => typeof value === "string",
+      )
+    : [];
+  const required = [...new Set([...existingRequired, ...propertyKeys])];
+
+  const normalizedProperties = Object.fromEntries(
+    propertyEntries.map(([key, value]) => {
+      const propertySchema = asObject(value);
+      if (!propertySchema) {
+        return [key, value];
+      }
+
+      if (existingRequired.includes(key)) {
+        return [key, propertySchema];
+      }
+
+      if (Array.isArray(propertySchema.anyOf)) {
+        const hasNull = propertySchema.anyOf.some(
+          (item) => asObject(item)?.type === "null",
+        );
+        return [
+          key,
+          hasNull
+            ? propertySchema
+            : {
+                ...propertySchema,
+                anyOf: [...propertySchema.anyOf, { type: "null" }],
+              },
+        ];
+      }
+
+      return [
+        key,
+        {
+          anyOf: [propertySchema, { type: "null" }],
+        },
+      ];
+    }),
+  );
+
+  return {
+    ...schemaObject,
+    required,
+    properties: normalizedProperties,
+  };
+}
+
 function buildOpenAITools(): Array<Record<string, unknown>> {
   return VCW_AGENT_TOOL_DEFINITIONS.map((toolDefinition) => ({
     type: "function",
     name: toolDefinition.name,
     description: toolDefinition.description,
     strict: true,
-    parameters: toolDefinition.schema,
+    parameters: normalizeSchemaForOpenAIStrict(toolDefinition.schema),
   }));
 }
 
