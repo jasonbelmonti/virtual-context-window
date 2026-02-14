@@ -109,6 +109,51 @@ test("stream fallback emits sanitized delta when adapter has no native stream", 
   expect(deltas[0]).not.toContain("<symbolic_control>");
 });
 
+test("native stream emits incremental sanitized deltas without control leak", async () => {
+  const assistantGenerate = (async () =>
+    'Got it.\n<symbolic_control>{"symbol_events":[]}</symbolic_control>') as AssistantGenerateFn;
+  assistantGenerate.stream = async function* () {
+    yield { type: "text_delta", delta: "Got " };
+    yield { type: "text_delta", delta: "it." };
+    yield { type: "text_delta", delta: "\n<symbolic_control>{\"symbol_events\":" };
+    yield { type: "text_delta", delta: "[]}</symbolic_control>" };
+    yield {
+      type: "final_text",
+      text: 'Got it.\n<symbolic_control>{"symbol_events":[]}</symbolic_control>',
+    };
+  };
+
+  const store = new InMemorySymbolStore();
+  const writePathHooks = createWritePathHooks({ store });
+  const engine = createVirtualContextEngine({
+    assistantGenerate,
+    hooks: {
+      ...writePathHooks,
+    },
+  });
+
+  const deltas: string[] = [];
+  let completedResponse:
+    | Extract<VirtualContextTurnStreamEvent, { type: "turn_completed" }>["response"]
+    | undefined;
+
+  for await (const event of engine.processTurnStream(makeRequest())) {
+    if (event.type === "assistant_text_delta") {
+      deltas.push(event.delta);
+    }
+    if (event.type === "turn_completed") {
+      completedResponse = event.response;
+    }
+  }
+
+  expect(completedResponse).toBeDefined();
+  const completedContent = completedResponse?.content ?? "";
+  expect(deltas.join("")).toBe(completedContent);
+  expect(deltas.join("")).toBe("Got it.");
+  expect(deltas.length).toBeGreaterThan(1);
+  expect(deltas.join("")).not.toContain("<symbolic_control>");
+});
+
 test("stream path preserves one-call completion invariant failures", async () => {
   const engine = createVirtualContextEngine({
     assistantGenerate: async () => "unused",
