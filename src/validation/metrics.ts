@@ -152,6 +152,19 @@ export function metricsEquivalent(
   b: Record<string, MetricAggregate>,
   epsilon = 1e-9,
 ): boolean {
+  const numbersClose = (
+    left: number | undefined,
+    right: number | undefined,
+  ): boolean => {
+    if (typeof left !== "number" || !Number.isFinite(left)) {
+      return false;
+    }
+    if (typeof right !== "number" || !Number.isFinite(right)) {
+      return false;
+    }
+    return Math.abs(left - right) <= epsilon;
+  };
+
   const keys = new Set<string>([...Object.keys(a), ...Object.keys(b)]);
 
   for (const key of keys) {
@@ -166,13 +179,13 @@ export function metricsEquivalent(
     }
 
     if (left.kind === "rate" && right.kind === "rate") {
-      if (Math.abs((left.numerator ?? 0) - (right.numerator ?? 0)) > epsilon) {
+      if (!numbersClose(left.numerator, right.numerator)) {
         return false;
       }
-      if (Math.abs((left.denominator ?? 0) - (right.denominator ?? 0)) > epsilon) {
+      if (!numbersClose(left.denominator, right.denominator)) {
         return false;
       }
-      if (Math.abs((left.rate ?? 0) - (right.rate ?? 0)) > epsilon) {
+      if (!numbersClose(left.rate, right.rate)) {
         return false;
       }
       const leftCi = left.ci95;
@@ -192,17 +205,17 @@ export function metricsEquivalent(
     }
 
     if (left.kind === "count" && right.kind === "count") {
-      if (Math.abs((left.value ?? 0) - (right.value ?? 0)) > epsilon) {
+      if (!numbersClose(left.value, right.value)) {
         return false;
       }
       continue;
     }
 
     if (left.kind === "latency_p95" && right.kind === "latency_p95") {
-      if (Math.abs((left.p95 ?? 0) - (right.p95 ?? 0)) > epsilon) {
+      if (!numbersClose(left.p95, right.p95)) {
         return false;
       }
-      if (Math.abs((left.value ?? 0) - (right.value ?? 0)) > epsilon) {
+      if (!numbersClose(left.value, right.value)) {
         return false;
       }
       continue;

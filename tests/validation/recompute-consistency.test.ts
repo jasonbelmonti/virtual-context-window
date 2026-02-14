@@ -90,3 +90,24 @@ test("recompute consistency detects latency sample-count drift", () => {
 
   expect(metricsEquivalent(base, altered)).toBe(false);
 });
+
+test("recompute consistency rejects missing latency sample-count payload", () => {
+  const base = {
+    end_to_end_turn_ms_p95: {
+      key: "end_to_end_turn_ms_p95",
+      kind: "latency_p95" as const,
+      p95: 180,
+      value: 10,
+    },
+  };
+
+  const altered = {
+    end_to_end_turn_ms_p95: {
+      key: "end_to_end_turn_ms_p95",
+      kind: "latency_p95" as const,
+      p95: 180,
+    } as unknown as (typeof base)["end_to_end_turn_ms_p95"],
+  };
+
+  expect(metricsEquivalent(base, altered)).toBe(false);
+});
