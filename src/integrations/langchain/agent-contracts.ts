@@ -97,6 +97,15 @@ export type LangChainAgentMetadata = {
   agentToolCallCount: number;
   agentToolNames: string[];
   agentLoopDurationMs: number;
+  writeIntentMode?: "none" | "strict" | "auto";
+  writeTransport?: "plain_text" | "function_call_bridge" | "detector_bridge";
+  writeIntentSatisfied?: boolean;
+  autoMode?: "off" | "shadow" | "active";
+  autoTriggered?: boolean;
+  autoConfidence?: number;
+  autoReason?: string;
+  autoEventCount?: number;
+  autoSuppressed?: boolean;
 };
 
 export type VcwAgentAssistantOptions = {

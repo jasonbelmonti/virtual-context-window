@@ -18,6 +18,15 @@ Interactive chat CLI:
 bun run chat:interactive --mock
 ```
 
+Chat CLI auto-symbol mode defaults to `shadow` (detect-only, no passive writes). In-session controls:
+
+```text
+/auto status
+/auto on
+/auto shadow
+/auto off
+```
+
 One-shot chat (local mock):
 
 ```bash
@@ -36,6 +45,15 @@ Agent CLI (mock):
 bun run agent:interactive --mock
 ```
 
+Agent CLI auto-symbol mode defaults to `active` (passive writes allowed for high-confidence durable facts). In-session controls:
+
+```text
+/auto status
+/auto on
+/auto shadow
+/auto off
+```
+
 One-shot agent (mock):
 
 ```bash
@@ -46,6 +64,14 @@ One-shot agent (live Ollama + embeddings):
 
 ```bash
 VCW_OLLAMA_MODEL=<your_model> VCW_OLLAMA_EMBED_MODEL=<your_embed_model> VCW_OLLAMA_BASE_URL=<your_url> bun run agent:interactive --once "remember phase seven" --trace
+```
+
+Auto-mode env controls:
+
+```bash
+VCW_AUTO_SYMBOL_MODE=off|shadow|active
+VCW_AUTO_SYMBOL_ACTIVE_MIN_SCORE=0.70
+VCW_AUTO_SYMBOL_SHADOW_MIN_SCORE=0.45
 ```
 
 createAgent bridge (Phase 6 compatibility surface):

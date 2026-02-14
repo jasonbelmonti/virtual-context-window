@@ -143,6 +143,16 @@
   - Lexical-only retrieval in agent mode: rejected because hybrid retrieval quality is a core objective.
   - Streaming-first rollout: rejected to reduce invariant and observability complexity in Phase 7.
 
+## ADR-017: Phase 8 Uses Deterministic Passive Recognition with Detector Bridge (No Agent Memory-Write Tool)
+- Date: 2026-02-14
+- Status: Accepted
+- Decision: Add an automatic symbol recognition mode that produces deterministic `UpsertSymbolEvent` payloads from rule-scored user statements and bridges them into trailing control via metadata-driven detector transport (`detector_bridge`), while keeping strict `/remember` fail-fast semantics and keeping memory-write tools out of the agent loop.
+- Rationale: Enables passive capture without reintroducing recursion/tool-loop write risks, preserves parse/apply policy authority, and keeps behavior explainable and testable.
+- Rejected alternatives:
+  - Reintroduce `vcw_upsert_symbol` as normal agent tool: rejected due recursion-limit and runaway-write risk.
+  - Prompt-only passive writes without deterministic detector metadata: rejected due low reliability.
+  - Model-judged recognition in Phase 8: rejected for lower determinism and harder rollback.
+
 ## Phase 0 Sign-off
 - Date: 2026-02-13
 - Status: PASS
@@ -303,6 +313,35 @@
 - Freeze commit SHA reference:
   - `12cf7ed` (Phase 7 runtime hardening freeze point: strict `/remember` path + web-search toolset + recursion controls).
 - Handoff note: Phase 8 may add streaming and persistence on top of the Phase 7 agent runtime and embedding foundation.
+
+## Phase 8 Sign-off
+- Date: 2026-02-14
+- Status: PASS
+- Checklist summary:
+  - Added deterministic recognition module (`src/recognition/`) with fixed thresholds, durable-fact pattern families, low-signal filters, secret suppression, and deterministic IDs (`profile:*` / `auto:<sha1_12>`).
+  - Added passive auto write-intent transport in adapters (`detector_bridge`) with strict mode unchanged and fail-soft auto metadata handling.
+  - Updated chat and agent CLIs with `/auto on|off|shadow|status`, mode defaults (`chat=shadow`, `agent=active`), env overrides, and trace/state visibility for recognition outcomes.
+  - Added deterministic dedupe to suppress repeated same-content writes for deterministic symbol IDs.
+  - Added additive tests:
+    - `tests/recognition/detector.test.ts`
+    - `tests/langchain/assistant-auto-intent.test.ts`
+    - `tests/chat-cli/auto-mode.test.ts`
+    - `tests/agent-cli/auto-mode.test.ts`
+    - regression updates in existing adapter/agent tests for trailing envelope and write-tool safety.
+  - Phase 8 command gate executed:
+    - `bun test`
+    - `bun run test:chat-cli`
+    - `bun run test:agent`
+    - `bun run chat:interactive --mock --once "my name is Jason" --trace`
+    - `VCW_AUTO_SYMBOL_MODE=active bun run agent:interactive --mock --once "my name is Jason" --trace`
+    - `VCW_AUTO_SYMBOL_MODE=shadow bun run chat:interactive --mock --once "my favorite color is green" --trace`
+    - `bun x tsc --noEmit`
+    - `rg -n "WriteIntentMode|detector_bridge|vcwAutoSymbol|/auto on\\|off\\|shadow\\|status" src`
+- Ambiguities resolved during Phase 8:
+  - Locked passive-capture strategy to deterministic detector first; no model-judged recognition in this phase.
+- Freeze commit SHA reference:
+  - `PENDING_COMMIT_SHA` (to be updated at commit time for Phase 8 freeze point).
+- Handoff note: Phase 9 may add persistence-backed memory lifecycle and recognition calibration over Phase 8 diagnostics.
 
 ## Template for New ADRs
 ```md

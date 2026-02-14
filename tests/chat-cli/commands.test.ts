@@ -17,6 +17,11 @@ test("parseSlashCommand parses supported commands", () => {
     command: { type: "trace", action: "raw" },
   });
 
+  expect(parseSlashCommand("/auto shadow")).toEqual({
+    ok: true,
+    command: { type: "auto", action: "shadow" },
+  });
+
   expect(parseSlashCommand("/experiment vcw-only")).toEqual({
     ok: true,
     command: { type: "experiment", mode: "vcw-only" },
@@ -77,6 +82,12 @@ test("parseSlashCommand returns useful errors for invalid input", () => {
     error: "usage: /symbols [positive-limit|clear]",
   });
 
+  const invalidAuto = parseSlashCommand("/auto maybe");
+  expect(invalidAuto).toEqual({
+    ok: false,
+    error: "usage: /auto on|off|shadow|status",
+  });
+
   const invalidRemember = parseSlashCommand("/remember");
   expect(invalidRemember).toEqual({
     ok: false,
@@ -99,6 +110,7 @@ test("parseSlashCommand returns useful errors for invalid input", () => {
 test("formatHelpText includes all command anchors", () => {
   const help = formatHelpText();
   expect(help).toContain("/trace on|off|view|raw");
+  expect(help).toContain("/auto on|off|shadow|status");
   expect(help).toContain("/experiment vcw-only|chat-only");
   expect(help).toContain("/history clear");
   expect(help).toContain("/remember <text>");

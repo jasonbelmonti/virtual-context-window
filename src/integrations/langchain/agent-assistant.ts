@@ -11,6 +11,11 @@ import {
 } from "./assistant";
 import { buildVcwCreateAgentMiddlewareSpec, toLangChainAgentMiddleware } from "./create-agent-bridge";
 import { createVcwAgentTools } from "./agent-tools";
+import {
+  buildDeterministicControlEnvelope,
+  convertWriteToolArgsToPayload,
+} from "./write-tool-bridge";
+import { parseAutoSymbolMetadataEnvelope } from "../../recognition";
 import type {
   CreateLangChainAgentRuntimeInput,
   LangChainAgentMetadata,
@@ -52,6 +57,71 @@ function parseBoundedInt(
   }
 
   return parsed;
+}
+
+type ResolvedAutoSymbolMetadata = {
+  mode: "off" | "shadow" | "active";
+  triggered: boolean;
+  confidence: number;
+  reason: string;
+  events: Array<{
+    type: "upsert_symbol";
+    symbol_id?: string;
+    summary?: string;
+    content: string;
+    kind?: "memory" | "fact" | "plan" | "note";
+    key_hint?: string;
+  }>;
+  suppressed: boolean;
+  valid: boolean;
+};
+
+function resolveAutoSymbolMetadata(
+  requestMetadata: Record<string, unknown> | undefined,
+): ResolvedAutoSymbolMetadata | undefined {
+  const parsed = parseAutoSymbolMetadataEnvelope(requestMetadata);
+  if (!parsed) {
+    return undefined;
+  }
+
+  if (!parsed.valid) {
+    return {
+      mode: parsed.mode,
+      triggered: parsed.triggered,
+      confidence: parsed.confidence,
+      reason: parsed.reason,
+      events: [],
+      suppressed: parsed.suppressed,
+      valid: false,
+    };
+  }
+
+  try {
+    const events = convertWriteToolArgsToPayload({
+      assistant_response: "",
+      symbol_events: parsed.events,
+    }).symbol_events;
+
+    return {
+      mode: parsed.mode,
+      triggered: parsed.triggered,
+      confidence: parsed.confidence,
+      reason: parsed.reason,
+      events,
+      suppressed: parsed.suppressed,
+      valid: true,
+    };
+  } catch {
+    return {
+      mode: parsed.mode,
+      triggered: parsed.triggered,
+      confidence: parsed.confidence,
+      reason: parsed.reason,
+      events: [],
+      suppressed: parsed.suppressed,
+      valid: false,
+    };
+  }
 }
 
 function extractContentText(content: unknown): string {
@@ -357,6 +427,9 @@ export function createLangChainAgentAssistantGenerate(
 
   return async (input) => {
     const writeIntentMode = resolveWriteIntentFromMetadata(input.request);
+    const autoSymbolMetadata = resolveAutoSymbolMetadata(
+      asObject(input.request.metadata),
+    );
     if (writeIntentMode === "strict") {
       strictWriteToolCallDetected = false;
       const startedAtMs = now();
@@ -372,6 +445,15 @@ export function createLangChainAgentAssistantGenerate(
         agentToolCallCount: strictWriteToolCallDetected ? 1 : 0,
         agentToolNames: strictWriteToolCallDetected ? ["emit_symbol_events"] : [],
         agentLoopDurationMs: durationMs,
+        writeIntentMode: "strict",
+        writeTransport: "function_call_bridge",
+        writeIntentSatisfied: true,
+        autoMode: autoSymbolMetadata?.mode,
+        autoTriggered: autoSymbolMetadata?.triggered,
+        autoConfidence: autoSymbolMetadata?.confidence,
+        autoReason: autoSymbolMetadata?.reason,
+        autoEventCount: autoSymbolMetadata?.events.length ?? 0,
+        autoSuppressed: autoSymbolMetadata?.suppressed,
       });
 
       return output;
@@ -452,9 +534,37 @@ export function createLangChainAgentAssistantGenerate(
       recursionLimit,
     });
 
-    const outputText = extractFinalAssistantText(result);
+    const visibleText = extractFinalAssistantText(result);
     const loopStats = collectAgentLoopMetadata(result);
     const durationMs = now() - startedAtMs;
+    const shouldApplyAutoControl =
+      writeIntentMode === "auto" &&
+      autoSymbolMetadata?.valid &&
+      autoSymbolMetadata.mode === "active" &&
+      autoSymbolMetadata.triggered &&
+      !autoSymbolMetadata.suppressed &&
+      autoSymbolMetadata.events.length > 0;
+    const outputText = shouldApplyAutoControl
+      ? buildDeterministicControlEnvelope({
+          assistant_response: visibleText,
+          symbol_events: autoSymbolMetadata.events,
+        })
+      : visibleText;
+    const writeTransport = shouldApplyAutoControl
+      ? "detector_bridge"
+      : "plain_text";
+    const writeIntentSatisfied =
+      writeIntentMode !== "auto"
+        ? true
+        : !autoSymbolMetadata
+          ? true
+          : !autoSymbolMetadata.valid
+            ? false
+            : autoSymbolMetadata.mode === "active" &&
+                autoSymbolMetadata.triggered &&
+                !autoSymbolMetadata.suppressed
+              ? shouldApplyAutoControl
+              : true;
 
     await notifyResultMetadata(options.onResultMetadata, {
       provider: "langchain_create_agent_ollama",
@@ -465,6 +575,15 @@ export function createLangChainAgentAssistantGenerate(
       agentToolCallCount: loopStats.agentToolCallCount,
       agentToolNames: loopStats.agentToolNames,
       agentLoopDurationMs: durationMs,
+      writeIntentMode,
+      writeTransport,
+      writeIntentSatisfied,
+      autoMode: autoSymbolMetadata?.mode,
+      autoTriggered: autoSymbolMetadata?.triggered,
+      autoConfidence: autoSymbolMetadata?.confidence,
+      autoReason: autoSymbolMetadata?.reason,
+      autoEventCount: autoSymbolMetadata?.events.length ?? 0,
+      autoSuppressed: autoSymbolMetadata?.suppressed,
     });
 
     return outputText;

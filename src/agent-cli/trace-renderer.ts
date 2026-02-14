@@ -101,6 +101,19 @@ function renderTelemetry(trace: AgentTurnTrace): string {
   return createKeyValueTable(rows).toString();
 }
 
+function renderAutoSymbol(trace: AgentTurnTrace): string {
+  const table = createKeyValueTable([
+    ["autoMode", trace.autoSymbol.mode],
+    ["triggered", trace.autoSymbol.triggered],
+    ["confidence", trace.autoSymbol.confidence.toFixed(2)],
+    ["reason", trace.autoSymbol.reason],
+    ["eventCount", trace.autoSymbol.eventCount],
+    ["suppressed", trace.autoSymbol.suppressed],
+    ["writeApplied", trace.autoSymbol.writeApplied],
+  ]);
+  return table.toString();
+}
+
 function renderAgentLoop(trace: AgentTurnTrace): string {
   if (!trace.agent) {
     return "(agent metadata unavailable)";
@@ -161,6 +174,8 @@ export function renderTurnTrace(
     renderEngineDiagnostics(trace),
     theme.section("Retrieval + Write Path"),
     renderTelemetry(trace),
+    theme.section("Auto Symbol Recognition"),
+    renderAutoSymbol(trace),
     theme.section("Agent Loop"),
     renderAgentLoop(trace),
     theme.section("Symbol Table"),

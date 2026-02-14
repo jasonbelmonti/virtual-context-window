@@ -162,6 +162,37 @@ test("strict write intent mode throws when tool payload schema is invalid", asyn
   );
 });
 
+test("strict control envelope remains trailing after afterModel middleware mutations", async () => {
+  const generate = createLangChainAssistantGenerate({
+    model: "mock-model",
+    baseUrl: "http://example.local",
+    middleware: [
+      {
+        name: "suffix",
+        afterModel: ({ modelOutputText }) => `${modelOutputText}|mw`,
+      },
+    ],
+    createInvoker: () => ({
+      invoke: async () => ({ content: "unused" }),
+      invokeWithWriteTool: async () => ({
+        tool_calls: [
+          {
+            name: "emit_symbol_events",
+            args: {
+              assistant_response: "Got it.",
+              symbol_events: [{ type: "upsert_symbol", content: "remember this" }],
+            },
+          },
+        ],
+      }),
+    }),
+  });
+
+  const output = await generate(makeStrictInput());
+  expect(output).toContain("Got it.|mw");
+  expect(output.endsWith("</symbolic_control>")).toBe(true);
+});
+
 test("middleware execution order is before in declaration order and after in reverse order", async () => {
   const order: string[] = [];
 

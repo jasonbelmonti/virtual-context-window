@@ -5,6 +5,7 @@ import type {
   TelemetryEvent,
   VirtualContextMessage,
 } from "../engine";
+import type { AutoSymbolMode } from "../recognition";
 
 export type TraceMode = "off" | "on";
 
@@ -50,6 +51,15 @@ export type AgentTurnTrace = {
     retrievalStrategy: "lexical_v1" | "hybrid_v2";
     retrievalDegraded: boolean;
   };
+  autoSymbol: {
+    mode: AutoSymbolMode;
+    triggered: boolean;
+    confidence: number;
+    reason: string;
+    eventCount: number;
+    suppressed: boolean;
+    writeApplied: boolean;
+  };
   agent: AgentAssistantTraceMetadata | null;
 };
 
@@ -61,12 +71,14 @@ export type AgentTurnResult = {
 export type AgentCliStateView = {
   threadId: string;
   traceMode: TraceMode;
+  autoSymbolMode: AutoSymbolMode;
   messageCount: number;
 };
 
 export type AgentCliCommand =
   | { type: "help" }
   | { type: "trace"; action: "on" | "off" | "view" | "raw" }
+  | { type: "auto"; action: "on" | "off" | "shadow" | "status" }
   | { type: "state" }
   | { type: "remember"; content: string }
   | { type: "symbols"; limit?: number }

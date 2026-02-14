@@ -10,6 +10,7 @@ import type {
   WriteToolSchemaVersion,
   WriteTransport,
 } from "../integrations/langchain";
+import type { AutoSymbolMode } from "../recognition";
 
 export type TraceMode = "off" | "on";
 
@@ -45,6 +46,15 @@ export type ChatTurnTrace = {
     toolCallDetected: boolean;
     schemaVersion: WriteToolSchemaVersion;
   };
+  autoSymbol: {
+    mode: AutoSymbolMode;
+    triggered: boolean;
+    confidence: number;
+    reason: string;
+    eventCount: number;
+    suppressed: boolean;
+    writeApplied: boolean;
+  };
   diagnostics: {
     generationCallCount: number;
     preModelMs: number;
@@ -63,12 +73,14 @@ export type ChatCliStateView = {
   threadId: string;
   traceMode: TraceMode;
   trustedSymbolRefs: boolean;
+  autoSymbolMode: AutoSymbolMode;
   messageCount: number;
 };
 
 export type ChatCliCommand =
   | { type: "help" }
   | { type: "trace"; action: "on" | "off" | "view" | "raw" }
+  | { type: "auto"; action: "on" | "off" | "shadow" | "status" }
   | { type: "experiment"; mode: "vcw-only" | "chat-only" }
   | { type: "history"; action: "clear" }
   | { type: "remember"; content: string }

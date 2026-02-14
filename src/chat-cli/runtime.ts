@@ -15,12 +15,22 @@ import type { AssistantGenerateFn } from "../engine";
 import {
   createLangChainAssistantGenerate,
   resolveWriteIntentFromMetadata,
+  type WriteIntentMode,
 } from "../integrations/langchain";
 import type {
   LangChainAssistantResultMetadata,
-  WriteIntentMode,
   WriteToolSchemaVersion,
 } from "../integrations/langchain";
+import {
+  normalizeForComparison,
+  parseAutoSymbolMetadataEnvelope,
+  parseAutoSymbolMode,
+  recognizeAutomaticSymbols,
+  toAutoSymbolMetadataEnvelope,
+  type AutoSymbolMode,
+  type RecognitionDecision,
+  type RecognizerConfig,
+} from "../recognition";
 import type {
   ChatCliCommand,
   ChatCliStateView,
@@ -33,6 +43,9 @@ import { formatHelpText } from "./commands";
 import { renderTurnTrace } from "./trace-renderer";
 
 const DEFAULT_SYMBOL_LIST_LIMIT = 20;
+const DEFAULT_AUTO_ACTIVE_MIN_SCORE = 0.7;
+const DEFAULT_AUTO_SHADOW_MIN_SCORE = 0.45;
+const DEFAULT_AUTO_MAX_EVENTS_PER_TURN = 1;
 
 function makeThreadId(): string {
   return `thread-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
@@ -71,6 +84,20 @@ function parseWriteIntentModeFromMetadata(
   });
 }
 
+function parsePositiveFloat(value: string | undefined, fallback: number): number {
+  if (!value) {
+    return fallback;
+  }
+  const parsed = Number.parseFloat(value);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    return fallback;
+  }
+  if (parsed > 1) {
+    return 1;
+  }
+  return parsed;
+}
+
 export function createMockAssistantGenerate(): AssistantGenerateFn {
   return async (input) => {
     const lastUserText = getLastUserMessage(input.request.messages).trim();
@@ -78,7 +105,16 @@ export function createMockAssistantGenerate(): AssistantGenerateFn {
     const writeIntentMode = parseWriteIntentModeFromMetadata(
       input.request.metadata as Record<string, unknown> | undefined,
     );
+    const autoMetadata = parseAutoSymbolMetadataEnvelope(
+      input.request.metadata as Record<string, unknown> | undefined,
+    );
     const strictWriteIntent = writeIntentMode === "strict";
+    const autoWriteActive =
+      autoMetadata?.valid === true &&
+      autoMetadata.mode === "active" &&
+      autoMetadata.triggered &&
+      !autoMetadata.suppressed &&
+      autoMetadata.events.length > 0;
 
     if (rememberPrefix.test(lastUserText) || strictWriteIntent) {
       const content = rememberPrefix.test(lastUserText)
@@ -97,6 +133,17 @@ export function createMockAssistantGenerate(): AssistantGenerateFn {
       };
 
       return `Got it.\n<symbolic_control>${JSON.stringify(payload)}</symbolic_control>`;
+    }
+
+    if (autoWriteActive) {
+      const payload = {
+        symbol_events: autoMetadata.events,
+      };
+
+      return [
+        `Mock assistant: ${lastUserText || "hello"}`,
+        `<symbolic_control>${JSON.stringify(payload)}</symbolic_control>`,
+      ].join("\n");
     }
 
     if (lastUserText.length === 0) {
@@ -153,20 +200,40 @@ export class ChatCliRuntime {
   private engine: VirtualContextEngine;
   private traceEnabled: boolean;
   private trustedSymbolRefs: boolean;
+  private autoSymbolMode: AutoSymbolMode;
+  private readonly recognizerConfig: RecognizerConfig;
   private threadId: string;
   private activeStages: EngineStage[] | null = null;
   private activeTelemetry: TelemetryEvent[] | null = null;
   private activeWriteIntentMode: WriteIntentMode = "none";
   private activeWriteToolSchemaVersion: WriteToolSchemaVersion = "v1";
   private activeAssistantMetadata: LangChainAssistantResultMetadata | null = null;
+  private activeAutoDecision: RecognitionDecision | null = null;
   private lastAssistantMetadata: LangChainAssistantResultMetadata | null = null;
+  private lastAutoDecision: RecognitionDecision | null = null;
   private lastTrace: ChatTurnTrace | null = null;
   private turnInFlight = false;
 
   constructor(options: ChatCliRuntimeOptions = {}) {
     this.options = options;
+    const env = options.env ?? process.env;
     this.traceEnabled = options.traceEnabled ?? false;
     this.trustedSymbolRefs = options.trustedSymbolRefs ?? false;
+    this.autoSymbolMode = parseAutoSymbolMode(
+      env.VCW_AUTO_SYMBOL_MODE,
+      "shadow",
+    );
+    this.recognizerConfig = {
+      activeMinScore: parsePositiveFloat(
+        env.VCW_AUTO_SYMBOL_ACTIVE_MIN_SCORE,
+        DEFAULT_AUTO_ACTIVE_MIN_SCORE,
+      ),
+      shadowMinScore: parsePositiveFloat(
+        env.VCW_AUTO_SYMBOL_SHADOW_MIN_SCORE,
+        DEFAULT_AUTO_SHADOW_MIN_SCORE,
+      ),
+      maxEventsPerTurn: DEFAULT_AUTO_MAX_EVENTS_PER_TURN,
+    };
     this.threadId = options.threadId ?? makeThreadId();
     this.engine = this.createEngine();
   }
@@ -233,6 +300,20 @@ export class ChatCliRuntime {
     writeIntentMode: WriteIntentMode,
     rawModelContent: string,
   ): boolean {
+    if (writeIntentMode === "auto") {
+      const auto = this.lastAutoDecision;
+      if (!auto) {
+        return true;
+      }
+      if (auto.mode !== "active" || !auto.triggered || auto.suppressed) {
+        return true;
+      }
+      return (
+        rawModelContent.includes("<symbolic_control>") &&
+        rawModelContent.includes("</symbolic_control>")
+      );
+    }
+
     if (writeIntentMode !== "strict") {
       return true;
     }
@@ -241,6 +322,80 @@ export class ChatCliRuntime {
       rawModelContent.includes("<symbolic_control>") &&
       rawModelContent.includes("</symbolic_control>")
     );
+  }
+
+  private emptyAutoDecision(): RecognitionDecision {
+    return {
+      mode: this.autoSymbolMode,
+      triggered: false,
+      confidence: 0,
+      reason: "none",
+      shouldWrite: false,
+      suppressed: false,
+      events: [],
+    };
+  }
+
+  private async buildAutoDecision(
+    userText: string,
+    writeIntentMode: WriteIntentMode,
+  ): Promise<RecognitionDecision | null> {
+    if (writeIntentMode === "strict") {
+      return null;
+    }
+
+    const initial = recognizeAutomaticSymbols({
+      latestUserText: userText,
+      mode: this.autoSymbolMode,
+      config: this.recognizerConfig,
+    });
+
+    if (initial.events.length === 0) {
+      return initial;
+    }
+
+    const dedupedEvents: typeof initial.events = [];
+    let duplicateSkipped = false;
+    for (const event of initial.events) {
+      const symbolId = event.symbol_id;
+      if (symbolId) {
+        const existing = await this.store.get(this.threadId, symbolId);
+        if (
+          existing &&
+          normalizeForComparison(existing.content) ===
+            normalizeForComparison(event.content)
+        ) {
+          duplicateSkipped = true;
+          continue;
+        }
+      }
+
+      dedupedEvents.push(event);
+      if (dedupedEvents.length >= this.recognizerConfig.maxEventsPerTurn) {
+        break;
+      }
+    }
+
+    const suppressed =
+      initial.suppressed || (initial.triggered && dedupedEvents.length === 0);
+    const reason =
+      initial.triggered && duplicateSkipped && dedupedEvents.length === 0
+        ? "duplicate_suppressed"
+        : initial.reason;
+    const shouldWrite =
+      initial.mode === "active" &&
+      initial.triggered &&
+      initial.confidence >= this.recognizerConfig.activeMinScore &&
+      !suppressed &&
+      dedupedEvents.length > 0;
+
+    return {
+      ...initial,
+      reason,
+      suppressed,
+      shouldWrite,
+      events: dedupedEvents,
+    };
   }
 
   private buildTrace(response: {
@@ -257,6 +412,17 @@ export class ChatCliRuntime {
   }): Promise<ChatTurnTrace> {
     const metadata = this.lastAssistantMetadata;
     const writeIntentMode = metadata?.writeIntentMode ?? this.activeWriteIntentMode;
+    const auto = this.lastAutoDecision ?? this.emptyAutoDecision();
+    const post = this.activeTelemetry?.find(
+      (event) => event.type === "post_model",
+    );
+    const writeApplied =
+      (metadata?.writeTransport === "detector_bridge" &&
+        (post?.type !== "post_model" || post.eventsAccepted > 0)) ||
+      (post?.type === "post_model" &&
+        auto.mode === "active" &&
+        auto.triggered &&
+        post.eventsAccepted > 0);
     return this.collectSymbolTableSnapshot(this.threadId).then((symbolTable) => ({
       threadId: this.threadId,
       stages: this.activeStages ?? [],
@@ -277,6 +443,15 @@ export class ChatCliRuntime {
         toolCallDetected: metadata?.toolCallDetected ?? false,
         schemaVersion:
           metadata?.writeToolSchemaVersion ?? this.activeWriteToolSchemaVersion,
+      },
+      autoSymbol: {
+        mode: metadata?.autoMode ?? auto.mode,
+        triggered: metadata?.autoTriggered ?? auto.triggered,
+        confidence: metadata?.autoConfidence ?? auto.confidence,
+        reason: metadata?.autoReason ?? auto.reason,
+        eventCount: metadata?.autoEventCount ?? auto.events.length,
+        suppressed: metadata?.autoSuppressed ?? auto.suppressed,
+        writeApplied,
       },
       diagnostics: response.diagnostics,
     }));
@@ -332,21 +507,38 @@ export class ChatCliRuntime {
 
     const thread = this.getOrCreateThread(this.threadId);
     const requestMessages = [...thread.messages, { role: "user" as const, content: text }];
-    const writeIntentMode = options?.writeIntentMode ?? "none";
-    const metadata =
-      writeIntentMode === "strict"
+    const requestedWriteIntentMode = options?.writeIntentMode ?? "none";
+    const autoDecision = await this.buildAutoDecision(text, requestedWriteIntentMode);
+    const writeIntentMode =
+      requestedWriteIntentMode === "strict"
+        ? "strict"
+        : this.autoSymbolMode === "off"
+          ? "none"
+          : "auto";
+    const metadata: Record<string, unknown> | undefined =
+      requestedWriteIntentMode === "strict"
         ? {
             writeIntent: {
               mode: "strict",
             },
           }
-        : undefined;
+        : this.autoSymbolMode !== "off"
+          ? {
+              writeIntent: {
+                mode: "auto",
+              },
+              vcwAutoSymbol: toAutoSymbolMetadataEnvelope(
+                autoDecision ?? this.emptyAutoDecision(),
+              ),
+            }
+          : undefined;
 
     this.activeStages = [];
     this.activeTelemetry = [];
     this.activeWriteIntentMode = writeIntentMode;
     this.activeWriteToolSchemaVersion = "v1";
     this.activeAssistantMetadata = null;
+    this.activeAutoDecision = autoDecision;
     this.turnInFlight = true;
 
     try {
@@ -357,6 +549,7 @@ export class ChatCliRuntime {
         metadata,
       });
       this.lastAssistantMetadata = this.activeAssistantMetadata;
+      this.lastAutoDecision = this.activeAutoDecision;
 
       thread.messages.push({ role: "user", content: text });
       thread.messages.push({ role: "assistant", content: response.content });
@@ -373,6 +566,7 @@ export class ChatCliRuntime {
       this.activeTelemetry = null;
       this.activeWriteIntentMode = "none";
       this.activeAssistantMetadata = null;
+      this.activeAutoDecision = null;
       this.turnInFlight = false;
     }
   }
@@ -415,6 +609,22 @@ export class ChatCliRuntime {
           output: `trace=${this.traceEnabled ? "on" : "off"}`,
         };
 
+      case "auto":
+        if (command.action === "status") {
+          return {
+            output: `autoSymbolMode=${this.autoSymbolMode}`,
+          };
+        }
+        this.autoSymbolMode =
+          command.action === "on"
+            ? "active"
+            : command.action === "off"
+              ? "off"
+              : "shadow";
+        return {
+          output: `autoSymbolMode=${this.autoSymbolMode}`,
+        };
+
       case "remember": {
         const turn = await this.processUserMessage(command.content, {
           writeIntentMode: "strict",
@@ -437,6 +647,7 @@ export class ChatCliRuntime {
             `threadId=${state.threadId}`,
             `trace=${state.traceMode}`,
             `trustedSymbolRefs=${state.trustedSymbolRefs}`,
+            `autoSymbolMode=${state.autoSymbolMode}`,
             `messageCount=${state.messageCount}`,
             `symbolCount=${symbolCount}`,
             `activeMode=${activeMode}`,
@@ -543,6 +754,7 @@ export class ChatCliRuntime {
         this.engine = this.createEngine();
         this.lastTrace = null;
         this.lastAssistantMetadata = null;
+        this.lastAutoDecision = null;
         this.getOrCreateThread(this.threadId);
         return {
           output: "Cleared in-memory sessions and symbol store.",
@@ -566,6 +778,7 @@ export class ChatCliRuntime {
       threadId: this.threadId,
       traceMode: this.traceEnabled ? "on" : "off",
       trustedSymbolRefs: this.trustedSymbolRefs,
+      autoSymbolMode: this.autoSymbolMode,
       messageCount: this.getOrCreateThread(this.threadId).messages.length,
     };
   }
