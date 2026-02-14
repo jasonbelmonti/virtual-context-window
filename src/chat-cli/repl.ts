@@ -4,6 +4,7 @@ import { isSlashCommand, parseSlashCommand } from "./commands";
 import type { ChatCliLaunchOptions } from "./contracts";
 import { ChatCliRuntime } from "./runtime";
 import { renderTurnTrace } from "./trace-renderer";
+import { createCliTheme, detectColorEnabled } from "./ui";
 
 export type ParsedChatCliArgs = {
   once?: string;
@@ -89,6 +90,8 @@ function toPrintableMessage(error: unknown): string {
 export async function runInteractiveChatCli(
   options: ChatCliLaunchOptions = {},
 ): Promise<number> {
+  const colorEnabled = detectColorEnabled(process.stdout);
+  const theme = createCliTheme(colorEnabled);
   const print = options.print ?? ((text: string) => console.log(text));
   const printError =
     options.printError ?? ((text: string) => console.error(text));
@@ -104,32 +107,37 @@ export async function runInteractiveChatCli(
       assistantGenerate: options.assistantGenerate,
     });
   } catch (error) {
-    writeLine(printError, `[chat] startup_failed: ${toPrintableMessage(error)}`);
+    writeLine(
+      printError,
+      theme.error(`[chat] startup_failed: ${toPrintableMessage(error)}`),
+    );
     return 1;
   }
 
   if (typeof options.once === "string") {
     try {
       const turn = await runtime.processUserMessage(options.once);
-      writeLine(print, turn.content);
+      writeLine(print, theme.assistant(turn.content));
       if (runtime.getTraceEnabled()) {
-        writeLine(print, renderTurnTrace(turn.trace));
+        writeLine(print, renderTurnTrace(turn.trace, { color: colorEnabled }));
       }
       return 0;
     } catch (error) {
       const classification = runtime.classifyError(error);
       writeLine(
         printError,
-        `[chat] ${classification}: ${toPrintableMessage(error)}`,
+        theme.error(`[chat] ${classification}: ${toPrintableMessage(error)}`),
       );
       return 1;
     }
   }
 
-  writeLine(print, "Virtual Context Window Chat CLI");
+  writeLine(print, theme.title("Virtual Context Window Chat CLI"));
   writeLine(
     print,
-    "Type /help for commands. Use /remember <text> for strict write-intent memory writes.",
+    theme.subtitle(
+      "Type /help for commands. Use /remember <text> for strict write-intent memory writes.",
+    ),
   );
 
   const input = (process.stdin as ReadStream | undefined) ?? process.stdin;
@@ -150,7 +158,7 @@ export async function runInteractiveChatCli(
 
     interrupted = true;
     shouldQuit = true;
-    writeLine(print, "Interrupted. Exiting.");
+    writeLine(print, theme.subtle("Interrupted. Exiting."));
     rl.close();
   };
 
@@ -160,7 +168,7 @@ export async function runInteractiveChatCli(
     while (!shouldQuit) {
       let line: string;
       try {
-        line = await rl.question("> ");
+        line = await rl.question(`${theme.prompt("> ")} `);
       } catch {
         break;
       }
@@ -173,18 +181,21 @@ export async function runInteractiveChatCli(
       if (isSlashCommand(trimmed)) {
         const parsed = parseSlashCommand(trimmed);
         if (!parsed.ok) {
-          writeLine(printError, `[chat] ${parsed.error}`);
+          writeLine(printError, theme.error(`[chat] ${parsed.error}`));
           continue;
         }
 
         try {
           const result = await runtime.executeCommand(parsed.command);
           if (result.output) {
-            writeLine(print, result.output);
+            writeLine(print, theme.value(result.output));
           }
 
           if (result.turn && runtime.getTraceEnabled()) {
-            writeLine(print, renderTurnTrace(result.turn.trace));
+            writeLine(
+              print,
+              renderTurnTrace(result.turn.trace, { color: colorEnabled }),
+            );
           }
 
           if (result.shouldQuit) {
@@ -194,7 +205,9 @@ export async function runInteractiveChatCli(
           const classification = runtime.classifyError(error);
           writeLine(
             printError,
-            `[chat] ${classification}: ${toPrintableMessage(error)}`,
+            theme.error(
+              `[chat] ${classification}: ${toPrintableMessage(error)}`,
+            ),
           );
         }
 
@@ -203,16 +216,16 @@ export async function runInteractiveChatCli(
 
       try {
         const result = await runtime.processUserMessage(trimmed);
-        writeLine(print, result.content);
+        writeLine(print, theme.assistant(result.content));
 
         if (runtime.getTraceEnabled()) {
-          writeLine(print, renderTurnTrace(result.trace));
+          writeLine(print, renderTurnTrace(result.trace, { color: colorEnabled }));
         }
       } catch (error) {
         const classification = runtime.classifyError(error);
         writeLine(
           printError,
-          `[chat] ${classification}: ${toPrintableMessage(error)}`,
+          theme.error(`[chat] ${classification}: ${toPrintableMessage(error)}`),
         );
       }
     }

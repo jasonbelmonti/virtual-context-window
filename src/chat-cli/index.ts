@@ -3,3 +3,4 @@ export * from "./commands";
 export * from "./trace-renderer";
 export * from "./runtime";
 export * from "./repl";
+export * from "./ui";
