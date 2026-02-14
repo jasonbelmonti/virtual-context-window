@@ -2,6 +2,7 @@ import { expect, test } from "bun:test";
 import {
   InMemorySymbolStore,
   createRetrievalHooks,
+  type RetrievalPlanner,
 } from "../../src/engine";
 import type { EmbeddingProvider } from "../../src/engine";
 
@@ -147,4 +148,57 @@ test("retrieval embedding cache avoids duplicate provider calls for repeated que
   expect(first.diagnostics.retrievalDegraded).toBe(false);
   expect(second.diagnostics.retrievalDegraded).toBe(false);
   expect(embedCalls).toBe(2); // query embedding + single symbol embedding only once each.
+});
+
+test("failOnEmbeddingError does not force fail-fast for non-embedding retrieval errors", async () => {
+  const threadId = "thread-non-embed-error";
+  const store = await seedStore(threadId);
+  const planner: RetrievalPlanner = {
+    buildQuery() {
+      return {
+        queryText: "query",
+        queryTokens: ["query"],
+        turnsUsed: 1,
+      };
+    },
+    async selectCandidates() {
+      throw new Error("store_temporarily_unavailable");
+    },
+    rerank(candidates) {
+      return candidates;
+    },
+    confidenceGate() {
+      return {
+        focused: [],
+        recall: [],
+        rejected: [],
+      };
+    },
+  };
+
+  const hooks = createRetrievalHooks({
+    store,
+    strategy: "hybrid_v2",
+    planner,
+    failOnEmbeddingError: true,
+    failOnRetrievalError: false,
+  });
+
+  const query = await hooks.queryBuilder({
+    messages: [{ role: "user", content: "query" }],
+    trustedSymbolRefsEnabled: false,
+  });
+
+  const injected = await hooks.contextPackInjector({
+    threadId,
+    request: {
+      threadId,
+      messages: [{ role: "user", content: "query" }],
+    },
+    query,
+    trustedSymbolRefsEnabled: false,
+  });
+
+  expect(injected.contextPackText).toBe("");
+  expect(injected.diagnostics.retrievalDegraded).toBe(true);
 });

@@ -31,6 +31,16 @@ const DEFAULT_EMBEDDING_CACHE_MAX_ENTRIES = 2_000;
 const DEFAULT_EMBEDDING_MODEL = "nomic-embed-text";
 const TRUSTED_SYMBOL_REF_REGEX = /⟦S:([A-Za-z0-9_.:-]+)⟧/gu;
 
+class EmbeddingRetrievalError extends Error {
+  readonly causeValue: unknown;
+
+  constructor(causeValue: unknown) {
+    super("embedding_retrieval_error");
+    this.name = "EmbeddingRetrievalError";
+    this.causeValue = causeValue;
+  }
+}
+
 export type RetrievalHooksOptions = {
   store: SymbolStore;
   strategy?: RetrievalStrategy;
@@ -170,7 +180,7 @@ export function createRetrievalHooks(options: RetrievalHooksOptions): {
       return vector;
     } catch (error) {
       if (failOnEmbeddingError) {
-        throw error;
+        throw new EmbeddingRetrievalError(error);
       }
       turnState.fallbackUsed = true;
       return undefined;
@@ -208,7 +218,7 @@ export function createRetrievalHooks(options: RetrievalHooksOptions): {
       return vector;
     } catch (error) {
       if (failOnEmbeddingError) {
-        throw error;
+        throw new EmbeddingRetrievalError(error);
       }
       turnState.fallbackUsed = true;
       return undefined;
@@ -246,7 +256,7 @@ export function createRetrievalHooks(options: RetrievalHooksOptions): {
           return Math.max(0, cosineSimilarity(symbolEmbedding, queryEmbedding));
         } catch (error) {
           if (failOnEmbeddingError) {
-            throw error;
+            throw new EmbeddingRetrievalError(error);
           }
           turnState.fallbackUsed = true;
           return 0;
@@ -377,7 +387,11 @@ export function createRetrievalHooks(options: RetrievalHooksOptions): {
           },
         };
       } catch (error) {
-        if (failOnEmbeddingError || options.failOnRetrievalError) {
+        if (error instanceof EmbeddingRetrievalError) {
+          throw error.causeValue instanceof Error ? error.causeValue : error;
+        }
+
+        if (options.failOnRetrievalError) {
           throw error;
         }
 
