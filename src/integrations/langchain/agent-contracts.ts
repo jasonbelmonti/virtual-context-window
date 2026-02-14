@@ -84,6 +84,14 @@ export interface LangChainAgentRuntime {
       recursionLimit?: number;
     },
   ): Promise<unknown>;
+  streamEvents?(
+    input: {
+      messages: Array<{ role: string; content: string }>;
+    },
+    options?: {
+      recursionLimit?: number;
+    },
+  ): AsyncIterable<unknown>;
 }
 
 export type CreateLangChainAgentRuntimeInput = {

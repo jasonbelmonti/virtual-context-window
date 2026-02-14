@@ -50,6 +50,82 @@ test("agent adapter exposes stream via buffered final_text", async () => {
   ]);
 });
 
+test("agent adapter emits text deltas when runtime exposes streamEvents", async () => {
+  const store = new InMemorySymbolStore();
+  let streamProvider = "none";
+  let streamChunkCount = 0;
+  const generate = createLangChainAgentAssistantGenerate({
+    store,
+    model: "mock-model",
+    baseUrl: "http://example.local",
+    createAgentRuntime: () => ({
+      invoke: async () => {
+        throw new Error("invoke_should_not_be_used_when_stream_events_available");
+      },
+      streamEvents: async function* () {
+        yield {
+          event: "on_chat_model_start",
+          name: "ChatOllama",
+          data: {},
+        };
+        yield {
+          event: "on_chat_model_stream",
+          name: "ChatOllama",
+          data: {
+            chunk: {
+              content: "agent ",
+            },
+          },
+        };
+        yield {
+          event: "on_chat_model_stream",
+          name: "ChatOllama",
+          data: {
+            chunk: {
+              content: "stream reply",
+            },
+          },
+        };
+        yield {
+          event: "on_chain_end",
+          name: "LangGraph",
+          data: {
+            output: {
+              messages: [{ role: "assistant", content: "agent stream reply" }],
+            },
+          },
+        };
+      },
+    }),
+    onResultMetadata: (metadata) => {
+      streamProvider = metadata.streamProvider ?? "none";
+      streamChunkCount = metadata.streamChunkCount ?? 0;
+    },
+  });
+
+  const events = [];
+  for await (const event of generate.stream!(makeInput())) {
+    events.push(event);
+  }
+
+  expect(events).toEqual([
+    {
+      type: "text_delta",
+      delta: "agent ",
+    },
+    {
+      type: "text_delta",
+      delta: "stream reply",
+    },
+    {
+      type: "final_text",
+      text: "agent stream reply",
+    },
+  ]);
+  expect(streamProvider).toBe("langchain_stream");
+  expect(streamChunkCount).toBe(2);
+});
+
 test("engine stream with agent adapter still reports generationCallCount=1", async () => {
   const store = new InMemorySymbolStore();
   const assistantGenerate = createLangChainAgentAssistantGenerate({
