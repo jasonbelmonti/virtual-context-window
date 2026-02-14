@@ -232,7 +232,7 @@
 - Ambiguities resolved during Phase 5:
   - None.
 - Freeze commit SHA reference:
-  - `TBD` (set to Phase 5 closure commit SHA at commit time).
+  - `71815b8` (Phase 5 certification workflow, risk snapshot, release checklist, and sign-off closure).
 - Handoff note: MVP stabilization and operations readiness are complete; post-MVP roadmap planning may proceed.
 
 ## Template for New ADRs
