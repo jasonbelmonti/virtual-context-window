@@ -48,6 +48,16 @@ Provider override:
 bun run demo:showdown:openai
 ```
 
+## Live Ticker Output
+While running, the CLI emits `[t+Xs]` progress lines so the audience can see internals in real time:
+- provider healthcheck and required-tool probe
+- lane bootstrap + history window setup
+- sentinel memory writes (`seed memory n/N`)
+- distractor progression (`distractor turn n/N`)
+- mission attempts with gate states (`answer/tools/brief/memory/web/strict`)
+- lane completion metrics (`history/focus/recall/tool names`)
+- `PROJECTION ACCEPTED` highlights when control-channel envelopes are successfully parsed/applied
+
 ## CLI Flags
 ```text
 --provider ollama|openai_responses

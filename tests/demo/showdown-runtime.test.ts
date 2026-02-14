@@ -101,6 +101,7 @@ test("incident showdown records chat lane failure and vcw lane pass with strict 
   });
 
   const outputDir = await mkdtemp(path.join(os.tmpdir(), "vcw-showdown-v2-"));
+  const progressEvents: Array<{ kind: string; lane?: string; message: string }> = [];
 
   const result = await runShowdown({
     provider: "ollama",
@@ -116,6 +117,13 @@ test("incident showdown records chat lane failure and vcw lane pass with strict 
     gateToolNameOverrides: {
       chat_only: ["vcw_web_search"],
       vcw_only: ["vcw_web_search", "vcw_search_symbols"],
+    },
+    progressReporter: (event) => {
+      progressEvents.push({
+        kind: event.kind,
+        lane: event.lane,
+        message: event.message,
+      });
     },
   });
 
@@ -152,6 +160,19 @@ test("incident showdown records chat lane failure and vcw lane pass with strict 
   expect(parsed.schemaVersion).toBe("2.0");
   expect(parsed.strictGatePassed).toBe(false);
   expect(parsed.lanes).toHaveLength(2);
+  expect(progressEvents.some((event) => event.kind === "phase")).toBe(true);
+  expect(
+    progressEvents.some(
+      (event) => event.kind === "lane" && event.message.includes("mission attempt"),
+    ),
+  ).toBe(true);
+  expect(
+    progressEvents.some(
+      (event) =>
+        event.kind === "projection" &&
+        event.message.includes("control envelope accepted"),
+    ),
+  ).toBe(true);
 });
 
 test("mission retry loop runs until max retries when required tools remain missing", async () => {

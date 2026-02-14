@@ -548,9 +548,32 @@ function createDefaultAgentRuntime(
 
 type AgentRecoveryOutput = {
   outputText: string;
+  toolCallCount: number;
   toolNames: string[];
   reason: string;
 };
+
+function sanitizeRecoveryMetadata(
+  metadata: unknown,
+): Record<string, unknown> | undefined {
+  const objectValue = asObject(metadata);
+  if (!objectValue) {
+    return undefined;
+  }
+
+  const sanitized: Record<string, unknown> = {
+    ...objectValue,
+  };
+  delete sanitized.writeIntent;
+  delete sanitized.vcwWriteIntent;
+  delete sanitized.vcwAutoSymbol;
+
+  return Object.keys(sanitized).length > 0 ? sanitized : undefined;
+}
+
+function stripTrailingSymbolicControlEnvelope(text: string): string {
+  return text.replace(/\s*<symbolic_control>[\s\S]*<\/symbolic_control>\s*$/u, "").trim();
+}
 
 async function runAgentRecoveryFallback(options: {
   input: Parameters<AssistantGenerateFn>[0];
@@ -565,27 +588,34 @@ async function runAgentRecoveryFallback(options: {
     latestUserText.trim() ||
     "recent user request";
   const toolNames: string[] = [];
+  const seenToolNames = new Set<string>();
+  let toolCallCount = 0;
   const sections: string[] = [];
   const symbolDetails: RecoveredSymbol[] = [];
   let webSearchResult: unknown = { hits: [] };
 
-  const symbolResult = await executeVcwAgentToolCall(
-    options.toolContext,
-    "vcw_search_symbols",
-    {
-      query: searchQuery,
-      limit: 6,
-    },
-  );
-  toolNames.push("vcw_search_symbols");
+  const callRecoveryTool = async (
+    toolName: "vcw_search_symbols" | "vcw_get_symbol" | "vcw_list_symbols" | "vcw_web_search",
+    rawInput: unknown,
+  ): Promise<unknown> => {
+    toolCallCount += 1;
+    if (!seenToolNames.has(toolName)) {
+      seenToolNames.add(toolName);
+      toolNames.push(toolName);
+    }
+    return executeVcwAgentToolCall(options.toolContext, toolName, rawInput);
+  };
+
+  const symbolResult = await callRecoveryTool("vcw_search_symbols", {
+    query: searchQuery,
+    limit: 6,
+  });
   const searchedSymbols = toRecoveredSymbols(symbolResult);
   const candidateSymbolIds = searchedSymbols.map((item) => item.symbolId);
   for (const symbolId of candidateSymbolIds.slice(0, 8)) {
-    const getResult = await executeVcwAgentToolCall(
-      options.toolContext,
-      "vcw_get_symbol",
-      { symbol_id: symbolId },
-    );
+    const getResult = await callRecoveryTool("vcw_get_symbol", {
+      symbol_id: symbolId,
+    });
     const objectValue = asObject(getResult);
     const symbol = asObject(objectValue?.symbol);
     if (!objectValue?.found || !symbol || typeof symbol.symbolId !== "string") {
@@ -600,19 +630,14 @@ async function runAgentRecoveryFallback(options: {
   }
 
   if (symbolDetails.length === 0) {
-    const listResult = await executeVcwAgentToolCall(
-      options.toolContext,
-      "vcw_list_symbols",
-      { limit: 8 },
-    );
-    toolNames.push("vcw_list_symbols");
+    const listResult = await callRecoveryTool("vcw_list_symbols", {
+      limit: 8,
+    });
     const listed = toRecoveredSymbols(listResult);
     for (const entry of listed) {
-      const getResult = await executeVcwAgentToolCall(
-        options.toolContext,
-        "vcw_get_symbol",
-        { symbol_id: entry.symbolId },
-      );
+      const getResult = await callRecoveryTool("vcw_get_symbol", {
+        symbol_id: entry.symbolId,
+      });
       const objectValue = asObject(getResult);
       const symbol = asObject(objectValue?.symbol);
       if (!objectValue?.found || !symbol || typeof symbol.symbolId !== "string") {
@@ -641,15 +666,10 @@ async function runAgentRecoveryFallback(options: {
 
   if (shouldAttemptWebSearch(latestUserText)) {
     const webQuery = extractQuotedWebSearchQuery(latestUserText) ?? searchQuery;
-    webSearchResult = await executeVcwAgentToolCall(
-      options.toolContext,
-      "vcw_web_search",
-      {
-        query: webQuery,
-        limit: 3,
-      },
-    );
-    toolNames.push("vcw_web_search");
+    webSearchResult = await callRecoveryTool("vcw_web_search", {
+      query: webQuery,
+      limit: 3,
+    });
     sections.push(
       [
         "VCW_WEB_SEARCH_RESULT:",
@@ -676,12 +696,15 @@ async function runAgentRecoveryFallback(options: {
       request: {
         ...options.input.request,
         systemPrompt: recoverySystemPrompt,
+        metadata: sanitizeRecoveryMetadata(options.input.request.metadata),
       },
     });
 
-    if (outputText.trim().length > 0) {
+    const sanitizedOutputText = stripTrailingSymbolicControlEnvelope(outputText);
+    if (sanitizedOutputText.length > 0) {
       return {
-        outputText,
+        outputText: sanitizedOutputText,
+        toolCallCount,
         toolNames,
         reason: options.failureMessage,
       };
@@ -701,6 +724,7 @@ async function runAgentRecoveryFallback(options: {
 
   return {
     outputText: synthetic,
+    toolCallCount,
     toolNames,
     reason: options.failureMessage,
   };
@@ -903,7 +927,7 @@ export function createLangChainAgentAssistantGenerate(
       visibleText = recovered.outputText;
       loopStats = {
         agentModelCallCount: 1,
-        agentToolCallCount: recovered.toolNames.length,
+        agentToolCallCount: recovered.toolCallCount,
         agentToolNames: recovered.toolNames,
       };
     }

@@ -162,6 +162,110 @@ test("agent assistant recovers from recursion-limit failure with fallback synthe
   expect(metadata).toMatchObject({
     agentToolNames: expect.arrayContaining(["vcw_search_symbols"]),
   });
+  const result = metadata as { agentToolCallCount: number; agentToolNames: string[] };
+  expect(result.agentToolCallCount).toBeGreaterThanOrEqual(2);
+});
+
+test("agent recovery clears auto metadata before fallback generation and avoids nested control wrappers", async () => {
+  const store = new InMemorySymbolStore();
+  await store.upsert("thread-agent", {
+    symbolId: "profile:name",
+    summary: "name",
+    content: "Jason",
+    kind: "fact",
+  });
+
+  const generate = createLangChainAgentAssistantGenerate({
+    store,
+    model: "mock-model",
+    baseUrl: "http://example.local",
+    createAgentRuntime: () => ({
+      invoke: async () => {
+        throw new Error("GRAPH_RECURSION_LIMIT");
+      },
+    }),
+    strictWriteGenerate: async (input) => {
+      const metadata = input.request.metadata as Record<string, unknown> | undefined;
+      expect(metadata?.writeIntent).toBeUndefined();
+      expect(metadata?.vcwWriteIntent).toBeUndefined();
+      expect(metadata?.vcwAutoSymbol).toBeUndefined();
+      return "Recovered final text\n<symbolic_control>{\"symbol_events\":[{\"type\":\"upsert_symbol\",\"symbol_id\":\"fallback:tmp\",\"content\":\"fallback\"}]}</symbolic_control>";
+    },
+  });
+
+  const autoInput: AssistantGenerateInput = {
+    ...makeInput(),
+    request: {
+      ...makeInput().request,
+      metadata: {
+        writeIntent: {
+          mode: "auto",
+        },
+        vcwAutoSymbol: {
+          mode: "active",
+          triggered: true,
+          confidence: 0.95,
+          reason: "profile_name_statement",
+          suppressed: false,
+          events: [
+            {
+              type: "upsert_symbol",
+              symbol_id: "profile:name",
+              content: "My name is Jason",
+              kind: "fact",
+            },
+          ],
+        },
+      },
+    },
+  };
+
+  const output = await generate(autoInput);
+  const wrappers = output.match(/<symbolic_control>/gu) ?? [];
+  expect(wrappers).toHaveLength(1);
+  expect(output).toContain("Recovered final text");
+  expect(output).toContain("profile:name");
+  expect(output).not.toContain("fallback:tmp");
+});
+
+test("agent recovery reports expanded fallback tool-call count", async () => {
+  const store = new InMemorySymbolStore();
+  await store.upsert("thread-agent", {
+    symbolId: "plan:omega:a",
+    summary: "omega A",
+    content: "remember plan omega alpha",
+    kind: "note",
+  });
+  await store.upsert("thread-agent", {
+    symbolId: "plan:omega:b",
+    summary: "omega B",
+    content: "remember plan omega beta",
+    kind: "note",
+  });
+  let metadata: unknown;
+
+  const generate = createLangChainAgentAssistantGenerate({
+    store,
+    model: "mock-model",
+    baseUrl: "http://example.local",
+    createAgentRuntime: () => ({
+      invoke: async () => {
+        throw new Error("GRAPH_RECURSION_LIMIT");
+      },
+    }),
+    strictWriteGenerate: async () => "Recovered answer",
+    onResultMetadata: (value) => {
+      metadata = value;
+    },
+  });
+
+  await generate(makeInput());
+  const result = metadata as { agentToolCallCount: number; agentToolNames: string[] };
+  expect(result.agentToolNames).toEqual(
+    expect.arrayContaining(["vcw_search_symbols", "vcw_get_symbol"]),
+  );
+  expect(result.agentToolCallCount).toBeGreaterThanOrEqual(3);
+  expect(result.agentToolCallCount).toBeGreaterThan(result.agentToolNames.length);
 });
 
 test("agent assistant recovers from missing final text and can include web search fallback", async () => {

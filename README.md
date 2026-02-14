@@ -18,6 +18,12 @@ Cinematic incident-response showdown demo (live Ollama primary):
 bun run demo:showdown
 ```
 
+During execution, the CLI now streams a live ticker (`[t+Xs]`) with:
+- provider/tool probe progress
+- per-lane memory seeding and distractor turn progress
+- mission-attempt gate outcomes (tools/brief/memory/web/strict)
+- special `PROJECTION ACCEPTED` callouts when a valid trailing `<symbolic_control>` envelope is parsed and applied
+
 Fast variant (optimized for under ~3 minutes):
 
 ```bash

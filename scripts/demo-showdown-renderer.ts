@@ -62,6 +62,15 @@ export function renderLaneEvent(
   return `${prefix} ${message}${suffix}`;
 }
 
+export function renderProjectionEvent(
+  lane: ShowdownLane,
+  detail: string,
+): string {
+  const lanePrefix = lane === "chat_only" ? chalk.yellow("[chat_only]") : chalk.blue("[vcw_only]");
+  const badge = chalk.bgCyan.black(" PROJECTION ACCEPTED ");
+  return `${lanePrefix} ${badge} ${chalk.cyan(detail)}`;
+}
+
 export function renderFinalScoreboard(summary: RenderRunSummary): string {
   const table = new Table({
     head: [

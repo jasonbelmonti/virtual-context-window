@@ -1,7 +1,11 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { AgentCliRuntime, type AgentTurnTrace } from "../src/agent-cli";
-import type { AssistantGenerateFn, PreModelTelemetry } from "../src/engine";
+import type {
+  AssistantGenerateFn,
+  PostModelTelemetry,
+  PreModelTelemetry,
+} from "../src/engine";
 import {
   evaluateLaneGates,
   INCIDENT_REQUIRED_HEADINGS,
@@ -20,6 +24,7 @@ import {
   renderFinalScoreboard,
   renderLaneEvent,
   renderPhase,
+  renderProjectionEvent,
   type RenderLaneMetric,
   type RenderRunSummary,
 } from "./demo-showdown-renderer";
@@ -113,7 +118,17 @@ type RunShowdownOptions = {
   requiredToolNames?: string[];
   gateToolNameOverrides?: Partial<Record<ShowdownLane, string[]>>;
   timelineEvents?: ShowdownTimelineEvent[];
+  progressReporter?: ShowdownProgressReporter;
 };
+
+type ShowdownProgressEvent = {
+  kind: "phase" | "lane" | "projection";
+  lane?: ShowdownLane;
+  message: string;
+  detail?: string;
+};
+
+type ShowdownProgressReporter = (event: ShowdownProgressEvent) => void;
 
 const DEFAULT_DISTRACTOR_TURNS = 6;
 const DEFAULT_MAX_RETRIES = 2;
@@ -281,6 +296,14 @@ function extractPreModel(trace: AgentTurnTrace): PreModelTelemetry | undefined {
   return pre;
 }
 
+function extractPostModel(trace: AgentTurnTrace): PostModelTelemetry | undefined {
+  const post = trace.telemetry.find((event) => event.type === "post_model");
+  if (post?.type !== "post_model") {
+    return undefined;
+  }
+  return post;
+}
+
 function timelinePush(
   timeline: ShowdownTimelineEvent[],
   phase: string,
@@ -302,6 +325,39 @@ function toErrorMessage(error: unknown): string {
     return error.message;
   }
   return String(error);
+}
+
+function emitProgress(
+  reporter: ShowdownProgressReporter | undefined,
+  event: ShowdownProgressEvent,
+): void {
+  if (!reporter) {
+    return;
+  }
+  reporter(event);
+}
+
+function compactPreview(text: string, maxChars = 72): string {
+  const compact = text.replace(/\s+/gu, " ").trim();
+  if (compact.length <= maxChars) {
+    return compact;
+  }
+  return `${compact.slice(0, Math.max(0, maxChars - 3))}...`;
+}
+
+function describeGateOutcome(gate: ShowdownLaneGateResult): string {
+  const checks = [
+    `answer=${gate.answerCorrect ? "PASS" : "FAIL"}`,
+    `tools=${gate.requiredToolCallsSatisfied ? "PASS" : "FAIL"}`,
+    `brief=${gate.briefFormatSatisfied ? "PASS" : "FAIL"}`,
+    `memory=${gate.memoryEvidenceSatisfied ? "PASS" : "FAIL"}`,
+    `web=${gate.webEvidenceSatisfied ? "PASS" : "FAIL"}`,
+    `strict=${gate.strictGatePassed ? "PASS" : "FAIL"}`,
+  ];
+  if (gate.failureReasons.length === 0) {
+    return checks.join(" ");
+  }
+  return `${checks.join(" ")} reasons=${gate.failureReasons.join(",")}`;
 }
 
 function renderSummaryMarkdown(result: ShowdownRunResult): string {
@@ -412,6 +468,7 @@ async function executeLane(options: {
   gateToolNameOverride?: string[];
   mock?: boolean;
   assistantGenerate?: AssistantGenerateFn;
+  progressReporter?: ShowdownProgressReporter;
 }): Promise<LaneExecutionResult> {
   const runtime = new AgentCliRuntime({
     provider: options.provider,
@@ -429,6 +486,12 @@ async function executeLane(options: {
   const pushCommand = (text: string) => transcript.push(`CMD> ${text}`);
 
   timelinePush(options.timeline, "lane_started", "lane runtime initialized", options.lane);
+  emitProgress(options.progressReporter, {
+    kind: "lane",
+    lane: options.lane,
+    message: "lane booted",
+    detail: `historyLimit=${options.historyLimit}`,
+  });
 
   const historyLimitResult = await runtime.executeCommand({
     type: "history_limit",
@@ -443,8 +506,14 @@ async function executeLane(options: {
     options.lane,
     { historyLimit: options.historyLimit },
   );
+  emitProgress(options.progressReporter, {
+    kind: "lane",
+    lane: options.lane,
+    message: "history window set",
+    detail: `turns=${options.historyLimit}`,
+  });
 
-  for (const fact of options.scenario.sentinels) {
+  for (const [index, fact] of options.scenario.sentinels.entries()) {
     const writeText = buildSentinelWriteText(fact);
     pushCommand(`/remember ${writeText}`);
     const remember = await runtime.executeCommand({
@@ -452,6 +521,23 @@ async function executeLane(options: {
       content: writeText,
     });
     pushAssistant(remember.output ?? "");
+
+    const rememberPost = remember.turn ? extractPostModel(remember.turn.trace) : undefined;
+    if (rememberPost && rememberPost.eventsAccepted > 0) {
+      emitProgress(options.progressReporter, {
+        kind: "projection",
+        lane: options.lane,
+        message: "control envelope accepted",
+        detail: `eventsAccepted=${rememberPost.eventsAccepted} parseOutcome=${rememberPost.parseOutcome} key=${fact.key}`,
+      });
+    }
+
+    emitProgress(options.progressReporter, {
+      kind: "lane",
+      lane: options.lane,
+      message: "seed memory",
+      detail: `${index + 1}/${options.scenario.sentinels.length} ${fact.key}`,
+    });
   }
   timelinePush(
     options.timeline,
@@ -460,11 +546,23 @@ async function executeLane(options: {
     options.lane,
     { symbolSeedCount: options.scenario.sentinels.length },
   );
+  emitProgress(options.progressReporter, {
+    kind: "lane",
+    lane: options.lane,
+    message: "memory seed complete",
+    detail: `symbols=${options.scenario.sentinels.length}`,
+  });
 
-  for (const prompt of options.scenario.distractorPrompts) {
+  for (const [index, prompt] of options.scenario.distractorPrompts.entries()) {
     pushUser(prompt);
     const turn = await runtime.processUserMessage(prompt);
     pushAssistant(turn.content);
+    emitProgress(options.progressReporter, {
+      kind: "lane",
+      lane: options.lane,
+      message: "distractor turn",
+      detail: `${index + 1}/${options.scenario.distractorPrompts.length} ${compactPreview(prompt)}`,
+    });
   }
   timelinePush(
     options.timeline,
@@ -473,6 +571,12 @@ async function executeLane(options: {
     options.lane,
     { distractorTurns: options.scenario.distractorPrompts.length },
   );
+  emitProgress(options.progressReporter, {
+    kind: "lane",
+    lane: options.lane,
+    message: "distractors complete",
+    detail: `turns=${options.scenario.distractorPrompts.length}`,
+  });
 
   if (options.lane === "chat_only") {
     const branch = await runtime.executeCommand({
@@ -496,6 +600,12 @@ async function executeLane(options: {
     options.lane,
     { mode: options.lane === "chat_only" ? "chat-only" : "vcw-only" },
   );
+  emitProgress(options.progressReporter, {
+    kind: "lane",
+    lane: options.lane,
+    message: "branch mode applied",
+    detail: options.lane === "chat_only" ? "chat-only (symbols cleared)" : "vcw-only (history cleared)",
+  });
 
   let attempt = 0;
   let finalTurn: { content: string; trace: AgentTurnTrace } | null = null;
@@ -523,8 +633,24 @@ async function executeLane(options: {
         );
 
     pushUser(prompt);
+    emitProgress(options.progressReporter, {
+      kind: "lane",
+      lane: options.lane,
+      message: `mission attempt ${attempt}`,
+      detail: compactPreview(prompt),
+    });
     const turn = await runtime.processUserMessage(prompt);
     pushAssistant(turn.content);
+
+    const turnPost = extractPostModel(turn.trace);
+    if (turnPost && turnPost.eventsAccepted > 0) {
+      emitProgress(options.progressReporter, {
+        kind: "projection",
+        lane: options.lane,
+        message: "control envelope accepted",
+        detail: `eventsAccepted=${turnPost.eventsAccepted} parseOutcome=${turnPost.parseOutcome} attempt=${attempt}`,
+      });
+    }
 
     finalTurn = turn;
     gateResult = gateForTurn({
@@ -547,6 +673,12 @@ async function executeLane(options: {
         missingToolNames: gateResult.missingToolNames,
       },
     );
+    emitProgress(options.progressReporter, {
+      kind: "lane",
+      lane: options.lane,
+      message: `attempt ${attempt} evaluated`,
+      detail: describeGateOutcome(gateResult),
+    });
 
     if (gateResult.strictGatePassed) {
       break;
@@ -586,6 +718,12 @@ async function executeLane(options: {
   timelinePush(options.timeline, "lane_completed", "lane completed", options.lane, {
     strictGatePassed: metric.strictGatePassed,
     failureReasons: metric.failureReasons,
+  });
+  emitProgress(options.progressReporter, {
+    kind: "lane",
+    lane: options.lane,
+    message: "lane completed",
+    detail: `strict=${metric.strictGatePassed} tools=${metric.agentToolNames.join(",") || "none"} history=${metric.historyTurnsUsed} focus=${metric.focusedInjectedCount} recall=${metric.recallInjectedCount}`,
   });
 
   return {
@@ -638,10 +776,22 @@ async function validateProvider(options: {
   requiredToolNames: string[];
   assistantGenerate?: AssistantGenerateFn;
   mock?: boolean;
+  progressReporter?: ShowdownProgressReporter;
 }): Promise<void> {
   if (options.mock || options.assistantGenerate) {
+    emitProgress(options.progressReporter, {
+      kind: "phase",
+      message: "provider validation skipped",
+      detail: "mock or injected assistant",
+    });
     return;
   }
+
+  emitProgress(options.progressReporter, {
+    kind: "phase",
+    message: "provider healthcheck",
+    detail: `provider=${options.provider}`,
+  });
 
   const runtime = new AgentCliRuntime({
     provider: options.provider,
@@ -660,6 +810,11 @@ async function validateProvider(options: {
   }
 
   if (options.scenarioKind !== "incident_response") {
+    emitProgress(options.progressReporter, {
+      kind: "phase",
+      message: "provider healthcheck passed",
+      detail: "classic scenario",
+    });
     return;
   }
 
@@ -671,10 +826,21 @@ async function validateProvider(options: {
     ),
   );
   if (normalizedRequiredTools.length === 0) {
+    emitProgress(options.progressReporter, {
+      kind: "phase",
+      message: "provider healthcheck passed",
+      detail: "no required tools",
+    });
     return;
   }
 
   try {
+    emitProgress(options.progressReporter, {
+      kind: "phase",
+      message: "tool capability probe",
+      detail: `required=${normalizedRequiredTools.join(",")}`,
+    });
+
     await runtime.executeCommand({
       type: "remember",
       content: "Fact key: Provider probe token. Fact value: VCW-PROBE-TOOLCHECK. Store this as durable memory and keep the value exact.",
@@ -698,6 +864,12 @@ async function validateProvider(options: {
     if (missingTools.length > 0) {
       throw new Error(`missing_required_tools:${missingTools.join(",")}`);
     }
+
+    emitProgress(options.progressReporter, {
+      kind: "phase",
+      message: "provider healthcheck passed",
+      detail: `tools=${Array.from(usedTools).join(",") || "none"}`,
+    });
   } catch (error) {
     const message = toErrorMessage(error);
     const model =
@@ -774,6 +946,11 @@ export async function runShowdown(
     strict,
     maxRetries,
   });
+  emitProgress(options.progressReporter, {
+    kind: "phase",
+    message: "run started",
+    detail: `provider=${options.provider} scenario=${scenarioKind} strict=${strict} maxRetries=${maxRetries}`,
+  });
 
   await validateProvider({
     provider: options.provider,
@@ -783,6 +960,7 @@ export async function runShowdown(
     requiredToolNames,
     mock: options.mock,
     assistantGenerate: options.assistantGenerate,
+    progressReporter: options.progressReporter,
   });
   timelinePush(timeline, "provider_validated", "provider healthcheck passed");
 
@@ -797,6 +975,11 @@ export async function runShowdown(
   timelinePush(timeline, "scenario_created", "scenario generated", undefined, {
     runId: scenario.runId,
     seed: scenario.seed,
+  });
+  emitProgress(options.progressReporter, {
+    kind: "phase",
+    message: "scenario ready",
+    detail: `runId=${scenario.runId} sentinels=${scenario.sentinels.length} seed=${scenario.seed}`,
   });
 
   let chatOnly: LaneExecutionResult;
@@ -815,11 +998,18 @@ export async function runShowdown(
       gateToolNameOverride: options.gateToolNameOverrides?.chat_only,
       mock: options.mock,
       assistantGenerate: options.assistantGenerate,
+      progressReporter: options.progressReporter,
     });
   } catch (error) {
     const message = toErrorMessage(error);
     timelinePush(timeline, "lane_error", "lane execution failed", "chat_only", {
       message,
+    });
+    emitProgress(options.progressReporter, {
+      kind: "lane",
+      lane: "chat_only",
+      message: "lane failed",
+      detail: compactPreview(message, 120),
     });
     chatOnly = buildLaneFailureResult({
       lane: "chat_only",
@@ -844,11 +1034,18 @@ export async function runShowdown(
       gateToolNameOverride: options.gateToolNameOverrides?.vcw_only,
       mock: options.mock,
       assistantGenerate: options.assistantGenerate,
+      progressReporter: options.progressReporter,
     });
   } catch (error) {
     const message = toErrorMessage(error);
     timelinePush(timeline, "lane_error", "lane execution failed", "vcw_only", {
       message,
+    });
+    emitProgress(options.progressReporter, {
+      kind: "lane",
+      lane: "vcw_only",
+      message: "lane failed",
+      detail: compactPreview(message, 120),
     });
     vcwOnly = buildLaneFailureResult({
       lane: "vcw_only",
@@ -882,6 +1079,11 @@ export async function runShowdown(
   timelinePush(timeline, "run_completed", "showdown run completed", undefined, {
     strictGatePassed,
     runDurationMs,
+  });
+  emitProgress(options.progressReporter, {
+    kind: "phase",
+    message: "run completed",
+    detail: `strictGatePassed=${strictGatePassed} durationMs=${runDurationMs.toFixed(2)}`,
   });
 
   await mkdir(options.outputDir, { recursive: true });
@@ -950,6 +1152,31 @@ export async function runShowdownCli(argv: string[]): Promise<number> {
     const parsed = parseShowdownArgs(argv);
     const cwd = process.cwd();
     const outputDir = resolveOutputDir(cwd, parsed.outputDir);
+    const cliStartedAt = performance.now();
+
+    const progressReporter: ShowdownProgressReporter = (event) => {
+      const elapsedSeconds = ((performance.now() - cliStartedAt) / 1000).toFixed(1);
+      const detail = event.detail ? ` ${event.detail}` : "";
+      if (event.kind === "projection" && event.lane) {
+        const projectionDetail = [`t+${elapsedSeconds}s`, event.message, event.detail]
+          .filter((item) => Boolean(item && String(item).trim().length > 0))
+          .join(" | ");
+        console.log(renderProjectionEvent(event.lane, projectionDetail));
+        return;
+      }
+      if (event.kind === "lane" && event.lane) {
+        console.log(
+          renderLaneEvent(
+            event.lane,
+            `[t+${elapsedSeconds}s] ${event.message}`,
+            event.detail,
+          ),
+        );
+        return;
+      }
+
+      console.log(renderPhase(`[t+${elapsedSeconds}s] ${event.message}${detail}`));
+    };
 
     console.log(renderBanner("VCW Cinematic Incident Showdown"));
     console.log(renderPhase("initializing run"));
@@ -964,17 +1191,8 @@ export async function runShowdownCli(argv: string[]): Promise<number> {
       scenarioKind: parsed.scenario,
       maxRetries: parsed.maxRetries,
       seed: parsed.seed,
+      progressReporter,
     });
-
-    for (const metric of result.metrics) {
-      console.log(
-        renderLaneEvent(
-          metric.lane,
-          "lane completed",
-          `tools=${metric.agentToolNames.join(",") || "none"} strict=${metric.strictGatePassed}`,
-        ),
-      );
-    }
 
     console.log(renderPhase("rendering final scoreboard"));
     console.log(renderFinalScoreboard(toRenderSummary(result)));

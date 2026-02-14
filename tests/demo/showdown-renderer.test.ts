@@ -4,6 +4,7 @@ import {
   renderFinalScoreboard,
   renderLaneEvent,
   renderPhase,
+  renderProjectionEvent,
 } from "../../scripts/demo-showdown-renderer";
 
 test("renderBanner and renderPhase include expected text", () => {
@@ -20,6 +21,14 @@ test("renderLaneEvent includes lane prefix and detail", () => {
   expect(line).toContain("vcw_only");
   expect(line).toContain("lane completed");
   expect(line).toContain("strict=true");
+});
+
+test("renderProjectionEvent includes projection label and lane prefix", () => {
+  const line = renderProjectionEvent("chat_only", "eventsAccepted=1 parseOutcome=parsed_ok");
+
+  expect(line).toContain("chat_only");
+  expect(line).toContain("PROJECTION ACCEPTED");
+  expect(line).toContain("eventsAccepted=1");
 });
 
 test("renderFinalScoreboard includes table rows for both lanes", () => {
