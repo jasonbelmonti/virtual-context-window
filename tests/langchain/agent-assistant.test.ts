@@ -214,6 +214,78 @@ test("auto write intent appends detector-bridged trailing control block after ag
   expect(output.endsWith("</symbolic_control>")).toBe(true);
 });
 
+test("auto write intent does not append control envelope for shadow-band scoring", async () => {
+  const store = new InMemorySymbolStore();
+  let metadata: unknown;
+  const generate = createLangChainAgentAssistantGenerate({
+    store,
+    model: "mock-model",
+    baseUrl: "http://example.local",
+    createAgentRuntime: () => ({
+      invoke: async () => ({
+        messages: [
+          { type: "ai", content: "Final response from agent" },
+        ],
+      }),
+    }),
+    onResultMetadata: (value) => {
+      metadata = value;
+    },
+  });
+
+  const autoInput: AssistantGenerateInput = {
+    ...makeInput(),
+    request: {
+      ...makeInput().request,
+      metadata: {
+        writeIntent: {
+          mode: "auto",
+        },
+        vcwAutoSymbol: {
+          mode: "active",
+          triggered: true,
+          confidence: 0.95,
+          reason: "durable_preference_statement",
+          suppressed: false,
+          scoring: {
+            scorerVersion: "heuristic_v2",
+            rawScore: 0.1,
+            probability: 0.72,
+            band: "shadow",
+            overrideApplied: false,
+            contributions: [
+              {
+                feature: "is_durable_preference",
+                active: true,
+                weight: 1.15,
+                contribution: 1.15,
+              },
+            ],
+          },
+          events: [
+            {
+              type: "upsert_symbol",
+              symbol_id: "auto:abc123",
+              content: "My favorite color is green",
+              kind: "note",
+            },
+          ],
+        },
+      },
+    },
+  };
+
+  const output = await generate(autoInput);
+  expect(output).toBe("Final response from agent");
+  expect(output).not.toContain("<symbolic_control>");
+  expect(metadata).toMatchObject({
+    writeIntentMode: "auto",
+    writeTransport: "plain_text",
+    writeIntentSatisfied: true,
+    autoScoreBand: "shadow",
+  });
+});
+
 test("agent runtime forwards recursion limit guard and keeps write tools out of loop", async () => {
   const store = new InMemorySymbolStore();
   let capturedRecursionLimit: number | undefined;

@@ -24,6 +24,7 @@ import {
   getWriteToolDefinition,
 } from "./write-tool-bridge";
 import {
+  DEFAULT_RECOGNIZER_CONFIG,
   parseAutoSymbolMetadataEnvelope,
   type RecognitionScoring,
 } from "../../recognition";
@@ -441,6 +442,14 @@ function topScoringFeatures(scoring: RecognitionScoring | undefined): string[] {
     .map((item) => `${item.feature}:${item.contribution > 0 ? "+" : ""}${item.contribution.toFixed(2)}`);
 }
 
+function isAutoWriteDecision(auto: ResolvedAutoSymbolMetadata): boolean {
+  if (auto.scoring) {
+    return auto.scoring.band === "write";
+  }
+
+  return auto.confidence >= DEFAULT_RECOGNIZER_CONFIG.activeMinScore;
+}
+
 function resolveAutoSymbolMetadata(
   request: VirtualContextTurnRequest,
 ): ResolvedAutoSymbolMetadata | undefined {
@@ -579,14 +588,16 @@ export function createLangChainAssistantGenerate(
         middlewareInputText = coerceModelOutputText(rawResult);
       }
 
-      if (
+      const expectsAutoWrite =
         writeIntentMode === "auto" &&
         autoSymbolMetadata?.valid &&
         autoSymbolMetadata.mode === "active" &&
         autoSymbolMetadata.triggered &&
         !autoSymbolMetadata.suppressed &&
-        autoSymbolMetadata.events.length > 0
-      ) {
+        autoSymbolMetadata.events.length > 0 &&
+        isAutoWriteDecision(autoSymbolMetadata);
+
+      if (expectsAutoWrite) {
         controlEvents = autoSymbolMetadata.events;
         writeTransport = "detector_bridge";
       }
@@ -603,7 +614,9 @@ export function createLangChainAssistantGenerate(
           autoSymbolMetadata.triggered &&
           !autoSymbolMetadata.suppressed
         ) {
-          writeIntentSatisfied = controlEvents.length > 0;
+          writeIntentSatisfied = expectsAutoWrite
+            ? controlEvents.length > 0
+            : true;
         } else {
           writeIntentSatisfied = true;
         }

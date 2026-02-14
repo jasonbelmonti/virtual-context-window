@@ -190,3 +190,64 @@ test("auto intent keeps envelope valid when optional scoring payload is malforme
     autoOverrideApplied: undefined,
   });
 });
+
+test("auto intent does not append control envelope for shadow-band scoring", async () => {
+  let metadataValue: unknown;
+  const generate = createLangChainAssistantGenerate({
+    model: "mock-model",
+    baseUrl: "http://example.local",
+    onResultMetadata: (metadata) => {
+      metadataValue = metadata;
+    },
+    createInvoker: () => ({
+      invoke: async () => ({ content: "Plain" }),
+    }),
+  });
+
+  const output = await generate(
+    makeInput({
+      writeIntent: { mode: "auto" },
+      vcwAutoSymbol: {
+        mode: "active",
+        triggered: true,
+        confidence: 0.95,
+        reason: "durable_preference_statement",
+        suppressed: false,
+        scoring: {
+          scorerVersion: "heuristic_v2",
+          rawScore: 0.1,
+          probability: 0.72,
+          band: "shadow",
+          overrideApplied: false,
+          contributions: [
+            {
+              feature: "is_durable_preference",
+              active: true,
+              weight: 1.15,
+              contribution: 1.15,
+            },
+          ],
+        },
+        events: [
+          {
+            type: "upsert_symbol",
+            symbol_id: "auto:abc123",
+            summary: "Preference",
+            content: "My favorite color is green",
+            kind: "note",
+            key_hint: "auto:durable_preference_statement",
+          },
+        ],
+      },
+    }),
+  );
+
+  expect(output).toBe("Plain");
+  expect(output).not.toContain("<symbolic_control>");
+  expect(metadataValue).toMatchObject({
+    writeIntentMode: "auto",
+    writeTransport: "plain_text",
+    writeIntentSatisfied: true,
+    autoScoreBand: "shadow",
+  });
+});

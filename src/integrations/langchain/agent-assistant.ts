@@ -15,7 +15,10 @@ import {
   buildDeterministicControlEnvelope,
   convertWriteToolArgsToPayload,
 } from "./write-tool-bridge";
-import { parseAutoSymbolMetadataEnvelope } from "../../recognition";
+import {
+  DEFAULT_RECOGNIZER_CONFIG,
+  parseAutoSymbolMetadataEnvelope,
+} from "../../recognition";
 import type { RecognitionScoring } from "../../recognition";
 import type {
   CreateLangChainAgentRuntimeInput,
@@ -88,6 +91,14 @@ function topScoringFeatures(scoring: RecognitionScoring | undefined): string[] {
     .sort((a, b) => Math.abs(b.contribution) - Math.abs(a.contribution))
     .slice(0, 3)
     .map((item) => `${item.feature}:${item.contribution > 0 ? "+" : ""}${item.contribution.toFixed(2)}`);
+}
+
+function isAutoWriteDecision(auto: ResolvedAutoSymbolMetadata): boolean {
+  if (auto.scoring) {
+    return auto.scoring.band === "write";
+  }
+
+  return auto.confidence >= DEFAULT_RECOGNIZER_CONFIG.activeMinScore;
 }
 
 function resolveAutoSymbolMetadata(
@@ -559,13 +570,15 @@ export function createLangChainAgentAssistantGenerate(
     const visibleText = extractFinalAssistantText(result);
     const loopStats = collectAgentLoopMetadata(result);
     const durationMs = now() - startedAtMs;
-    const shouldApplyAutoControl =
+    const expectsAutoWrite =
       writeIntentMode === "auto" &&
       autoSymbolMetadata?.valid &&
       autoSymbolMetadata.mode === "active" &&
       autoSymbolMetadata.triggered &&
       !autoSymbolMetadata.suppressed &&
-      autoSymbolMetadata.events.length > 0;
+      autoSymbolMetadata.events.length > 0 &&
+      isAutoWriteDecision(autoSymbolMetadata);
+    const shouldApplyAutoControl = expectsAutoWrite;
     const outputText = shouldApplyAutoControl
       ? buildDeterministicControlEnvelope({
           assistant_response: visibleText,
@@ -585,7 +598,9 @@ export function createLangChainAgentAssistantGenerate(
             : autoSymbolMetadata.mode === "active" &&
                 autoSymbolMetadata.triggered &&
                 !autoSymbolMetadata.suppressed
-              ? shouldApplyAutoControl
+              ? expectsAutoWrite
+                ? shouldApplyAutoControl
+                : true
               : true;
 
     await notifyResultMetadata(options.onResultMetadata, {
