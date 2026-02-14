@@ -61,79 +61,85 @@ test("agent tools list/get/search symbols for the current thread", async () => {
   })) as { hits: Array<{ symbolId: string }> };
   expect(search.hits.length).toBeGreaterThan(0);
   expect(search.hits[0]?.symbolId).toBe("sym_1");
+
+  expect(() => findTool(tools, "vcw_upsert_symbol")).toThrow(
+    "missing_tool:vcw_upsert_symbol",
+  );
 });
 
-test("vcw_upsert_symbol routes writes through policy semantics with chunking metadata", async () => {
-  const store = new InMemorySymbolStore({ now: () => 1000 });
+test("vcw_web_search returns deterministic parsed hits with mocked fetch", async () => {
+  const store = new InMemorySymbolStore();
   const tools = createVcwAgentTools({
     store,
-    threadId: "thread-upsert",
+    threadId: "thread-web",
     request: {
-      threadId: "thread-upsert",
+      threadId: "thread-web",
       messages: [],
     },
     trustedSymbolRefsEnabled: false,
     retrievalStrategy: "hybrid_v2",
-    symbolChunkMaxChars: 8,
+    webSearch: {
+      fetchFn: async () =>
+        new Response(
+          JSON.stringify([
+            "phase seven",
+            ["Virtual Context Window"],
+            ["A memory engine project"],
+            ["https://example.com/vcw"],
+          ]),
+          {
+            status: 200,
+            headers: { "content-type": "application/json" },
+          },
+        ),
+    },
   });
 
-  const result = (await findTool(tools, "vcw_upsert_symbol").invoke({
-    symbol_id: "sym_chunked",
-    summary: "chunk me",
-    content: "abcdefghijklmno",
-    kind: "note",
-    key_hint: "agent",
+  const result = (await findTool(tools, "vcw_web_search").invoke({
+    query: "phase seven",
+    limit: 3,
   })) as {
-    eventsAccepted: number;
-    eventsRejected: number;
-    writeFailures: number;
-    writtenSymbolIds: string[];
+    hits: Array<{ title: string; snippet: string; url: string; score: number }>;
+    source: string;
+    error?: string;
   };
 
-  expect(result.eventsAccepted).toBe(1);
-  expect(result.eventsRejected).toBe(0);
-  expect(result.writeFailures).toBe(0);
-  expect(result.writtenSymbolIds.length).toBe(2);
-  expect(result.writtenSymbolIds[0]).toBe("sym_chunked__chunk_0001");
-  expect(result.writtenSymbolIds[1]).toBe("sym_chunked__chunk_0002");
-
-  const chunk1 = await store.get("thread-upsert", "sym_chunked__chunk_0001");
-  const chunk2 = await store.get("thread-upsert", "sym_chunked__chunk_0002");
-  expect(chunk1?.meta?.chunkIndex).toBe(1);
-  expect(chunk1?.meta?.chunkCount).toBe(2);
-  expect(chunk1?.meta?.source).toBe("model_control");
-  expect(chunk2?.meta?.chunkIndex).toBe(2);
+  expect(result.error).toBeUndefined();
+  expect(result.source).toBe("wikipedia_opensearch");
+  expect(result.hits.length).toBe(1);
+  expect(result.hits[0]).toEqual({
+    title: "Virtual Context Window",
+    snippet: "A memory engine project",
+    url: "https://example.com/vcw",
+    score: 1,
+  });
 });
 
-test("vcw_upsert_symbol rejects oversize content with zero mutations", async () => {
-  const store = new InMemorySymbolStore({ now: () => 1000 });
+test("vcw_web_search reports disabled state deterministically", async () => {
+  const store = new InMemorySymbolStore();
   const tools = createVcwAgentTools({
     store,
-    threadId: "thread-upsert-reject",
+    threadId: "thread-web-disabled",
     request: {
-      threadId: "thread-upsert-reject",
+      threadId: "thread-web-disabled",
       messages: [],
     },
     trustedSymbolRefsEnabled: false,
     retrievalStrategy: "hybrid_v2",
-    maxContentChars: 5,
+    webSearch: {
+      enabled: false,
+    },
   });
 
-  const result = (await findTool(tools, "vcw_upsert_symbol").invoke({
-    content: "this is too long",
-    kind: "note",
+  const result = (await findTool(tools, "vcw_web_search").invoke({
+    query: "hello world",
   })) as {
-    eventsAccepted: number;
-    eventsRejected: number;
-    writeFailures: number;
-    writtenSymbolIds: string[];
+    hits: Array<unknown>;
+    source: string;
+    error?: string;
   };
 
-  expect(result.eventsAccepted).toBe(0);
-  expect(result.eventsRejected).toBe(1);
-  expect(result.writeFailures).toBe(0);
-  expect(result.writtenSymbolIds).toEqual([]);
-
-  const list = await store.list("thread-upsert-reject");
-  expect(list.length).toBe(0);
+  expect(result.source).toBe("wikipedia_opensearch");
+  expect(result.hits).toEqual([]);
+  expect(result.error).toBe("web_search_disabled");
 });

@@ -5,6 +5,10 @@ import {
   toolCallLimitMiddleware,
 } from "langchain";
 import type { AssistantGenerateFn } from "../../engine/hooks";
+import {
+  createLangChainAssistantGenerate,
+  resolveWriteIntentFromMetadata,
+} from "./assistant";
 import { buildVcwCreateAgentMiddlewareSpec, toLangChainAgentMiddleware } from "./create-agent-bridge";
 import { createVcwAgentTools } from "./agent-tools";
 import type {
@@ -18,6 +22,7 @@ const DEFAULT_OLLAMA_BASE_URL = "http://127.0.0.1:11434";
 const DEFAULT_TEMPERATURE = 0;
 const DEFAULT_MAX_MODEL_CALLS = 8;
 const DEFAULT_MAX_TOOL_CALLS = 8;
+const DEFAULT_AGENT_RECURSION_LIMIT = 20;
 
 function resolveEnv(
   env: Record<string, string | undefined> | undefined,
@@ -249,7 +254,8 @@ function buildSystemPrompt(input: Parameters<AssistantGenerateFn>[0]): string {
     "",
     "Tooling policy:",
     "- Use vcw_search_symbols, vcw_list_symbols, and vcw_get_symbol for memory read operations.",
-    "- Use vcw_upsert_symbol for memory writes.",
+    "- Use vcw_web_search when fresh world knowledge is needed.",
+    "- Do not perform memory writes with tools in this mode.",
     "- Keep final user response concise and clear.",
     "",
     "Runtime context:",
@@ -278,10 +284,18 @@ function createDefaultAgentRuntime(
   });
 
   return {
-    invoke: (invokeInput) =>
-      agent.invoke({
+    invoke: (invokeInput, options) => {
+      const configuredAgent =
+        options?.recursionLimit !== undefined
+          ? agent.withConfig({
+              recursionLimit: options.recursionLimit,
+            })
+          : agent;
+
+      return configuredAgent.invoke({
         messages: invokeInput.messages,
-      } as never),
+      } as never);
+    },
   };
 }
 
@@ -316,13 +330,53 @@ export function createLangChainAgentAssistantGenerate(
     env.VCW_AGENT_MAX_TOOL_CALLS,
     options.maxToolCalls ?? DEFAULT_MAX_TOOL_CALLS,
   );
+  const recursionLimit = parseBoundedInt(
+    env.VCW_AGENT_RECURSION_LIMIT,
+    DEFAULT_AGENT_RECURSION_LIMIT,
+  );
   const retrievalStrategy = options.retrievalStrategy ?? "hybrid_v2";
+  let strictWriteToolCallDetected = false;
 
   if (!model) {
     throw new Error("missing_env:VCW_OLLAMA_MODEL");
   }
 
+  const strictWriteGenerate =
+    options.strictWriteGenerate ??
+    createLangChainAssistantGenerate({
+      model,
+      baseUrl,
+      temperature,
+      env,
+      middleware: options.middleware,
+      onResultMetadata: (metadata) => {
+        strictWriteToolCallDetected = metadata.toolCallDetected;
+      },
+      ...options.strictWriteAssistantOptions,
+    });
+
   return async (input) => {
+    const writeIntentMode = resolveWriteIntentFromMetadata(input.request);
+    if (writeIntentMode === "strict") {
+      strictWriteToolCallDetected = false;
+      const startedAtMs = now();
+      const output = await strictWriteGenerate(input);
+      const durationMs = now() - startedAtMs;
+
+      await notifyResultMetadata(options.onResultMetadata, {
+        provider: "langchain_create_agent_ollama",
+        model,
+        baseUrl,
+        durationMs,
+        agentModelCallCount: 1,
+        agentToolCallCount: strictWriteToolCallDetected ? 1 : 0,
+        agentToolNames: strictWriteToolCallDetected ? ["emit_symbol_events"] : [],
+        agentLoopDurationMs: durationMs,
+      });
+
+      return output;
+    }
+
     const startedAtMs = now();
     const systemPrompt = buildSystemPrompt(input);
 
@@ -394,6 +448,8 @@ export function createLangChainAgentAssistantGenerate(
 
     const result = await runtime.invoke({
       messages: invokeMessages,
+    }, {
+      recursionLimit,
     });
 
     const outputText = extractFinalAssistantText(result);

@@ -37,7 +37,11 @@ test("agent assistant extracts final response and reports loop metadata", async 
     baseUrl: "http://example.local",
     createAgentRuntime: (input) => {
       runtimeCreated += 1;
-      expect(input.tools.length).toBe(4);
+      const toolNames = (input.tools as Array<{ name?: string }>).map(
+        (tool) => tool.name,
+      );
+      expect(toolNames).toContain("vcw_web_search");
+      expect(toolNames).not.toContain("vcw_upsert_symbol");
       expect(input.middleware.length).toBeGreaterThanOrEqual(2);
       return {
         invoke: async () => ({
@@ -119,4 +123,45 @@ test("agent assistant propagates runtime errors", async () => {
   });
 
   await expect(generate(makeInput())).rejects.toThrow("agent_runtime_failed");
+});
+
+test("strict write intent bypasses createAgent runtime and uses strict control path", async () => {
+  const store = new InMemorySymbolStore();
+  let createAgentCalled = 0;
+  let strictGenerateCalled = 0;
+
+  const generate = createLangChainAgentAssistantGenerate({
+    store,
+    model: "mock-model",
+    baseUrl: "http://example.local",
+    createAgentRuntime: () => {
+      createAgentCalled += 1;
+      return {
+        invoke: async () => ({
+          messages: [{ type: "ai", content: "should not run" }],
+        }),
+      };
+    },
+    strictWriteGenerate: async () => {
+      strictGenerateCalled += 1;
+      return "Stored.\n<symbolic_control>{\"symbol_events\":[{\"type\":\"upsert_symbol\",\"content\":\"my name is Jason\"}]}</symbolic_control>";
+    },
+  });
+
+  const strictInput: AssistantGenerateInput = {
+    ...makeInput(),
+    request: {
+      ...makeInput().request,
+      metadata: {
+        writeIntent: {
+          mode: "strict",
+        },
+      },
+    },
+  };
+
+  const response = await generate(strictInput);
+  expect(response).toContain("<symbolic_control>");
+  expect(createAgentCalled).toBe(0);
+  expect(strictGenerateCalled).toBe(1);
 });

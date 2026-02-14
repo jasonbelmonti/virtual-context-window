@@ -1,17 +1,12 @@
 import { tool } from "langchain";
-import {
-  DEFAULT_MAX_CONTENT_CHARS,
-  DEFAULT_MAX_EVENTS,
-  DEFAULT_SYMBOL_CHUNK_MAX_CHARS,
-  DefaultSymbolEventPolicy,
-  estimateEventChunkCount,
-} from "../../engine/symbol-event-policy";
-import type { UpsertSymbolEvent } from "../../engine/contracts";
-import type { AgentToolUpsertResult, VcwAgentToolContext } from "./agent-contracts";
+import type { AgentWebSearchResult, VcwAgentToolContext } from "./agent-contracts";
 
 const DEFAULT_LIST_LIMIT = 20;
 const DEFAULT_SEARCH_LIMIT = 6;
 const MAX_LIMIT = 200;
+const DEFAULT_WEB_SEARCH_LIMIT = 5;
+const DEFAULT_WEB_SEARCH_ENDPOINT =
+  "https://en.wikipedia.org/w/api.php?action=opensearch&namespace=0&format=json";
 
 function toPositiveLimit(
   value: unknown,
@@ -37,61 +32,74 @@ function tokenize(text: string): string[] {
     .filter((token) => token.length > 0);
 }
 
-async function applyUpsertThroughPolicy(
-  context: VcwAgentToolContext,
-  event: UpsertSymbolEvent,
-): Promise<AgentToolUpsertResult> {
-  const maxEvents = context.maxEvents ?? DEFAULT_MAX_EVENTS;
-  const maxContentChars = context.maxContentChars ?? DEFAULT_MAX_CONTENT_CHARS;
-  const symbolChunkMaxChars =
-    context.symbolChunkMaxChars ?? DEFAULT_SYMBOL_CHUNK_MAX_CHARS;
-
-  if (maxEvents <= 0) {
-    return {
-      eventsAccepted: 0,
-      eventsRejected: 1,
-      writeFailures: 0,
-      writtenSymbolIds: [],
-    };
-  }
-
-  const policy = new DefaultSymbolEventPolicy({
-    store: context.store,
-    maxContentChars,
-    symbolChunkMaxChars,
+function toUrl(endpoint: string, query: string, limit: number): string {
+  const hasQuery = endpoint.includes("?");
+  const params = new URLSearchParams({
+    search: query,
+    limit: String(limit),
   });
-  const validation = policy.validateEvent(event);
-  if (!validation.accepted) {
+  return `${endpoint}${hasQuery ? "&" : "?"}${params.toString()}`;
+}
+
+function asObject(value: unknown): Record<string, unknown> | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return undefined;
+  }
+  return value as Record<string, unknown>;
+}
+
+function parseWikipediaOpenSearch(
+  payload: unknown,
+  limit: number,
+  source: string,
+): AgentWebSearchResult {
+  if (!Array.isArray(payload) || payload.length < 4) {
     return {
-      eventsAccepted: 0,
-      eventsRejected: 1,
-      writeFailures: 0,
-      writtenSymbolIds: [],
+      hits: [],
+      source,
+      error: "web_search_payload_invalid",
     };
   }
 
-  const expectedChunkCount = estimateEventChunkCount(event, symbolChunkMaxChars);
-  const applyResult = await policy.applyEvent(context.threadId, event);
-  const writeFailures = Math.max(0, expectedChunkCount - applyResult.symbolIds.length);
+  const titles = Array.isArray(payload[1]) ? payload[1] : [];
+  const snippets = Array.isArray(payload[2]) ? payload[2] : [];
+  const urls = Array.isArray(payload[3]) ? payload[3] : [];
 
-  if (writeFailures > 0) {
-    return {
-      eventsAccepted: 0,
-      eventsRejected: 1,
-      writeFailures,
-      writtenSymbolIds: applyResult.symbolIds,
-    };
+  const max = Math.min(limit, titles.length, snippets.length, urls.length);
+  const hits = [];
+  for (let index = 0; index < max; index += 1) {
+    const title = titles[index];
+    const snippet = snippets[index];
+    const url = urls[index];
+    if (
+      typeof title !== "string" ||
+      typeof snippet !== "string" ||
+      typeof url !== "string"
+    ) {
+      continue;
+    }
+
+    hits.push({
+      title,
+      snippet,
+      url,
+      score: Number((1 / (index + 1)).toFixed(6)),
+    });
   }
 
   return {
-    eventsAccepted: 1,
-    eventsRejected: 0,
-    writeFailures: 0,
-    writtenSymbolIds: applyResult.symbolIds,
+    hits,
+    source,
   };
 }
 
 export function createVcwAgentTools(context: VcwAgentToolContext): unknown[] {
+  const webSearchEnabled = context.webSearch?.enabled ?? true;
+  const webSearchEndpoint =
+    context.webSearch?.endpoint ?? DEFAULT_WEB_SEARCH_ENDPOINT;
+  const webSearchSource = context.webSearch?.source ?? "wikipedia_opensearch";
+  const fetchFn = context.webSearch?.fetchFn ?? fetch;
+
   return [
     tool(
       async (rawInput) => {
@@ -228,42 +236,69 @@ export function createVcwAgentTools(context: VcwAgentToolContext): unknown[] {
     tool(
       async (rawInput) => {
         const input = rawInput as Record<string, unknown>;
-        const event: UpsertSymbolEvent = {
-          type: "upsert_symbol",
-          symbol_id:
-            typeof input.symbol_id === "string" ? input.symbol_id : undefined,
-          summary: typeof input.summary === "string" ? input.summary : undefined,
-          content: String(input.content ?? ""),
-          kind:
-            input.kind === "memory" ||
-            input.kind === "fact" ||
-            input.kind === "plan" ||
-            input.kind === "note"
-              ? input.kind
-              : undefined,
-          key_hint:
-            typeof input.key_hint === "string" ? input.key_hint : undefined,
-        };
+        const query = String(input.query ?? "").trim();
+        if (!query) {
+          return {
+            hits: [],
+            source: webSearchSource,
+            error: "web_search_query_empty",
+          } satisfies AgentWebSearchResult;
+        }
 
-        return applyUpsertThroughPolicy(context, event);
+        if (!webSearchEnabled) {
+          return {
+            hits: [],
+            source: webSearchSource,
+            error: "web_search_disabled",
+          } satisfies AgentWebSearchResult;
+        }
+
+        const limit = toPositiveLimit(input.limit, DEFAULT_WEB_SEARCH_LIMIT, 10);
+
+        try {
+          const response = await fetchFn(toUrl(webSearchEndpoint, query, limit), {
+            method: "GET",
+            headers: {
+              accept: "application/json",
+            },
+          });
+
+          if (!response.ok) {
+            return {
+              hits: [],
+              source: webSearchSource,
+              error: `web_search_http_${response.status}`,
+            } satisfies AgentWebSearchResult;
+          }
+
+          const payload = await response.json();
+          return parseWikipediaOpenSearch(payload, limit, webSearchSource);
+        } catch (error) {
+          return {
+            hits: [],
+            source: webSearchSource,
+            error:
+              error instanceof Error
+                ? `web_search_error:${error.message}`
+                : "web_search_error:unknown",
+          } satisfies AgentWebSearchResult;
+        }
       },
       {
-        name: "vcw_upsert_symbol",
+        name: "vcw_web_search",
         description:
-          "Write a memory symbol through VCW policy controls (chunking, limits, provenance).",
+          "Search public web knowledge for fresh context snippets.",
         schema: {
           type: "object",
           additionalProperties: false,
-          required: ["content"],
+          required: ["query"],
           properties: {
-            symbol_id: { type: "string" },
-            summary: { type: "string" },
-            content: { type: "string" },
-            kind: {
-              type: "string",
-              enum: ["memory", "fact", "plan", "note"],
+            query: { type: "string" },
+            limit: {
+              type: "integer",
+              minimum: 1,
+              maximum: 10,
             },
-            key_hint: { type: "string" },
           },
         },
       },

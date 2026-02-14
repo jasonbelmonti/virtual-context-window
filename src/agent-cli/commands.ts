@@ -92,7 +92,7 @@ export function formatHelpText(): string {
     "  /help                          Show this help",
     "  /trace on|off|view|raw         Toggle trace, print last trace, or raw model output",
     "  /state                         Show current CLI state",
-    "  /remember <text>               Ask agent to persist memory via vcw_upsert_symbol",
+    "  /remember <text>               Persist memory via strict trailing control JSON",
     "  /symbols [limit]               List symbols in the current thread",
     "  /symbols clear                 Clear symbols for current thread only",
     "  /show <symbol_id>              Show full symbol content",

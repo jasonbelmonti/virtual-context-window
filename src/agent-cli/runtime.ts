@@ -14,6 +14,7 @@ import { createOllamaEmbeddingProvider } from "../integrations/ollama";
 import {
   createLangChainAgentAssistantGenerate,
   type LangChainAgentMetadata,
+  resolveWriteIntentFromMetadata,
 } from "../integrations/langchain";
 import type {
   AgentCliCommand,
@@ -99,8 +100,10 @@ export function createMockAgentAssistantGenerate(): AssistantGenerateFn {
   return async (input) => {
     const lastUserText = getLastUserMessage(input.request.messages).trim();
     const rememberPrefix = /^remember\s*:\s*/iu;
+    const strictWriteIntent =
+      resolveWriteIntentFromMetadata(input.request) === "strict";
 
-    if (rememberPrefix.test(lastUserText)) {
+    if (rememberPrefix.test(lastUserText) || strictWriteIntent) {
       const content = lastUserText.replace(rememberPrefix, "").trim();
       const payload = {
         symbol_events: [
@@ -162,9 +165,22 @@ export class AgentCliRuntime {
       return createMockAgentAssistantGenerate();
     }
 
+    const env = this.options.env ?? process.env;
     return createLangChainAgentAssistantGenerate({
       store: this.store,
-      env: this.options.env,
+      env,
+      buildToolContext: (input) => ({
+        store: this.store,
+        threadId: input.threadId,
+        request: input.request,
+        trustedSymbolRefsEnabled: input.trustedSymbolRefsEnabled,
+        retrievalStrategy: "hybrid_v2",
+        webSearch: {
+          enabled: env.VCW_WEB_SEARCH_ENABLED !== "false",
+          endpoint: env.VCW_WEB_SEARCH_ENDPOINT,
+          source: "wikipedia_opensearch",
+        },
+      }),
       onResultMetadata: (metadata) => {
         this.activeAgentMetadata = metadata;
       },
@@ -266,7 +282,10 @@ export class AgentCliRuntime {
     };
   }
 
-  async processUserMessage(userInput: string): Promise<AgentTurnResult> {
+  async processUserMessage(
+    userInput: string,
+    options?: { writeIntentMode?: "none" | "strict" },
+  ): Promise<AgentTurnResult> {
     if (this.turnInFlight) {
       throw new Error("turn_in_progress");
     }
@@ -278,6 +297,15 @@ export class AgentCliRuntime {
 
     const thread = this.getOrCreateThread(this.threadId);
     const requestMessages = [...thread.messages, { role: "user" as const, content: text }];
+    const writeIntentMode = options?.writeIntentMode ?? "none";
+    const metadata =
+      writeIntentMode === "strict"
+        ? {
+            writeIntent: {
+              mode: "strict",
+            },
+          }
+        : undefined;
 
     this.activeStages = [];
     this.activeTelemetry = [];
@@ -288,6 +316,7 @@ export class AgentCliRuntime {
       const response = await this.engine.processTurn({
         threadId: this.threadId,
         messages: requestMessages,
+        metadata,
       });
       this.lastAgentMetadata = this.activeAgentMetadata;
 
@@ -345,7 +374,9 @@ export class AgentCliRuntime {
         };
       }
       case "remember": {
-        const turn = await this.processUserMessage(`remember: ${command.content}`);
+        const turn = await this.processUserMessage(command.content, {
+          writeIntentMode: "strict",
+        });
         return {
           output: turn.content,
           turn,

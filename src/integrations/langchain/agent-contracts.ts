@@ -1,11 +1,11 @@
 import type {
   RetrievalStrategy,
   SymbolStore,
-  UpsertSymbolEvent,
   VirtualContextTurnRequest,
 } from "../../engine/contracts";
 import type { AssistantGenerateInput, AssistantGenerateFn } from "../../engine/hooks";
 import type { VcwLangChainMiddleware } from "./contracts";
+import type { LangChainAssistantOptions } from "./contracts";
 
 export type AgentToolListResult = {
   symbols: Array<{
@@ -37,12 +37,21 @@ export type AgentToolSearchResult = {
   }>;
 };
 
-export type AgentToolUpsertResult = {
-  eventsAccepted: number;
-  eventsRejected: number;
-  writeFailures: number;
-  writtenSymbolIds: string[];
+export type AgentWebSearchResult = {
+  hits: Array<{
+    title: string;
+    snippet: string;
+    url: string;
+    score: number;
+  }>;
+  source: string;
+  error?: string;
 };
+
+export type FetchLike = (
+  input: string | URL | Request,
+  init?: RequestInit,
+) => Promise<Response>;
 
 export type VcwAgentToolContext = {
   store: SymbolStore;
@@ -52,15 +61,23 @@ export type VcwAgentToolContext = {
   retrievalStrategy: RetrievalStrategy;
   maxListLimit?: number;
   defaultSearchLimit?: number;
-  maxEvents?: number;
-  maxContentChars?: number;
-  symbolChunkMaxChars?: number;
+  webSearch?: {
+    enabled?: boolean;
+    endpoint?: string;
+    source?: string;
+    fetchFn?: FetchLike;
+  };
 };
 
 export interface LangChainAgentRuntime {
-  invoke(input: {
-    messages: Array<{ role: string; content: string }>;
-  }): Promise<unknown>;
+  invoke(
+    input: {
+      messages: Array<{ role: string; content: string }>;
+    },
+    options?: {
+      recursionLimit?: number;
+    },
+  ): Promise<unknown>;
 }
 
 export type CreateLangChainAgentRuntimeInput = {
@@ -98,16 +115,14 @@ export type VcwAgentAssistantOptions = {
   ) => LangChainAgentRuntime;
   buildToolContext?: (input: AssistantGenerateInput) => VcwAgentToolContext;
   createTools?: (context: VcwAgentToolContext) => unknown[];
+  strictWriteGenerate?: AssistantGenerateFn;
+  strictWriteAssistantOptions?: Partial<LangChainAssistantOptions>;
   onResultMetadata?: (
     metadata: LangChainAgentMetadata,
   ) => void | Promise<void>;
 };
 
 export type AgentMessageContent = string | Array<{ text?: string; content?: string }>;
-
-export type AgentToolUpsertInput = Omit<UpsertSymbolEvent, "type"> & {
-  content: string;
-};
 
 export type CreateLangChainAgentAssistantGenerate = (
   options: VcwAgentAssistantOptions,
