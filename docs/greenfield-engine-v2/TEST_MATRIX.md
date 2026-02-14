@@ -53,7 +53,7 @@ Define deterministic and live validation coverage required for MVP gate decision
 ## 3) Gate Preconditions
 1. Headline denominator floor >= 8 for applicable metrics.
 2. Two consecutive production-signal runs required.
-3. Rate drift between runs must remain within configured maximum.
+3. Rate drift between runs must remain within `5` percentage points, and latency p95 regression must remain within `15%`.
 4. Deterministic parser canary scenarios must be present and scored.
 
 ## 4) Required Command Set (new project)

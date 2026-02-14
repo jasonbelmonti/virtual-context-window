@@ -56,16 +56,20 @@ test("sanitizer hook failure is fail-open with parsed clean text fallback", asyn
     },
     hooks: {
       controlParser: () => ({
-        cleanText: "clean from parser",
+        cleanText:
+          "clean from parser <symbolic_control>{\"symbol_events\":[]}</symbolic_control> ⟦S:sym_a⟧",
+        events: [
+          {
+            type: "upsert_symbol",
+            symbol_id: "sym_failure_path",
+            content: "failure-path content",
+          },
+        ],
         hadControlChannel: true,
         parseOutcome: "control_channel_valid",
         parseAttempted: true,
         parseSucceeded: true,
         schemaValid: true,
-        parsedEventCount: 1,
-        eventsAccepted: 1,
-        eventsRejected: 0,
-        writeFailures: 0,
       }),
       outputSanitizer: async () => {
         throw new Error("sanitizer crashed");
@@ -75,15 +79,64 @@ test("sanitizer hook failure is fail-open with parsed clean text fallback", asyn
 
   const response = await engine.processTurn(makeRequest());
 
-  expect(response.content).toBe("clean from parser");
+  expect(response.content).toBe("clean from parser  ");
   expect(response.rawModelContent).toBe("assistant raw response");
 
   const post = events.find((event) => event.type === "post_model");
   expect(post?.type).toBe("post_model");
   if (post?.type === "post_model") {
     expect(post.parseOutcome).toBe("control_channel_valid");
-    expect(post.scrubbedControlLeakCount).toBe(0);
-    expect(post.scrubbedSymbolEchoCount).toBe(0);
+    expect(post.parsedEventCount).toBe(1);
+    expect(post.eventsAccepted).toBe(0);
+    expect(post.eventsRejected).toBe(0);
+    expect(post.writeFailures).toBe(0);
+    expect(post.scrubbedControlLeakCount).toBe(1);
+    expect(post.scrubbedSymbolEchoCount).toBe(1);
+  }
+});
+
+test("symbol event applier failure is fail-open and reports rejected parsed events", async () => {
+  const events: TelemetryEvent[] = [];
+
+  const engine = createVirtualContextEngine({
+    assistantGenerate: async () => "assistant raw response",
+    telemetry: {
+      emit: (event) => {
+        events.push(event);
+      },
+    },
+    hooks: {
+      controlParser: () => ({
+        cleanText: "clean from parser",
+        events: [
+          {
+            type: "upsert_symbol",
+            symbol_id: "sym_applier_failure",
+            content: "payload",
+          },
+        ],
+        hadControlChannel: true,
+        parseOutcome: "control_channel_valid",
+        parseAttempted: true,
+        parseSucceeded: true,
+        schemaValid: true,
+      }),
+      symbolEventApplier: async () => {
+        throw new Error("store unavailable");
+      },
+    },
+  });
+
+  const response = await engine.processTurn(makeRequest());
+
+  expect(response.content).toBe("clean from parser");
+  const post = events.find((event) => event.type === "post_model");
+  expect(post?.type).toBe("post_model");
+  if (post?.type === "post_model") {
+    expect(post.parsedEventCount).toBe(1);
+    expect(post.eventsAccepted).toBe(0);
+    expect(post.eventsRejected).toBe(1);
+    expect(post.writeFailures).toBe(1);
   }
 });
 
@@ -111,6 +164,9 @@ test("assistant generation failure still emits post telemetry before throwing", 
 
   expect(pre?.type).toBe("pre_model");
   expect(post?.type).toBe("post_model");
+  if (pre?.type === "pre_model") {
+    expect(pre.retrievalDegraded).toBe(false);
+  }
 
   if (post?.type === "post_model") {
     expect(post.assistantTextChars).toBe(0);

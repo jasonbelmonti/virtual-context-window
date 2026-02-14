@@ -28,6 +28,7 @@ Build objective gate infrastructure (scenario runner, metrics, CI95, denominator
 bun test
 bun run validate:quick
 bun run validate:quick:live
+bun run validate:stability
 bun run validate:production
 bun run validate:baseline-v2
 ```

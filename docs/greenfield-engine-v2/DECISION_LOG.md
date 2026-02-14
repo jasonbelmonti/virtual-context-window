@@ -106,6 +106,24 @@
 - Rejected alternatives:
   - Aggressive top-k regardless of confidence: rejected due to context dilution.
 
+## ADR-013: Surface Retrieval Degradation Explicitly in Runtime Diagnostics
+- Date: 2026-02-13
+- Status: Accepted
+- Decision: Keep `retrievalDegraded` in runtime turn diagnostics and pre-model telemetry, and reconcile docs to match shipped behavior.
+- Rationale: Operational triage requires distinguishing normal empty retrieval from fail-open degraded retrieval.
+- Rejected alternatives:
+  - Silent fail-open without degraded signal: rejected as operationally ambiguous.
+  - Revert runtime field to preserve old docs: rejected because it hides useful reliability context.
+
+## ADR-014: Phase 4 Gate Drift and Live Validation Strictness
+- Date: 2026-02-13
+- Status: Accepted
+- Decision: Lock drift envelope at `5` percentage points for rate metrics and `15%` max regression for latency p95 comparisons; lock live validation behavior to hybrid strictness (`validate:quick:live` allows fallback with warning, `validate:production` requires configured/reachable provider).
+- Rationale: Keeps release gating objective while preserving developer velocity in non-production smoke paths.
+- Rejected alternatives:
+  - Strict live provider requirement for all live commands: rejected due local/dev friction.
+  - Unlimited drift tolerance: rejected due weak regression protection.
+
 ## Phase 0 Sign-off
 - Date: 2026-02-13
 - Status: PASS
@@ -132,6 +150,90 @@
 - Freeze commit SHA reference:
   - `7aae0a6` (Phase 1 kernel implementation and deterministic test suite freeze point).
 - Handoff note: Phase 2 (`Memory and Retrieval Core`) is authorized to begin against stable Phase 1 kernel interfaces.
+
+## Phase 2 Sign-off
+- Date: 2026-02-13
+- Status: PASS
+- Checklist summary:
+  - Implemented symbol persistence and deterministic retrieval core (`InMemorySymbolStore`, `DefaultRetrievalPlanner`, `DefaultContextPackComposer`).
+  - Implemented lexical + hybrid retrieval paths with deterministic reranking and confidence-gate split (`focused` / `recall` / `rejected`).
+  - Implemented budget-aware context pack composition with ordered sections: `SYMBOL INDEX`, `FOCUSED MEMORY`, `SEMANTIC RECALL`.
+  - Phase 2 required commands passed: `bun test`, `bun run test:retrieval`, `bun run test:context-pack`.
+  - Required grep anchors passed: `SYMBOL INDEX|FOCUSED MEMORY|SEMANTIC RECALL` and `searchWithOptions|confidenceGate|enforceBudget` in `src/`.
+- Ambiguities resolved during Phase 2: none.
+- Freeze commit SHA reference:
+  - `f281ada` (Phase 2 retrieval hardening and diagnostics consistency freeze point).
+- Handoff note: Phase 3 (`Write Path Hardening and Output Hygiene`) is authorized to begin.
+
+## Phase 3 Sign-off
+- Date: 2026-02-13
+- Status: PASS
+- Checklist summary:
+  - Strict trailing control parser implemented with deterministic outcomes for valid, non-trailing, malformed JSON, and schema-invalid payloads.
+  - Write-path event policy implemented with bounded limits, best-effort apply semantics, chunked upsert metadata, and failure accounting.
+  - Output hygiene scrub implemented for control artifact and symbol-token echo removal with scrub telemetry counts.
+  - Phase 3 required commands passed: `bun test`, `bun run test:parser`, `bun run test:write-path`, `rg` checks for parse outcomes and scrub counters in `src/`.
+- Ambiguities resolved during Phase 3: none.
+- Freeze commit SHA reference:
+  - `b4e3388` (Phase 3 write-path hardening plus post-review sanitizer/parser stabilization).
+- Handoff note: Phase 4 (`Validation and Gate Orchestration`) is authorized to begin.
+
+## Phase 4 Sign-off
+- Date: 2026-02-13
+- Status: PASS
+- Checklist summary:
+  - Implemented Phase 4 validation subsystem (`src/validation/`) with S01-S13 catalog, deterministic/live runners, KPI aggregation, Wilson CI95, threshold evaluation, drift checks, and baseline-v2 gate orchestration.
+  - Added run commands and wrappers: `validate:quick`, `validate:quick:live`, `validate:stability`, `validate:production`, `validate:baseline-v2`.
+  - Added required run artifacts per validation run (`summary.md`, `metrics.json`, `scenario_results.jsonl`) and baseline gate artifacts (`gate.md`, `gate.json`).
+  - Added deterministic validation test suite under `tests/validation/` covering catalog completeness, CI math, thresholds, drift, runner behavior, pair selection, recompute consistency, and baseline gate semantics.
+  - Phase 4 command gate executed:
+    - `bun test`
+    - `bun run validate:quick`
+    - `bun run validate:quick:live`
+    - `bun run validate:stability`
+    - `VCW_OLLAMA_MODEL=deepseek-r1:1.5b VCW_OLLAMA_BASE_URL=http://127.0.0.1:11434 bun run validate:production`
+    - `bun run validate:baseline-v2`
+  - Phase 4 certification rerun executed on `2026-02-14` with live provider:
+    - Runtime config: `VCW_OLLAMA_MODEL=gpt-oss:20b`, `VCW_OLLAMA_BASE_URL=http://192.168.4.43:11434`, `VCW_VALIDATE_TIMEOUT_MS=60000`, `VCW_VALIDATE_CONCURRENCY=1`.
+    - Production run A: `production-2026-02-14T00-43-25-696Z` (`23/23` pass).
+    - Production run B: `production-2026-02-14T00-43-42-322Z` (`23/23` pass).
+    - Baseline-v2 gate: `reports/baseline-v2/2026-02-14T00-43-57-880Z/gate.md` (`Status: PASS`).
+    - Stability gate: `reports/baseline-v2/2026-02-14T00-44-01-550Z/gate.md` (no drift failures).
+- Ambiguities resolved during Phase 4:
+  - Locked drift and live strictness defaults in ADR-014.
+- Freeze commit SHA reference:
+  - `93f59e2` (Phase 4 validation subsystem, gate engine, scripts, tests, and docs freeze point).
+- Handoff note: Phase 5 (`MVP Stabilization and Ops Readiness`) is authorized to begin with baseline-v2 gate artifacts as input.
+
+## Phase 5 Sign-off
+- Date: 2026-02-14
+- Status: PASS
+- Checklist summary:
+  - Added scripted certification workflow (`validate:phase5`) with protocol enforcement (`VCW_VALIDATE_TIMEOUT_MS=60000`, `VCW_VALIDATE_CONCURRENCY=1`) and warmup execution.
+  - Added Phase 5 certification artifact bundle output (`reports/phase5/<timestamp>/phase5-certification.{md,json}`).
+  - Added rollback dry-run evidence protocol with trigger verification against `OPERATIONS_SLO.md` and `RISK_REGISTER.md`.
+  - Added Phase 5 operations closeout docs:
+    - `PHASE_RUNBOOK_5.md` canonical command + fallback sequence.
+    - `OPERATIONS_SLO.md` Phase 5 certification profile section.
+    - `RISK_REGISTER.md` risk status snapshot.
+    - `RELEASE_CHECKLIST_MVP.md` release evidence checklist.
+  - Phase 5 command gate executed:
+    - `bun test`
+    - `bun run validate:phase5`
+    - `bun run validate:stability`
+- Production run pair:
+  - Run A: `production-2026-02-14T01-09-00-801Z`
+  - Run B: `production-2026-02-14T01-09-13-930Z`
+- Gate artifact references:
+  - Baseline-v2: `reports/baseline-v2/2026-02-14T01-09-26-361Z/gate.md` (`Status: PASS`)
+  - Stability (certification pair): `reports/baseline-v2/2026-02-14T01-09-26-362Z/gate.md` (`Status: PASS`)
+  - Stability (standalone command): `reports/baseline-v2/2026-02-14T01-11-22-402Z/gate.md` (`Status: PASS`)
+  - Phase 5 report: `reports/phase5/2026-02-14T01-09-39-354Z/phase5-certification.md` (`Status: PASS`)
+- Ambiguities resolved during Phase 5:
+  - None.
+- Freeze commit SHA reference:
+  - `71815b8` (Phase 5 certification workflow, risk snapshot, release checklist, and sign-off closure).
+- Handoff note: MVP stabilization and operations readiness are complete; post-MVP roadmap planning may proceed.
 
 ## Template for New ADRs
 ```md

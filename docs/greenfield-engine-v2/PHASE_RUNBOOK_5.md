@@ -24,13 +24,25 @@ Stabilize runtime behavior, confirm parity+ release gate across two consecutive 
 7. Finalize release checklist and sign-off records.
 
 ## 4) Required Commands and Checks
+Canonical certification path:
+```bash
+bun run validate:phase5
+```
+
+Diagnostic fallback sequence (only if canonical path fails):
 ```bash
 bun run validate:production
 bun run validate:production
 bun run validate:baseline-v2
 bun run validate:quick
 bun run validate:quick:live
+bun run validate:stability
 ```
+
+Phase 5 certification protocol lock:
+- `VCW_VALIDATE_TIMEOUT_MS=60000`
+- `VCW_VALIDATE_CONCURRENCY=1`
+- Use fixed model/provider endpoint for both production-signal runs in the same certification attempt.
 
 ## 5) Expected Artifacts and File Outputs
 - Two production-signal report directories.

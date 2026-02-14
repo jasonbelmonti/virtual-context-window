@@ -17,13 +17,17 @@ import {
   defaultControlParser,
   defaultOutputSanitizer,
   defaultQueryBuilder,
+  defaultSymbolEventApplier,
   type AssistantGenerateFn,
   type AssistantInvokerHook,
   type ContextPackInjectorHook,
   type ControlParserHook,
   type OutputSanitizerHook,
   type QueryBuilderHook,
+  type SymbolEventApplierHook,
+  type SymbolEventApplyOutput,
 } from "./hooks";
+import { strictOutputSanitizer } from "./output-sanitizer";
 
 export type EngineStage =
   | "ResolveIdentity"
@@ -32,6 +36,7 @@ export type EngineStage =
   | "EmitPreTelemetry"
   | "InvokeAssistant"
   | "ParseControl"
+  | "ApplySymbolEvents"
   | "SanitizeOutput"
   | "EmitPostTelemetry"
   | "ReturnResponse";
@@ -47,6 +52,7 @@ export type EngineKernelOptions = {
     queryBuilder: QueryBuilderHook;
     contextPackInjector: ContextPackInjectorHook;
     controlParser: ControlParserHook;
+    symbolEventApplier: SymbolEventApplierHook;
     outputSanitizer: OutputSanitizerHook;
     assistantInvoker: AssistantInvokerHook;
   }>;
@@ -82,17 +88,17 @@ function getLastUserText(request: VirtualContextTurnRequest): string {
 }
 
 function fallbackParsedControl(assistantText: string) {
+  const hadControlChannel =
+    assistantText.includes("<symbolic_control>") ||
+    assistantText.includes("</symbolic_control>");
   return {
     cleanText: assistantText,
-    hadControlChannel: false,
+    events: [],
+    hadControlChannel,
     parseOutcome: "control_json_parse_error" as const,
     parseAttempted: true,
     parseSucceeded: false,
     schemaValid: false,
-    parsedEventCount: 0,
-    eventsAccepted: 0,
-    eventsRejected: 0,
-    writeFailures: 0,
   };
 }
 
@@ -101,12 +107,14 @@ export function createVirtualContextEngine(
 ): VirtualContextEngine {
   const now = options.now ?? defaultNow;
   const clock = options.clock ?? defaultClock;
-  const retrievalStrategy = options.retrievalStrategy ?? "lexical_v1";
+  const configuredRetrievalStrategy = options.retrievalStrategy;
 
   const queryBuilder = options.hooks?.queryBuilder ?? defaultQueryBuilder;
   const contextPackInjector =
     options.hooks?.contextPackInjector ?? defaultContextPackInjector;
   const controlParser = options.hooks?.controlParser ?? defaultControlParser;
+  const symbolEventApplier =
+    options.hooks?.symbolEventApplier ?? defaultSymbolEventApplier;
   const outputSanitizer =
     options.hooks?.outputSanitizer ?? defaultOutputSanitizer;
   const assistantInvoker =
@@ -140,6 +148,11 @@ export function createVirtualContextEngine(
         query,
         trustedSymbolRefsEnabled,
       });
+      const retrievalStrategy =
+        contextPack.diagnostics.retrievalStrategy ??
+        configuredRetrievalStrategy ??
+        "lexical_v1";
+      const retrievalDegraded = contextPack.diagnostics.retrievalDegraded ?? false;
 
       const preModelMs = clock() - preModelStart;
 
@@ -152,6 +165,7 @@ export function createVirtualContextEngine(
         userTextChars: getLastUserText(request).length,
         contextPackChars: contextPack.contextPackText.length,
         retrievalStrategy,
+        retrievalDegraded,
         historyTurnsUsed: contextPack.diagnostics.historyTurnsUsed,
         retrievalQueryChars: contextPack.diagnostics.retrievalQueryChars,
         lexicalCandidateCount: contextPack.diagnostics.lexicalCandidateCount,
@@ -201,6 +215,29 @@ export function createVirtualContextEngine(
         }
       }
 
+      let symbolEventApply: SymbolEventApplyOutput = {
+        eventsAccepted: 0,
+        eventsRejected: 0,
+        writeFailures: 0,
+      };
+      if (!invokeError) {
+        markStage("ApplySymbolEvents");
+        try {
+          symbolEventApply = await symbolEventApplier({
+            threadId,
+            request,
+            trustedSymbolRefsEnabled,
+            events: parsedControl.events,
+          });
+        } catch {
+          symbolEventApply = {
+            eventsAccepted: 0,
+            eventsRejected: parsedControl.events.length,
+            writeFailures: parsedControl.events.length,
+          };
+        }
+      }
+
       let sanitized = defaultOutputSanitizer({
         cleanText: parsedControl.cleanText,
         trustedSymbolRefsEnabled,
@@ -213,7 +250,7 @@ export function createVirtualContextEngine(
             trustedSymbolRefsEnabled,
           });
         } catch {
-          sanitized = defaultOutputSanitizer({
+          sanitized = await strictOutputSanitizer({
             cleanText: parsedControl.cleanText,
             trustedSymbolRefsEnabled,
           });
@@ -230,14 +267,14 @@ export function createVirtualContextEngine(
         durationMs: postModelMs,
         assistantTextChars: rawModelContent.length,
         controlChannelDetected: parsedControl.hadControlChannel,
-        parsedEventCount: parsedControl.parsedEventCount,
+        parsedEventCount: parsedControl.events.length,
         parseAttempted: parsedControl.parseAttempted,
         parseSucceeded: parsedControl.parseSucceeded,
         schemaValid: parsedControl.schemaValid,
         parseOutcome: parsedControl.parseOutcome,
-        eventsAccepted: parsedControl.eventsAccepted,
-        eventsRejected: parsedControl.eventsRejected,
-        writeFailures: parsedControl.writeFailures,
+        eventsAccepted: symbolEventApply.eventsAccepted,
+        eventsRejected: symbolEventApply.eventsRejected,
+        writeFailures: symbolEventApply.writeFailures,
         scrubbedControlLeakCount: sanitized.scrubbedControlLeakCount,
         scrubbedSymbolEchoCount: sanitized.scrubbedSymbolEchoCount,
       });
@@ -260,6 +297,7 @@ export function createVirtualContextEngine(
           preModelMs,
           postModelMs,
           retrievalStrategy,
+          retrievalDegraded,
         },
       };
     },

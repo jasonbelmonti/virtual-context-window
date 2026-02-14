@@ -23,6 +23,7 @@ export type VirtualContextTurnResponse = {
     preModelMs: number;
     postModelMs: number;
     retrievalStrategy: RetrievalStrategy;
+    retrievalDegraded: boolean;
   };
 };
 
@@ -38,6 +39,34 @@ export type ParseOutcome =
   | "control_json_parse_error"
   | "control_schema_invalid"
   | "control_channel_valid";
+
+export type UpsertSymbolEvent = {
+  type: "upsert_symbol";
+  symbol_id?: string;
+  summary?: string;
+  content: string;
+  kind?: SymbolRecordKind;
+  key_hint?: string;
+};
+
+export type ParsedControlChannel = {
+  cleanText: string;
+  events: UpsertSymbolEvent[];
+  hadControlChannel: boolean;
+  parseOutcome: ParseOutcome;
+  parseAttempted: boolean;
+  parseSucceeded: boolean;
+  schemaValid: boolean;
+};
+
+export interface ControlChannelParser {
+  parseTrailing(assistantText: string): ParsedControlChannel;
+}
+
+export interface SymbolEventPolicy {
+  validateEvent(event: UpsertSymbolEvent): { accepted: boolean; reason?: string };
+  applyEvent(threadId: string, event: UpsertSymbolEvent): Promise<{ symbolIds: string[] }>;
+}
 
 export type PreModelTelemetry = {
   type: "pre_model";
@@ -56,6 +85,7 @@ export type PreModelTelemetry = {
   recallInjectedCount: number;
   trustedSymbolRefsEnabled: boolean;
   trustedRefIdsUsed: number;
+  retrievalDegraded: boolean;
 };
 
 export type PostModelTelemetry = {
@@ -81,4 +111,130 @@ export type TelemetryEvent = PreModelTelemetry | PostModelTelemetry;
 
 export interface TelemetrySink {
   emit(event: TelemetryEvent): void | Promise<void>;
+}
+
+export type SymbolRecordKind = "memory" | "fact" | "plan" | "note";
+
+export type SymbolMetadata = {
+  keyHint?: string;
+  chunkIndex?: number;
+  chunkCount?: number;
+  source?: string;
+  scope?: "thread" | "shared";
+};
+
+export type SymbolRecord = {
+  symbolId: string;
+  summary: string;
+  content: string;
+  kind: SymbolRecordKind;
+  createdAt: number;
+  updatedAt: number;
+  meta?: SymbolMetadata;
+};
+
+export type SymbolUpsertInput = {
+  symbolId?: string;
+  summary?: string;
+  content: string;
+  kind?: SymbolRecordKind;
+  meta?: SymbolMetadata;
+};
+
+export type SymbolSearchOptions = {
+  strategy: RetrievalStrategy;
+  queryTokens: string[];
+  queryEmbedding?: number[];
+  weights?: {
+    vector: number;
+    lexical: number;
+    recency: number;
+  };
+};
+
+export type SymbolSearchResult = {
+  ids: string[];
+  diagnostics: {
+    lexicalCandidateCount: number;
+    vectorCandidateCount: number;
+    rerankedCandidateCount: number;
+  };
+};
+
+export interface SymbolStore {
+  upsert(
+    threadId: string,
+    input: SymbolUpsertInput,
+  ): Promise<{ symbolId: string; created: boolean }>;
+  get(threadId: string, symbolId: string): Promise<SymbolRecord | null>;
+  list(
+    threadId: string,
+  ): Promise<Array<Pick<SymbolRecord, "symbolId" | "summary" | "kind" | "updatedAt">>>;
+  search(threadId: string, queryText: string, k: number): Promise<string[]>;
+  searchWithOptions?(
+    threadId: string,
+    queryText: string,
+    k: number,
+    options: SymbolSearchOptions,
+  ): Promise<SymbolSearchResult>;
+}
+
+export type RetrievalQuery = {
+  queryText: string;
+  queryTokens: string[];
+  turnsUsed: number;
+};
+
+export type RetrievalCandidate = {
+  symbolId: string;
+  lexicalScore: number;
+  vectorScore: number;
+  recencyScore: number;
+  fusedScore: number;
+};
+
+export interface RetrievalPlanner {
+  buildQuery(messages: Array<{ role: string; content: string }>): RetrievalQuery;
+  selectCandidates(
+    threadId: string,
+    query: RetrievalQuery,
+  ): Promise<RetrievalCandidate[]>;
+  rerank(candidates: RetrievalCandidate[]): RetrievalCandidate[];
+  confidenceGate(candidates: RetrievalCandidate[]): {
+    focused: RetrievalCandidate[];
+    recall: RetrievalCandidate[];
+    rejected: RetrievalCandidate[];
+  };
+}
+
+export type ContextPackBudget = {
+  totalChars: number;
+  symbolIndexLimit: number;
+  indexItemMaxChars: number;
+  focusedItemMaxChars: number;
+  recallItemMaxChars: number;
+  recallK: number;
+};
+
+export type ContextPackInput = {
+  symbolIndex: Array<{ symbolId: string; summary: string }>;
+  focusedMemories: Array<{
+    symbolId: string;
+    content: string;
+    source: "trusted_ref" | "retrieval";
+  }>;
+  recallMemories: Array<{ symbolId: string; content: string }>;
+};
+
+export type ContextPackOutput = {
+  text: string;
+  focusedIncluded: number;
+  recallIncluded: number;
+};
+
+export interface ContextPackComposer {
+  buildIndex(input: ContextPackInput, budget: ContextPackBudget): string[];
+  buildFocused(input: ContextPackInput, budget: ContextPackBudget): string[];
+  buildRecall(input: ContextPackInput, budget: ContextPackBudget): string[];
+  enforceBudget(input: ContextPackInput, budget: ContextPackBudget): ContextPackOutput;
 }
