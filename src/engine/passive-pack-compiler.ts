@@ -77,7 +77,7 @@ function renderPack(input: {
   let recallIncluded = 0;
 
   const appendSection = (
-    title: "RECENT LITERALS" | "SYMBOL INDEX" | "FOCUSED MEMORY" | "SEMANTIC RECALL",
+    title: "SYMBOL INDEX" | "FOCUSED MEMORY" | "SEMANTIC RECALL",
     items: string[],
     onIncluded?: () => void,
   ) => {
@@ -108,14 +108,6 @@ function renderPack(input: {
     appendLineWithBudget(lines, "\n", remainingChars);
   };
 
-  const recentLines = input.recentEntries.map((entry) => {
-    const content = truncateDeterministic(
-      entry.content,
-      input.budget.recentLiteralItemMaxChars,
-    );
-    return `- [${entry.role}] ${entry.entryId}: ${content}\n`;
-  });
-
   const hiddenIds = new Set(
     [...input.hydratedFocused, ...input.hydratedRecall].map((record) => record.symbolId),
   );
@@ -145,16 +137,13 @@ function renderPack(input: {
     appendSection("SEMANTIC RECALL", recallLines, () => {
       recallIncluded += 1;
     });
-  const appendRecent = () => appendSection("RECENT LITERALS", recentLines);
   const appendIndex = () => appendSection("SYMBOL INDEX", indexLines);
 
   if (input.prioritizeHydrated) {
     appendFocused();
     appendRecall();
-    appendRecent();
     appendIndex();
   } else {
-    appendRecent();
     appendIndex();
     appendFocused();
     appendRecall();
