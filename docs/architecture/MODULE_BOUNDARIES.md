@@ -5,7 +5,9 @@ This repository keeps public API compatibility while organizing internals by con
 ## Engine
 
 - `src/engine/core`: request/response contracts, canonical kernel entrypoint, hooks, identity, sanitization, parsing, and engine errors.
+- `src/engine/core/types`: contract model split by concern (turn/stream/control/telemetry/symbol/retrieval/context-pack).
 - `src/engine/passive`: passive sliding implementation details (pack compiler, event tape, compressor, kernel).
+- `src/engine/passive/kernel`: passive-kernel internals split into constants, compaction coordination, retrieval selection, telemetry, and utility helpers.
 - `src/engine/symbols`: symbol storage and embedding cache.
 - `src/engine/index.ts`: compatibility barrel for existing imports.
 

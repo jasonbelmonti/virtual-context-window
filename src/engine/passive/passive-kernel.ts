@@ -1,13 +1,9 @@
 import type {
   EngineStage,
-  PostModelTelemetry,
-  PreModelTelemetry,
-  SymbolRecord,
   VirtualContextThreadInspection,
   VirtualContextEngine,
   VirtualContextTurnRequest,
   VirtualContextTurnResponse,
-  VirtualContextTurnStreamEvent,
 } from "../core/contracts";
 import { StrictControlChannelParser } from "../core/control-channel-parser";
 import {
@@ -17,357 +13,50 @@ import {
 import {
   defaultQueryBuilder,
   type AssistantGenerateInput,
-  type AssistantGenerateStreamEvent,
 } from "../core/hooks";
 import { resolveThreadIdentity, resolveTrustedSymbolRefs } from "../core/identity";
 import { strictOutputSanitizer } from "../core/output-sanitizer";
 import {
-  applyPassiveCommitPolicy,
   createDeterministicFallbackExtractor,
-  runExtractorWithTimeout,
 } from "./passive-compressor";
 import type {
   PassiveKernelOptions,
   PassivePackBudget,
-  PassivePackHydratedRecord,
-  PassiveThreadCounters,
   PassiveTurnDiagnostics,
 } from "./passive-contracts";
 import { InMemoryEventTape } from "./passive-event-tape";
 import { compilePassiveContextPack } from "./passive-pack-compiler";
-
-const CONTROL_START_PREFIX = "<symbolic_control";
-const CONTROL_OPEN_TAG = "<symbolic_control>";
-const CONTROL_END_TAG = "</symbolic_control>";
-const SYMBOL_TOKEN_START = "⟦S:";
-const SYMBOL_TOKEN_END = "⟧";
-
-const DEFAULT_BUDGET: PassivePackBudget = {
-  totalChars: 700,
-  symbolIndexLimit: 24,
-  indexItemMaxChars: 180,
-  focusedItemMaxChars: 1_200,
-  recallItemMaxChars: 800,
-  recallK: 4,
-  recentLiteralPairCount: 2,
-};
-
-const DEFAULT_HIGH_WATERMARK = 0.8;
-const DEFAULT_LOW_WATERMARK = 0.6;
-const DEFAULT_EXTRACTOR_TIMEOUT_MS = 1_200;
-const DEFAULT_MAX_COMPACTION_PROPOSALS = 4;
-const DEFAULT_COMPACTION_DRAIN_TIMEOUT_MS = 1_200;
-const DEFAULT_AGE_BACKFILL_COOLDOWN_TURNS = 3;
-const DEFAULT_HOT_WINDOW_OVERLAP_TURNS = 1;
-
-const defaultNow = () => Date.now();
-const defaultClock = () => performance.now();
-
-type StreamEventEmitter = (event: VirtualContextTurnStreamEvent) => void | Promise<void>;
-
-type ThreadState = PassiveThreadCounters;
-
-function normalizeWatermark(value: number, fallback: number): number {
-  if (!Number.isFinite(value) || value <= 0 || value >= 1) {
-    return fallback;
-  }
-  return value;
-}
-
-function normalizePositiveInt(value: number | undefined, fallback: number): number {
-  if (!Number.isFinite(value) || (value ?? 0) <= 0) {
-    return fallback;
-  }
-  return Math.floor(value as number);
-}
-
-function resolveHistoryWindowTurns(
-  request: VirtualContextTurnRequest,
-  fallback: number,
-): number {
-  const metadata = request.metadata as Record<string, unknown> | undefined;
-  const raw = metadata?.vcwHistoryTurnLimit;
-  if (typeof raw === "number" && Number.isFinite(raw) && raw > 0) {
-    return Math.floor(raw);
-  }
-  if (typeof raw === "string") {
-    const normalized = raw.trim().toLowerCase();
-    if (normalized === "off" || normalized === "unbounded") {
-      return Math.max(1, Math.ceil(request.messages.length / 2));
-    }
-    const parsed = Number.parseInt(raw, 10);
-    if (Number.isFinite(parsed) && parsed > 0) {
-      return parsed;
-    }
-  }
-  return Math.max(0, fallback);
-}
-
-function getLastUserText(request: VirtualContextTurnRequest): string {
-  for (let index = request.messages.length - 1; index >= 0; index -= 1) {
-    const message = request.messages[index];
-    if (message?.role === "user") {
-      return message.content;
-    }
-  }
-
-  return "";
-}
-
-function findUnsafeSuffixStart(text: string): number {
-  let cut = text.length;
-
-  const lastControlStart = text.lastIndexOf(CONTROL_START_PREFIX);
-  if (lastControlStart >= 0) {
-    const controlClosed = text.indexOf(CONTROL_END_TAG, lastControlStart);
-    if (controlClosed === -1) {
-      cut = Math.min(cut, lastControlStart);
-    }
-  }
-
-  const lastSymbolStart = text.lastIndexOf(SYMBOL_TOKEN_START);
-  if (lastSymbolStart >= 0) {
-    const symbolClosed = text.indexOf(SYMBOL_TOKEN_END, lastSymbolStart);
-    if (symbolClosed === -1) {
-      cut = Math.min(cut, lastSymbolStart);
-    }
-  }
-
-  return cut;
-}
-
-function hasTrailingControlBlock(text: string): boolean {
-  const lastClose = text.lastIndexOf(CONTROL_END_TAG);
-  if (lastClose < 0) {
-    return false;
-  }
-
-  const suffix = text.slice(lastClose + CONTROL_END_TAG.length);
-  if (suffix.trim().length > 0) {
-    return false;
-  }
-
-  const openBefore = text.lastIndexOf(CONTROL_OPEN_TAG, lastClose);
-  return openBefore >= 0;
-}
-
-async function sanitizeStreamingPreview(rawText: string): Promise<string> {
-  const unsafeStart = findUnsafeSuffixStart(rawText);
-  const lastControlStart = rawText.lastIndexOf(CONTROL_START_PREFIX);
-  const hasUnclosedControl =
-    lastControlStart >= 0 &&
-    rawText.indexOf(CONTROL_END_TAG, lastControlStart) === -1 &&
-    unsafeStart <= lastControlStart;
-  const safePrefix = hasUnclosedControl
-    ? rawText.slice(0, unsafeStart).trimEnd()
-    : rawText.slice(0, unsafeStart);
-  const sanitized = await strictOutputSanitizer({
-    cleanText: safePrefix,
-    trustedSymbolRefsEnabled: false,
-  });
-  if (hasTrailingControlBlock(rawText)) {
-    return sanitized.content.trimEnd();
-  }
-  return sanitized.content;
-}
-
-function toStreamError(error: unknown): { name: string; message: string } {
-  if (error instanceof Error) {
-    return {
-      name: error.name,
-      message: error.message,
-    };
-  }
-
-  return {
-    name: "Error",
-    message: String(error),
-  };
-}
-
-function createThreadState(): ThreadState {
-  return {
-    pressurePeak: 0,
-    compactionJobsTriggered: 0,
-    extractorCalls: 0,
-    proposalsCount: 0,
-    committedSymbolsCount: 0,
-    compactMode: false,
-    compactionInFlight: false,
-    compactionJob: null,
-    lastCompactionOutcome: "none",
-    lastCompactionTriggerSource: "none",
-    lastAgeBackfillScheduledTurn: 0,
-    lastFallbackCommitUsed: false,
-    lastHistoryWindowTurns: DEFAULT_BUDGET.recentLiteralPairCount,
-    lastEffectiveHotWindowPairs: Math.max(
-      0,
-      DEFAULT_BUDGET.recentLiteralPairCount - DEFAULT_HOT_WINDOW_OVERLAP_TURNS,
-    ),
-  };
-}
-
-async function selectHydratedCandidates(options: {
-  threadId: string;
-  queryText: string;
-  queryTokens: string[];
-  retrievalStrategy: "lexical_v1" | "hybrid_v2";
-  store: PassiveKernelOptions["store"];
-  embeddingProvider?: PassiveKernelOptions["embeddingProvider"];
-  symbolIndexCount: number;
-  recallK: number;
-}): Promise<{
-  candidateSymbolIds: string[];
-  focused: PassivePackHydratedRecord[];
-  recall: PassivePackHydratedRecord[];
-  lexicalCandidateCount: number;
-  vectorCandidateCount: number;
-  rerankedCandidateCount: number;
-  retrievalDegraded: boolean;
-}> {
-  const candidateLimit = Math.max(4, options.recallK * 2);
-
-  let ids: string[] = [];
-  let lexicalCandidateCount = 0;
-  let vectorCandidateCount = 0;
-  let rerankedCandidateCount = 0;
-  let retrievalDegraded = false;
-  let queryEmbedding: number[] | undefined;
-
-  // Nothing to retrieve: skip embedding calls and search work.
-  if (options.symbolIndexCount <= 0 || options.recallK <= 0) {
-    return {
-      candidateSymbolIds: [],
-      focused: [],
-      recall: [],
-      lexicalCandidateCount: 0,
-      vectorCandidateCount: 0,
-      rerankedCandidateCount: 0,
-      retrievalDegraded: false,
-    };
-  }
-
-  if (
-    options.retrievalStrategy === "hybrid_v2" &&
-    options.embeddingProvider &&
-    options.queryText.trim().length > 0
-  ) {
-    try {
-      const embedded = await options.embeddingProvider.embed({
-        model: "",
-        input: options.queryText,
-        traceId: options.threadId,
-      });
-      if (embedded.vector.length > 0) {
-        queryEmbedding = embedded.vector;
-      } else {
-        retrievalDegraded = true;
-      }
-    } catch {
-      retrievalDegraded = true;
-    }
-  }
-
-  if (options.store.searchWithOptions) {
-    try {
-      const searched = await options.store.searchWithOptions(
-        options.threadId,
-        options.queryText,
-        candidateLimit,
-        {
-          strategy: options.retrievalStrategy,
-          queryTokens: options.queryTokens,
-          queryEmbedding,
-        },
-      );
-      ids = searched.ids;
-      lexicalCandidateCount = searched.diagnostics.lexicalCandidateCount;
-      vectorCandidateCount = searched.diagnostics.vectorCandidateCount;
-      rerankedCandidateCount = searched.diagnostics.rerankedCandidateCount;
-    } catch {
-      retrievalDegraded = true;
-      ids = await options.store.search(options.threadId, options.queryText, candidateLimit);
-      lexicalCandidateCount = ids.length;
-      vectorCandidateCount = 0;
-      rerankedCandidateCount = ids.length;
-    }
-  } else {
-    ids = await options.store.search(options.threadId, options.queryText, candidateLimit);
-    lexicalCandidateCount = ids.length;
-    rerankedCandidateCount = ids.length;
-  }
-
-  const records: SymbolRecord[] = [];
-  for (const symbolId of ids) {
-    const record = await options.store.get(options.threadId, symbolId);
-    if (!record) {
-      continue;
-    }
-    records.push(record);
-  }
-
-  const focusedLimit = Math.min(3, Math.max(1, options.recallK));
-  const focused = records.slice(0, focusedLimit).map((record, index) => ({
-    symbolId: record.symbolId,
-    content: record.content,
-    score: Math.max(0, 1 - index * 0.1),
-    source: "focused" as const,
-  }));
-
-  const focusedSet = new Set(focused.map((record) => record.symbolId));
-  const recall = records
-    .filter((record) => !focusedSet.has(record.symbolId))
-    .slice(0, options.recallK)
-    .map((record, index) => ({
-      symbolId: record.symbolId,
-      content: record.content,
-      score: Math.max(0, 0.6 - index * 0.08),
-      source: "recall" as const,
-    }));
-
-  return {
-    candidateSymbolIds: ids,
-    focused,
-    recall,
-    lexicalCandidateCount,
-    vectorCandidateCount,
-    rerankedCandidateCount,
-    retrievalDegraded,
-  };
-}
-
-function compactPreview(text: string, maxChars = 80): string {
-  const normalized = text.replace(/\s+/gu, " ").trim();
-  if (normalized.length <= maxChars) {
-    return normalized;
-  }
-  if (maxChars <= 3) {
-    return normalized.slice(0, maxChars);
-  }
-  return `${normalized.slice(0, maxChars - 3)}...`;
-}
-
-async function emitTelemetry(
-  sink: PassiveKernelOptions["telemetry"],
-  event: PreModelTelemetry | PostModelTelemetry,
-  emitStreamEvent?: StreamEventEmitter,
-): Promise<void> {
-  if (sink) {
-    try {
-      await sink.emit(event);
-    } catch {
-      // Telemetry must never fail turn processing.
-    }
-  }
-
-  if (emitStreamEvent) {
-    await emitStreamEvent({
-      type: "telemetry",
-      threadId: event.threadId,
-      event,
-    });
-  }
-}
+import {
+  createCompactionCoordinator,
+  createThreadState,
+} from "./kernel/compaction-coordinator";
+import {
+  DEFAULT_AGE_BACKFILL_COOLDOWN_TURNS,
+  DEFAULT_BUDGET,
+  DEFAULT_COMPACTION_DRAIN_TIMEOUT_MS,
+  defaultClock,
+  DEFAULT_EXTRACTOR_TIMEOUT_MS,
+  DEFAULT_HIGH_WATERMARK,
+  DEFAULT_HOT_WINDOW_OVERLAP_TURNS,
+  DEFAULT_LOW_WATERMARK,
+  DEFAULT_MAX_COMPACTION_PROPOSALS,
+  defaultNow,
+} from "./kernel/constants";
+import { selectHydratedCandidates } from "./kernel/retrieval";
+import { sanitizeStreamingPreview } from "./kernel/stream-sanitize";
+import { emitTelemetry, toStreamError } from "./kernel/telemetry";
+import type {
+  CompactionTriggerSource,
+  StreamEventEmitter,
+  ThreadState,
+} from "./kernel/types";
+import {
+  compactPreview,
+  getLastUserText,
+  normalizePositiveInt,
+  normalizeWatermark,
+  resolveHistoryWindowTurns,
+} from "./kernel/utils";
 
 export function createVirtualContextEnginePassive(
   options: PassiveKernelOptions,
@@ -420,199 +109,27 @@ export function createVirtualContextEnginePassive(
   function getThreadState(threadId: string): ThreadState {
     let state = threadStates.get(threadId);
     if (!state) {
-      state = createThreadState();
+      state = createThreadState(
+        DEFAULT_BUDGET.recentLiteralPairCount,
+        Math.max(0, DEFAULT_BUDGET.recentLiteralPairCount - DEFAULT_HOT_WINDOW_OVERLAP_TURNS),
+      );
       threadStates.set(threadId, state);
     }
     return state;
   }
 
-  async function runCompactionJob(
-    threadId: string,
-    queryText: string,
-    candidates: ReturnType<typeof tape.listUnsymbolizedCompactionCandidates>,
-  ): Promise<{
-    status: "none" | "no_candidates" | "extractor_error";
-    fallbackCommitUsed: boolean;
-  }> {
-    const state = getThreadState(threadId);
-    if (candidates.length === 0) {
-      return {
-        status: "no_candidates",
-        fallbackCommitUsed: false,
-      };
-    }
-
-    state.extractorCalls += 1;
-    const extractionInput = {
-      threadId,
-      queryText,
-      entries: candidates,
-      maxProposals: maxCompactionProposals,
-    } as const;
-    const extraction = await runExtractorWithTimeout({
-      extractor,
-      input: extractionInput,
-      timeoutMs,
-    });
-
-    const commitProposals = async (proposals: typeof extraction.proposals): Promise<number> => {
-      if (proposals.length === 0) {
-        return 0;
-      }
-
-      state.proposalsCount += proposals.length;
-      const commit = await applyPassiveCommitPolicy({
-        threadId,
-        store: options.store,
-        proposals,
-        maxProposals: maxCompactionProposals,
-        candidateEntries: candidates.map((entry) => ({
-          entryId: entry.entryId,
-          offsetStart: entry.offsetStart,
-          offsetEnd: entry.offsetEnd,
-          role: entry.role,
-          content: entry.content,
-        })),
-      });
-      state.committedSymbolsCount += commit.committedSymbolsCount;
-
-      for (const committed of commit.committedRecords) {
-        const entryIds = [...new Set(committed.evidenceSpans.map((span) => span.entryId))];
-        if (entryIds.length === 0) {
-          continue;
-        }
-        tape.markCompressed(
-          threadId,
-          committed.symbolId,
-          entryIds,
-          committed.evidenceSpans,
-        );
-      }
-
-      return commit.committedSymbolsCount;
-    };
-
-    const primaryProposals = extraction.proposals;
-    let committedSymbols = await commitProposals(primaryProposals);
-    let fallbackCommitUsed = false;
-    const shouldAttemptFallback =
-      extraction.failed ||
-      extraction.timeout ||
-      primaryProposals.length === 0 ||
-      committedSymbols === 0;
-
-    if (shouldAttemptFallback) {
-      fallbackCommitUsed = true;
-      try {
-        const fallbackProposals = await fallbackExtractor.extract(extractionInput);
-        committedSymbols += await commitProposals(fallbackProposals);
-      } catch {
-        // Deterministic fallback is best-effort by policy.
-      }
-    }
-
-    if ((extraction.failed || extraction.timeout) && committedSymbols === 0) {
-      return {
-        status: "extractor_error",
-        fallbackCommitUsed,
-      };
-    }
-
-    return {
-      status: "none",
-      fallbackCommitUsed,
-    };
-  }
-
-  function scheduleCompaction(
-    threadId: string,
-    queryText: string,
-    triggerSource: "none" | "pressure" | "age_backfill",
-    candidates: ReturnType<typeof tape.listUnsymbolizedCompactionCandidates>,
-  ): "none" | "in_flight" | "low_pressure" | "no_candidates" | "extractor_error" {
-    const state = getThreadState(threadId);
-    if (triggerSource === "none") {
-      return "low_pressure";
-    }
-
-    if (state.compactionInFlight) {
-      return "in_flight";
-    }
-
-    if (candidates.length === 0) {
-      state.lastCompactionOutcome = "no_candidates";
-      state.lastCompactionTriggerSource = triggerSource;
-      state.lastFallbackCommitUsed = false;
-      return "no_candidates";
-    }
-
-    state.lastCompactionTriggerSource = triggerSource;
-    if (triggerSource === "age_backfill") {
-      state.lastAgeBackfillScheduledTurn = tape.getTurn(threadId);
-    }
-    state.compactionInFlight = true;
-    state.compactionJobsTriggered += 1;
-    const compactionJob = (async () => {
-      try {
-        const outcome = await runCompactionJob(
-          threadId,
-          queryText,
-          candidates,
-        );
-        state.lastCompactionOutcome = outcome.status;
-        state.lastFallbackCommitUsed = outcome.fallbackCommitUsed;
-      } catch {
-        state.lastCompactionOutcome = "extractor_error";
-        state.lastFallbackCommitUsed = false;
-      } finally {
-        state.compactionInFlight = false;
-        if (state.compactionJob === compactionJob) {
-          state.compactionJob = null;
-        }
-      }
-    })();
-    state.compactionJob = compactionJob;
-
-    return "none";
-  }
-
-  async function waitForCompactionDrainIfNeeded(threadId: string): Promise<{
-    attempted: boolean;
-    waitMs: number;
-    timedOut: boolean;
-    fallbackCommitUsed: boolean;
-  }> {
-    const state = getThreadState(threadId);
-    if (!waitForCompactionDrain || !state.compactionInFlight || !state.compactionJob) {
-      return {
-        attempted: false,
-        waitMs: 0,
-        timedOut: false,
-        fallbackCommitUsed: false,
-      };
-    }
-
-    const startedAt = clock();
-    let timedOut = false;
-    const job = state.compactionJob;
-    await Promise.race([
-      job,
-      new Promise<void>((resolve) => {
-        setTimeout(() => {
-          timedOut = true;
-          resolve();
-        }, compactionDrainTimeoutMs);
-      }),
-    ]);
-    const waitMs = clock() - startedAt;
-    const fallbackCommitUsed = !timedOut ? state.lastFallbackCommitUsed : false;
-    return {
-      attempted: true,
-      waitMs,
-      timedOut,
-      fallbackCommitUsed,
-    };
-  }
+  const compactionCoordinator = createCompactionCoordinator({
+    getThreadState,
+    tape,
+    store: options.store,
+    extractor,
+    fallbackExtractor,
+    timeoutMs,
+    maxCompactionProposals,
+    clock,
+    waitForCompactionDrain,
+    compactionDrainTimeoutMs,
+  });
 
   const markStage = async (
     stage: EngineStage,
@@ -669,7 +186,7 @@ export function createVirtualContextEnginePassive(
 
     const preModelStart = clock();
     await markStage("ResolveIdentity", threadId, executeOptions?.streamEvents);
-    const compactionDrain = await waitForCompactionDrainIfNeeded(threadId);
+    const compactionDrain = await compactionCoordinator.waitForCompactionDrainIfNeeded(threadId);
     const fallbackCommitUsedThisTurn = compactionDrain.fallbackCommitUsed;
 
     await markStage("BuildTurnQuery", threadId, executeOptions?.streamEvents);
@@ -872,12 +389,12 @@ export function createVirtualContextEnginePassive(
     const ageBackfillReady = ageBackfillEligibleCount > 0 &&
       ageBackfillCooldownTurns === 0 &&
       activeHistoryTurns > hotWindowOverlapTurns;
-    const compactionTriggerSource: "none" | "pressure" | "age_backfill" = compiled.compactionTriggered
+    const compactionTriggerSource: CompactionTriggerSource = compiled.compactionTriggered
       ? "pressure"
       : ageBackfillReady
         ? "age_backfill"
         : "none";
-    const scheduledCompactionReason = scheduleCompaction(
+    const scheduledCompactionReason = compactionCoordinator.scheduleCompaction(
       threadId,
       query.queryText,
       compactionTriggerSource,
