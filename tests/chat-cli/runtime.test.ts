@@ -83,6 +83,34 @@ test("trace raw command returns last raw model output", async () => {
   expect(raw.output).toContain("<symbolic_control>");
 });
 
+test("clear command resets cached trace output", async () => {
+  const runtime = new ChatCliRuntime({
+    assistantGenerate: WRITE_PATH_ASSISTANT,
+  });
+
+  await runtime.processUserMessage("hello");
+  const beforeClear = await runtime.executeCommand({
+    type: "trace",
+    action: "raw",
+  });
+  expect(beforeClear.output).toContain("--- Raw Model Output ---");
+
+  const cleared = await runtime.executeCommand({ type: "clear" });
+  expect(cleared.output).toContain("Cleared sessions and symbol store.");
+
+  const afterClearRaw = await runtime.executeCommand({
+    type: "trace",
+    action: "raw",
+  });
+  expect(afterClearRaw.output).toContain("No raw output available yet.");
+
+  const afterClearPack = await runtime.executeCommand({
+    type: "trace",
+    action: "pack",
+  });
+  expect(afterClearPack.output).toContain("No context pack available yet.");
+});
+
 test("remember command writes directly to symbol store", async () => {
   const runtime = new ChatCliRuntime({
     mock: true,

@@ -850,6 +850,10 @@ export class ChatCliRuntime {
         this.sessions.clear();
         this.store = new InMemorySymbolStore();
         this.engine = this.createEngine();
+        this.lastTrace = null;
+        this.lastAssistantMetadata = null;
+        this.lastAutoDecision = null;
+        this.getOrCreateThread(this.threadId);
         return {
           output: "Cleared sessions and symbol store.",
         };

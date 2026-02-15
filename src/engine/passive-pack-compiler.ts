@@ -60,30 +60,6 @@ function appendLineWithBudget(
   return true;
 }
 
-function estimateHiddenRecentLiteralChars(input: {
-  recentEntries: EventTapeEntry[];
-  budget: PassivePackBudget;
-}): number {
-  if (input.recentEntries.length === 0) {
-    return 0;
-  }
-
-  const sectionTitleChars = "RECENT LITERALS\n".length;
-  const sectionBodyChars = input.recentEntries
-    .map((entry) => {
-      const content = truncateDeterministic(
-        entry.content,
-        input.budget.recentLiteralItemMaxChars,
-      );
-      return `- [${entry.role}] ${entry.entryId}: ${content}\n`.length;
-    })
-    .reduce((sum, length) => sum + length, 0);
-  const sectionSeparatorChars = "\n".length;
-  const estimated = sectionTitleChars + sectionBodyChars + sectionSeparatorChars;
-
-  return Math.min(estimated, Math.max(0, input.budget.totalChars));
-}
-
 function renderPack(input: {
   recentEntries: EventTapeEntry[];
   symbolIndex: Array<{
@@ -101,7 +77,7 @@ function renderPack(input: {
   let recallIncluded = 0;
 
   const appendSection = (
-    title: "SYMBOL INDEX" | "FOCUSED MEMORY" | "SEMANTIC RECALL",
+    title: "SYMBOL INDEX" | "FOCUSED MEMORY" | "SEMANTIC RECALL" | "RECENT LITERALS",
     items: string[],
     onIncluded?: () => void,
   ) => {
@@ -152,6 +128,10 @@ function renderPack(input: {
     const content = truncateDeterministic(item.content, input.budget.recallItemMaxChars);
     return `- ${item.symbolId}: ${content}\n`;
   });
+  const recentLines = input.recentEntries.map((entry) => {
+    const content = truncateDeterministic(entry.content, input.budget.recentLiteralItemMaxChars);
+    return `- [${entry.role}] ${entry.entryId}: ${content}\n`;
+  });
 
   const appendFocused = () =>
     appendSection("FOCUSED MEMORY", focusedLines, () => {
@@ -161,13 +141,16 @@ function renderPack(input: {
     appendSection("SEMANTIC RECALL", recallLines, () => {
       recallIncluded += 1;
     });
+  const appendRecent = () => appendSection("RECENT LITERALS", recentLines);
   const appendIndex = () => appendSection("SYMBOL INDEX", indexLines);
 
   if (input.prioritizeHydrated) {
     appendFocused();
     appendRecall();
+    appendRecent();
     appendIndex();
   } else {
+    appendRecent();
     appendIndex();
     appendFocused();
     appendRecall();
@@ -187,10 +170,6 @@ export function compilePassiveContextPack(input: CompileInput):
   let hydratedFocused = [...input.hydratedFocused].sort((a, b) => b.score - a.score);
   let hydratedRecall = [...input.hydratedRecall].sort((a, b) => b.score - a.score);
   let compactMode = input.compactMode;
-  const hiddenRecentLiteralChars = estimateHiddenRecentLiteralChars({
-    recentEntries: input.recentEntries,
-    budget: input.budget,
-  });
 
   let rendered = renderPack({
     recentEntries: input.recentEntries,
@@ -202,7 +181,7 @@ export function compilePassiveContextPack(input: CompileInput):
   });
 
   let pressureRatio = input.budget.totalChars > 0
-    ? (rendered.usedChars + hiddenRecentLiteralChars) / input.budget.totalChars
+    ? rendered.usedChars / input.budget.totalChars
     : 0;
   let compactionTriggered = false;
   let compactionReason: "high_watermark" | "below_threshold" | "none" = "none";
@@ -221,7 +200,7 @@ export function compilePassiveContextPack(input: CompileInput):
       prioritizeHydrated: true,
     });
     pressureRatio = input.budget.totalChars > 0
-      ? (rendered.usedChars + hiddenRecentLiteralChars) / input.budget.totalChars
+      ? rendered.usedChars / input.budget.totalChars
       : 0;
 
     while (pressureRatio > input.highWatermark && hydratedRecall.length > 0) {
@@ -235,7 +214,7 @@ export function compilePassiveContextPack(input: CompileInput):
         prioritizeHydrated: true,
       });
       pressureRatio = input.budget.totalChars > 0
-        ? (rendered.usedChars + hiddenRecentLiteralChars) / input.budget.totalChars
+        ? rendered.usedChars / input.budget.totalChars
         : 0;
     }
 
@@ -250,7 +229,7 @@ export function compilePassiveContextPack(input: CompileInput):
         prioritizeHydrated: true,
       });
       pressureRatio = input.budget.totalChars > 0
-        ? (rendered.usedChars + hiddenRecentLiteralChars) / input.budget.totalChars
+        ? rendered.usedChars / input.budget.totalChars
         : 0;
     }
   } else if (compactMode && pressureRatio < input.lowWatermark) {
