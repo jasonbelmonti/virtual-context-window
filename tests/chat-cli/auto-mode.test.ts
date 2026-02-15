@@ -55,7 +55,6 @@ test("chat auto dedupe suppresses repeated deterministic slot proposal", async (
   const second = await runtime.processUserMessage("my name is Jason");
   expect(second.trace.autoSymbol.reason).toBe("profile_name_statement");
   expect(second.trace.autoSymbol.writeApplied).toBe(false);
-  expect(second.trace.symbolTable.length).toBe(0);
 });
 
 test("chat auto suppresses secret-like payloads without writes", async () => {

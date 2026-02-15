@@ -28,6 +28,8 @@ export type EngineKernelOptions = {
   highWatermark?: number;
   lowWatermark?: number;
   maxCompactionProposals?: number;
+  hotWindowOverlapTurns?: number;
+  ageBackfillCooldownTurns?: number;
   packBudget?: Partial<PassivePackBudget>;
   maxEventTapeEntriesPerThread?: number;
   compactionDrainTimeoutMs?: number;
@@ -60,6 +62,8 @@ export function createVirtualContextEngine(
     highWatermark: options.highWatermark,
     lowWatermark: options.lowWatermark,
     maxCompactionProposals: options.maxCompactionProposals,
+    hotWindowOverlapTurns: options.hotWindowOverlapTurns,
+    ageBackfillCooldownTurns: options.ageBackfillCooldownTurns,
     packBudget: options.packBudget,
     maxEventTapeEntriesPerThread: options.maxEventTapeEntriesPerThread,
     compactionDrainTimeoutMs: options.compactionDrainTimeoutMs,

@@ -48,9 +48,25 @@ function appendLineWithBudget(
   lines: string[],
   line: string,
   remainingChars: { value: number },
+  options?: { allowTruncate?: boolean },
 ): boolean {
   if (line.length > remainingChars.value) {
-    return false;
+    if (!options?.allowTruncate) {
+      return false;
+    }
+
+    const hasTrailingNewline = line.endsWith("\n");
+    const reserve = hasTrailingNewline ? 1 : 0;
+    const available = remainingChars.value - reserve;
+    if (available <= 0) {
+      return false;
+    }
+    const base = hasTrailingNewline ? line.slice(0, -1) : line;
+    const truncated = truncateDeterministic(base, available);
+    if (truncated.length === 0) {
+      return false;
+    }
+    line = hasTrailingNewline ? `${truncated}\n` : truncated;
   }
 
   lines.push(line);
@@ -72,6 +88,18 @@ function renderPack(input: {
   const remainingChars = { value: input.budget.totalChars };
   let focusedIncluded = 0;
   let recallIncluded = 0;
+  const dynamicIndexMaxChars = Math.max(
+    36,
+    Math.min(input.budget.indexItemMaxChars, Math.floor(input.budget.totalChars * 0.35)),
+  );
+  const dynamicFocusedMaxChars = Math.max(
+    72,
+    Math.min(input.budget.focusedItemMaxChars, Math.floor(input.budget.totalChars * 0.45)),
+  );
+  const dynamicRecallMaxChars = Math.max(
+    64,
+    Math.min(input.budget.recallItemMaxChars, Math.floor(input.budget.totalChars * 0.4)),
+  );
 
   const appendSection = (
     title: "SYMBOL INDEX" | "RELEVANT MEMORY",
@@ -89,7 +117,7 @@ function renderPack(input: {
 
     let included = false;
     for (const item of items) {
-      if (!appendLineWithBudget(lines, item, remainingChars)) {
+      if (!appendLineWithBudget(lines, item, remainingChars, { allowTruncate: true })) {
         break;
       }
       included = true;
@@ -105,24 +133,24 @@ function renderPack(input: {
     appendLineWithBudget(lines, "\n", remainingChars);
   };
 
-  const hiddenIds = new Set(
+  const hydratedIds = new Set(
     [...input.hydratedFocused, ...input.hydratedRecall].map((record) => record.symbolId),
   );
   const indexLines = input.symbolIndex
-    .filter((item) => !hiddenIds.has(item.symbolId))
+    .filter((item) => !hydratedIds.has(item.symbolId))
     .slice(0, input.budget.symbolIndexLimit)
     .map((item) => {
-      const summary = truncateDeterministic(item.summary, input.budget.indexItemMaxChars);
+      const summary = truncateDeterministic(item.summary, dynamicIndexMaxChars);
       return `- ${item.symbolId}: ${summary}\n`;
     });
 
   const focusedLines = input.hydratedFocused.map((item) => {
-    const content = truncateDeterministic(item.content, input.budget.focusedItemMaxChars);
+    const content = truncateDeterministic(item.content, dynamicFocusedMaxChars);
     return `- [relevance:high] ${item.symbolId}: ${content}\n`;
   });
 
   const recallLines = input.hydratedRecall.slice(0, input.budget.recallK).map((item) => {
-    const content = truncateDeterministic(item.content, input.budget.recallItemMaxChars);
+    const content = truncateDeterministic(item.content, dynamicRecallMaxChars);
     return `- [relevance:medium] ${item.symbolId}: ${content}\n`;
   });
 

@@ -314,6 +314,7 @@ function buildSystemPrompt(input: Parameters<AssistantGenerateFn>[0]): string {
     "",
     "Tooling policy:",
     "- Use vcw_search_symbols, vcw_list_symbols, and vcw_get_symbol for memory read operations.",
+    "- Call vcw_get_symbol only for IDs returned by vcw_list_symbols or vcw_search_symbols in this turn.",
     "- Use vcw_web_search when fresh world knowledge is needed.",
     "- Keep final user response concise and clear.",
     "",

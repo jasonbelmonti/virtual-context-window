@@ -40,6 +40,9 @@ export type VirtualContextTurnResponse = {
       pressureRatio: number;
       pressurePeak: number;
       pressureState: "normal" | "compact";
+      historyWindowTurns: number;
+      hotWindowOverlapTurns: number;
+      effectiveHotWindowPairs: number;
       compactionTriggerSource: "none" | "pressure" | "age_backfill";
       compactionDrainAttempted: boolean;
       compactionDrainWaitMs: number;
@@ -48,6 +51,7 @@ export type VirtualContextTurnResponse = {
       compactionReason: "high_watermark" | "below_threshold" | "none";
       ageBackfillEligibleCount: number;
       ageBackfillCooldownTurns: number;
+      ageBackfillCooldownTurnsConfigured: number;
       compactionJobsTriggered: number;
       compactionSkippedReason:
         | "none"
@@ -59,6 +63,7 @@ export type VirtualContextTurnResponse = {
       proposalsCount: number;
       committedSymbolsCount: number;
       hydratedSymbolsCount: number;
+      maxCompactionProposalsConfigured: number;
       fallbackCommitUsed: boolean;
       ignoredModelEventCount: number;
     };
@@ -99,7 +104,10 @@ export type VirtualContextTurnStreamEvent =
       compactionReason: "high_watermark" | "below_threshold" | "none";
       ageBackfillEligibleCount: number;
       ageBackfillCooldownTurns: number;
+      historyWindowTurns: number;
+      effectiveHotWindowPairs: number;
       scheduleResult:
+        | "scheduled"
         | "none"
         | "in_flight"
         | "low_pressure"

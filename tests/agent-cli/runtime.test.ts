@@ -21,7 +21,7 @@ test("agent runtime ignores model-origin writes and still sanitizes output", asy
   expect(turn.content).not.toContain("⟦S:");
   expect(turn.trace.symbolTable.length).toBe(0);
   expect(turn.trace.diagnostics.passive?.compactionTriggerSource).toBe("none");
-  expect(turn.trace.diagnostics.passive?.ageBackfillEligibleCount).toBe(0);
+  expect(turn.trace.diagnostics.passive?.ageBackfillEligibleCount).toBeGreaterThan(0);
   expect(turn.trace.diagnostics.passive?.ageBackfillCooldownTurns).toBe(0);
   expect(turn.trace.diagnostics.passive?.fallbackCommitUsed).toBe(false);
 
@@ -105,7 +105,7 @@ test("history limit constrains model context to last N turns while preserving sy
     type: "history",
     action: "status",
   });
-  expect(defaultStatus.output).toContain("historyTurnLimit=off");
+  expect(defaultStatus.output).toContain("historyTurnLimit=5");
 
   const setLimit = await runtime.executeCommand({
     type: "history_limit",
@@ -128,6 +128,11 @@ test("history limit constrains model context to last N turns while preserving sy
     action: "off",
   });
   expect(off.output).toContain("historyTurnLimit=off");
+
+  const afterOff = await runtime.processUserMessage("turn four");
+  expect(seenMessageCounts).toEqual([1, 3, 3, 7]);
+  expect(afterOff.trace.diagnostics.passive?.historyWindowTurns).toBe(4);
+  expect(afterOff.trace.diagnostics.passive?.effectiveHotWindowPairs).toBe(3);
 });
 
 test("history window can be set via environment variable", async () => {
@@ -144,6 +149,25 @@ test("history window can be set via environment variable", async () => {
     action: "status",
   });
   expect(status.output).toContain("historyTurnLimit=2");
+});
+
+test("default history limit still enables age-backfill before window is full", async () => {
+  const runtime = new AgentCliRuntime({
+    mock: true,
+  });
+
+  await runtime.processUserMessage("hello");
+  const second = await runtime.processUserMessage("plan alpha is rotate key K-123");
+  const third = await runtime.processUserMessage("distractor one");
+  const fourth = await runtime.processUserMessage("what is plan alpha?");
+
+  expect(second.trace.diagnostics.passive?.compactionTriggerSource).toBe("age_backfill");
+  expect(third.trace.diagnostics.passive?.historyWindowTurns).toBe(5);
+  expect(third.trace.diagnostics.passive?.effectiveHotWindowPairs).toBe(2);
+  expect(third.trace.diagnostics.passive?.compactionTriggerSource).toBe("none");
+  expect(fourth.trace.diagnostics.passive?.compactionJobsTriggered).toBeGreaterThan(0);
+  expect(fourth.trace.symbolTable.length).toBeGreaterThan(0);
+  expect(fourth.trace.contextPackText.length).toBeGreaterThan(0);
 });
 
 test("runtime emits lifecycle events for retrieval and compaction candidates", async () => {
@@ -163,4 +187,41 @@ test("runtime emits lifecycle events for retrieval and compaction candidates", a
   expect((turn.trace.lifecycle ?? []).map((event) => event.type)).toEqual(
     lifecycleEvents,
   );
+});
+
+test("agent runtime forwards history window metadata into passive diagnostics", async () => {
+  const runtime = new AgentCliRuntime({
+    mock: true,
+    passiveHotOverlapTurns: 1,
+  });
+
+  await runtime.executeCommand({
+    type: "history_limit",
+    turns: 5,
+  });
+  const turn = await runtime.processUserMessage("metadata alignment check");
+
+  expect(turn.trace.diagnostics.passive?.historyWindowTurns).toBe(5);
+  expect(turn.trace.diagnostics.passive?.hotWindowOverlapTurns).toBe(1);
+  expect(turn.trace.diagnostics.passive?.effectiveHotWindowPairs).toBe(0);
+});
+
+test("agent runtime surfaces configured age cadence in passive diagnostics", async () => {
+  const runtime = new AgentCliRuntime({
+    mock: true,
+    passiveAgeCadence: 3,
+  });
+
+  await runtime.executeCommand({
+    type: "history_limit",
+    turns: 1,
+  });
+  const first = await runtime.processUserMessage("turn one");
+  const second = await runtime.processUserMessage("turn two");
+  const third = await runtime.processUserMessage("turn three");
+
+  expect(first.trace.diagnostics.passive?.ageBackfillCooldownTurnsConfigured).toBe(3);
+  expect(first.trace.diagnostics.passive?.compactionTriggerSource).toBe("none");
+  expect(second.trace.diagnostics.passive?.compactionTriggerSource).toBe("age_backfill");
+  expect(third.trace.diagnostics.passive?.ageBackfillCooldownTurns).toBe(2);
 });

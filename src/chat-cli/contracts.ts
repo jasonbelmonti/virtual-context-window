@@ -15,6 +15,9 @@ export type ChatCliLaunchOptions = {
   mock?: boolean;
   provider?: "ollama" | "openai_responses";
   stream?: boolean;
+  passiveHotOverlapTurns?: number;
+  passiveMaxWrites?: number;
+  passiveAgeCadence?: number;
   threadId?: string;
   trustedSymbolRefs?: boolean;
   env?: Record<string, string | undefined>;
@@ -70,6 +73,9 @@ export type ChatTurnTrace = {
       pressureRatio: number;
       pressurePeak: number;
       pressureState: "normal" | "compact";
+      historyWindowTurns: number;
+      hotWindowOverlapTurns: number;
+      effectiveHotWindowPairs: number;
       compactionTriggerSource: "none" | "pressure" | "age_backfill";
       compactionDrainAttempted: boolean;
       compactionDrainWaitMs: number;
@@ -78,6 +84,7 @@ export type ChatTurnTrace = {
       compactionReason: "high_watermark" | "below_threshold" | "none";
       ageBackfillEligibleCount: number;
       ageBackfillCooldownTurns: number;
+      ageBackfillCooldownTurnsConfigured: number;
       compactionJobsTriggered: number;
       compactionSkippedReason:
         | "none"
@@ -89,6 +96,7 @@ export type ChatTurnTrace = {
       proposalsCount: number;
       committedSymbolsCount: number;
       hydratedSymbolsCount: number;
+      maxCompactionProposalsConfigured: number;
       fallbackCommitUsed: boolean;
       ignoredModelEventCount: number;
     };

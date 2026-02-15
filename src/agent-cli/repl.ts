@@ -16,12 +16,23 @@ export type ParsedAgentCliArgs = {
   mock: boolean;
   provider?: "ollama" | "openai_responses";
   stream: boolean;
+  passiveHotOverlapTurns?: number;
+  passiveMaxWrites?: number;
+  passiveAgeCadence?: number;
   threadId?: string;
   help: boolean;
 };
 
 function writeLine(write: (text: string) => void, text: string): void {
   write(text);
+}
+
+function parsePositiveIntArg(value: string | undefined, label: string): number {
+  const parsed = Number.parseInt(value ?? "", 10);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    throw new Error(`invalid_${label}:${value ?? ""}`);
+  }
+  return parsed;
 }
 
 export function parseAgentCliArgs(argv: string[]): ParsedAgentCliArgs {
@@ -78,6 +89,33 @@ export function parseAgentCliArgs(argv: string[]): ParsedAgentCliArgs {
       continue;
     }
 
+    if (token === "--passive-hot-overlap") {
+      parsed.passiveHotOverlapTurns = parsePositiveIntArg(
+        argv[index + 1],
+        "passive_hot_overlap",
+      );
+      index += 1;
+      continue;
+    }
+
+    if (token === "--passive-max-writes") {
+      parsed.passiveMaxWrites = parsePositiveIntArg(
+        argv[index + 1],
+        "passive_max_writes",
+      );
+      index += 1;
+      continue;
+    }
+
+    if (token === "--passive-age-cadence") {
+      parsed.passiveAgeCadence = parsePositiveIntArg(
+        argv[index + 1],
+        "passive_age_cadence",
+      );
+      index += 1;
+      continue;
+    }
+
     if (token === "--help" || token === "-h") {
       parsed.help = true;
       continue;
@@ -94,8 +132,8 @@ export function parseAgentCliArgs(argv: string[]): ParsedAgentCliArgs {
 export function formatAgentCliUsage(): string {
   return [
     "Usage:",
-    "  bun run agent:interactive [--mock] [--provider ollama|openai] [--stream|--no-stream] [--trace] [--thread <id>]",
-    '  bun run agent:interactive --once "hello" [--mock] [--provider ollama|openai] [--stream|--no-stream] [--trace]',
+    "  bun run agent:interactive [--mock] [--provider ollama|openai] [--stream|--no-stream] [--trace] [--thread <id>] [--passive-hot-overlap <n>] [--passive-max-writes <n>] [--passive-age-cadence <n>]",
+    '  bun run agent:interactive --once "hello" [--mock] [--provider ollama|openai] [--stream|--no-stream] [--trace] [--passive-hot-overlap <n>] [--passive-max-writes <n>] [--passive-age-cadence <n>]',
   ].join("\n");
 }
 
@@ -214,7 +252,7 @@ function renderLifecycleEvent(
     )} ${theme.value(
       `compression source=${event.triggerSource} trigger=${event.compactionTriggered} reason=${event.compactionReason} schedule=${event.scheduleResult} pressure=${event.pressureRatio.toFixed(
         3,
-      )} ageEligible=${event.ageBackfillEligibleCount} ageCooldownTurns=${event.ageBackfillCooldownTurns} candidates=${compactList(
+      )} hotWindowTurns=${event.historyWindowTurns} effectiveHotPairs=${event.effectiveHotWindowPairs} ageEligible=${event.ageBackfillEligibleCount} ageCooldownTurns=${event.ageBackfillCooldownTurns} candidates=${compactList(
         candidateIds,
       )} sample=${sample || "(none)"}`,
     )}`;
@@ -261,6 +299,9 @@ export async function runInteractiveAgentCli(
       provider: options.provider,
       streamEnabled: options.stream,
       traceEnabled: options.trace,
+      passiveHotOverlapTurns: options.passiveHotOverlapTurns,
+      passiveMaxWrites: options.passiveMaxWrites,
+      passiveAgeCadence: options.passiveAgeCadence,
       threadId: options.threadId,
       env: options.env,
       assistantGenerate: options.assistantGenerate,

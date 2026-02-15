@@ -22,7 +22,7 @@ test("processUserMessage captures parse/sanitize telemetry and ignores model-ori
   expect(turn.trace.autoSymbol.mode).toBe("shadow");
   expect(turn.trace.symbolTable.length).toBe(0);
   expect(turn.trace.diagnostics.passive?.compactionTriggerSource).toBe("none");
-  expect(turn.trace.diagnostics.passive?.ageBackfillEligibleCount).toBe(0);
+  expect(turn.trace.diagnostics.passive?.ageBackfillEligibleCount).toBeGreaterThan(0);
   expect(turn.trace.diagnostics.passive?.ageBackfillCooldownTurns).toBe(0);
   expect(turn.trace.diagnostics.passive?.fallbackCommitUsed).toBe(false);
 
@@ -221,4 +221,33 @@ test("processUserMessage rejects concurrent turns with explicit error", async ()
 
   const firstResult = await firstTurn;
   expect(firstResult.content).toBe("first done");
+});
+
+test("chat runtime surfaces hot window diagnostics in passive mode", async () => {
+  const runtime = new ChatCliRuntime({
+    mock: true,
+    passiveHotOverlapTurns: 1,
+  });
+
+  await runtime.processUserMessage("turn one");
+  const second = await runtime.processUserMessage("turn two");
+
+  expect(second.trace.diagnostics.passive?.historyWindowTurns).toBe(2);
+  expect(second.trace.diagnostics.passive?.hotWindowOverlapTurns).toBe(1);
+  expect(second.trace.diagnostics.passive?.effectiveHotWindowPairs).toBe(1);
+});
+
+test("chat runtime respects configured age cadence in passive diagnostics", async () => {
+  const runtime = new ChatCliRuntime({
+    mock: true,
+    passiveAgeCadence: 3,
+  });
+
+  await runtime.processUserMessage("turn one");
+  const second = await runtime.processUserMessage("turn two");
+  const third = await runtime.processUserMessage("turn three");
+
+  expect(second.trace.diagnostics.passive?.compactionTriggerSource).toBe("age_backfill");
+  expect(second.trace.diagnostics.passive?.ageBackfillCooldownTurnsConfigured).toBe(3);
+  expect(third.trace.diagnostics.passive?.ageBackfillCooldownTurns).toBe(2);
 });

@@ -92,6 +92,67 @@ test("v2 passive hybrid retrieval fails open when query embedding generation fai
   expect(response.diagnostics.retrievalDegraded).toBe(true);
 });
 
+test("v2 passive hybrid retrieval does not mark degraded when embedding provider is unset", async () => {
+  const store = new InMemorySymbolStore();
+  await store.upsert("thread-hybrid-no-embed-provider", {
+    summary: "pager owner",
+    content: "on-call owner is Casey",
+    kind: "fact",
+  });
+
+  const engine = createVirtualContextEnginePassive({
+    assistantGenerate: async () => "ack",
+    store,
+    retrievalStrategy: "hybrid_v2",
+    packBudget: {
+      totalChars: 420,
+      recentLiteralPairCount: 2,
+    },
+  });
+
+  const response = await engine.processTurn({
+    threadId: "thread-hybrid-no-embed-provider",
+    messages: [{ role: "user", content: "who is on-call owner?" }],
+  });
+
+  expect(response.diagnostics.retrievalDegraded).toBe(false);
+});
+
+test("v2 passive hybrid retrieval skips embedding call when symbol index is empty", async () => {
+  const store = new InMemorySymbolStore();
+  let embedCalls = 0;
+  const embeddingProvider: EmbeddingProvider = {
+    async embed() {
+      embedCalls += 1;
+      return {
+        vector: [0.2, 0.1, 0.7],
+        model: "mock-embed",
+        provider: "mock",
+        latencyMs: 1,
+      };
+    },
+  };
+
+  const engine = createVirtualContextEnginePassive({
+    assistantGenerate: async () => "ack",
+    store,
+    embeddingProvider,
+    retrievalStrategy: "hybrid_v2",
+    packBudget: {
+      totalChars: 420,
+      recentLiteralPairCount: 2,
+    },
+  });
+
+  const response = await engine.processTurn({
+    threadId: "thread-hybrid-empty-index",
+    messages: [{ role: "user", content: "any updates?" }],
+  });
+
+  expect(embedCalls).toBe(0);
+  expect(response.diagnostics.retrievalDegraded).toBe(false);
+});
+
 test("v2 passive compaction is async, ignores model-origin writes, and keeps one-call invariant", async () => {
   const store = new InMemorySymbolStore();
   const extractor: CompressionExtractor = {
@@ -214,6 +275,7 @@ test("v2 passive compaction improves recall under pressure vs baseline v1", asyn
     },
     highWatermark: 0.2,
     lowWatermark: 0.1,
+    hotWindowOverlapTurns: 100,
     packBudget: {
       totalChars: 420,
       recentLiteralPairCount: 100,
@@ -404,7 +466,7 @@ test("v2 passive age-backfill recovers latest fact under low pressure with windo
   expect(passiveFinal.diagnostics.generationCallCount).toBe(1);
 });
 
-test("v2 passive reports no_candidates when pressure triggers without compactable tape entries", async () => {
+test("v2 passive schedules compaction when pressure triggers and candidates are available", async () => {
   const threadId = "thread-passive-no-candidates";
   const store = new InMemorySymbolStore();
   for (let index = 0; index < 8; index += 1) {
@@ -417,7 +479,7 @@ test("v2 passive reports no_candidates when pressure triggers without compactabl
 
   const extractor: CompressionExtractor = {
     async extract() {
-      throw new Error("extractor_should_not_run");
+      return [];
     },
   };
 
@@ -440,8 +502,8 @@ test("v2 passive reports no_candidates when pressure triggers without compactabl
   });
 
   expect(response.diagnostics.passive?.compactionTriggered).toBe(true);
-  expect(response.diagnostics.passive?.compactionSkippedReason).toBe("no_candidates");
-  expect(response.diagnostics.passive?.extractorCalls).toBe(0);
+  expect(response.diagnostics.passive?.compactionSkippedReason).toBe("none");
+  expect(response.diagnostics.passive?.extractorCalls).toBe(1);
 });
 
 test("v2 passive skip reason reflects the current scheduling decision, not stale outcomes", async () => {
@@ -501,10 +563,10 @@ test("v2 passive skip reason reflects the current scheduling decision, not stale
     messages: [{ role: "user", content: "turn two pressure" }],
   });
 
-  // Earlier turns can legitimately report no_candidates while the tape is short.
+  // Earlier turns should reflect the current scheduling decision directly.
   expect(
     [turn1.diagnostics.passive?.compactionSkippedReason, turn2.diagnostics.passive?.compactionSkippedReason],
-  ).toContain("no_candidates");
+  ).toContain("none");
 
   const turn3 = await engine.processTurn({
     threadId,
@@ -636,4 +698,95 @@ test("v2 passive compaction drain timeout does not block the turn", async () => 
   expect(third.diagnostics.passive?.compactionDrainAttempted).toBe(true);
   expect(third.diagnostics.passive?.compactionDrainTimedOut).toBe(true);
   expect(third.diagnostics.passive?.compactionDrainWaitMs).toBeGreaterThanOrEqual(50);
+});
+
+test("v2 passive maxCompactionProposals bounds committed symbols per compaction job", async () => {
+  const threadId = "thread-passive-max-proposals";
+  const store = new InMemorySymbolStore();
+  const extractor: CompressionExtractor = {
+    async extract(input) {
+      return input.entries.map((entry) => ({
+        summary: `summary ${entry.entryId}`,
+        content: `${entry.role}:${entry.content}`,
+        kind: "note" as const,
+        confidence: 0.95,
+        evidenceSpans: [
+          {
+            entryId: entry.entryId,
+            startOffset: entry.offsetStart,
+            endOffset: entry.offsetEnd,
+          },
+        ],
+      }));
+    },
+  };
+
+  const assistantGenerate: AssistantGenerateFn = async (input) => {
+    const lastUser =
+      input.request.messages.findLast((message) => message.role === "user")?.content ?? "";
+    return `ack ${lastUser}`;
+  };
+
+  const engine = createVirtualContextEnginePassive({
+    assistantGenerate,
+    store,
+    extractor,
+    highWatermark: 0.99,
+    lowWatermark: 0.8,
+    ageBackfillCooldownTurns: 3,
+    maxCompactionProposals: 3,
+    packBudget: {
+      totalChars: 1_600,
+      recentLiteralPairCount: 1,
+      recallK: 3,
+    },
+  });
+
+  let last:
+    | Awaited<ReturnType<typeof engine.processTurn>>
+    | undefined;
+  for (let turn = 1; turn <= 4; turn += 1) {
+    last = await engine.processTurn({
+      threadId,
+      messages: [{ role: "user", content: `turn-${turn} unique incident detail` }],
+    });
+  }
+
+  const listed = await store.list(threadId);
+  expect(listed.length).toBeLessThanOrEqual(5);
+  expect(last?.diagnostics.passive?.maxCompactionProposalsConfigured).toBe(3);
+  expect(last?.diagnostics.passive?.committedSymbolsCount).toBeLessThanOrEqual(5);
+});
+
+test("v2 passive aligns effective hot window to metadata-provided history window", async () => {
+  const engine = createVirtualContextEnginePassive({
+    assistantGenerate: async () => "ack",
+    store: new InMemorySymbolStore(),
+    highWatermark: 0.99,
+    lowWatermark: 0.8,
+    hotWindowOverlapTurns: 1,
+    packBudget: {
+      totalChars: 1_600,
+      recentLiteralPairCount: 2,
+      recallK: 3,
+    },
+  });
+
+  let last:
+    | Awaited<ReturnType<typeof engine.processTurn>>
+    | undefined;
+  for (let turn = 1; turn <= 5; turn += 1) {
+    last = await engine.processTurn({
+      threadId: "thread-passive-history-window-metadata",
+      metadata: {
+        vcwHistoryTurnLimit: 5,
+      },
+      messages: [{ role: "user", content: `turn-${turn} data` }],
+    });
+  }
+
+  expect(last?.diagnostics.passive?.historyWindowTurns).toBe(5);
+  expect(last?.diagnostics.passive?.effectiveHotWindowPairs).toBe(4);
+  expect(last?.diagnostics.passive?.hotWindowOverlapTurns).toBe(1);
+  expect(last?.diagnostics.passive?.ageBackfillEligibleCount).toBeGreaterThan(0);
 });

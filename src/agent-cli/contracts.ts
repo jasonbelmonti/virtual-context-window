@@ -15,6 +15,9 @@ export type AgentCliLaunchOptions = {
   mock?: boolean;
   provider?: "ollama" | "openai_responses";
   stream?: boolean;
+  passiveHotOverlapTurns?: number;
+  passiveMaxWrites?: number;
+  passiveAgeCadence?: number;
   threadId?: string;
   env?: Record<string, string | undefined>;
   assistantGenerate?: AssistantGenerateFn;
@@ -70,7 +73,10 @@ export type AgentLifecycleEvent =
       compactionReason: "high_watermark" | "below_threshold" | "none";
       ageBackfillEligibleCount: number;
       ageBackfillCooldownTurns: number;
+      historyWindowTurns: number;
+      effectiveHotWindowPairs: number;
       scheduleResult:
+        | "scheduled"
         | "none"
         | "in_flight"
         | "low_pressure"
@@ -128,6 +134,9 @@ export type AgentTurnTrace = {
       pressureRatio: number;
       pressurePeak: number;
       pressureState: "normal" | "compact";
+      historyWindowTurns: number;
+      hotWindowOverlapTurns: number;
+      effectiveHotWindowPairs: number;
       compactionTriggerSource: "none" | "pressure" | "age_backfill";
       compactionDrainAttempted: boolean;
       compactionDrainWaitMs: number;
@@ -136,6 +145,7 @@ export type AgentTurnTrace = {
       compactionReason: "high_watermark" | "below_threshold" | "none";
       ageBackfillEligibleCount: number;
       ageBackfillCooldownTurns: number;
+      ageBackfillCooldownTurnsConfigured: number;
       compactionJobsTriggered: number;
       compactionSkippedReason:
         | "none"
@@ -147,6 +157,7 @@ export type AgentTurnTrace = {
       proposalsCount: number;
       committedSymbolsCount: number;
       hydratedSymbolsCount: number;
+      maxCompactionProposalsConfigured: number;
       fallbackCommitUsed: boolean;
       ignoredModelEventCount: number;
     };
