@@ -176,6 +176,42 @@ function toInputObject(rawInput: unknown): Record<string, unknown> {
   return rawInput as Record<string, unknown>;
 }
 
+function previewValue(value: unknown, maxChars = 180): string {
+  let serialized = "";
+  if (typeof value === "string") {
+    serialized = value;
+  } else {
+    try {
+      serialized = JSON.stringify(value);
+    } catch {
+      serialized = String(value);
+    }
+  }
+
+  const compacted = serialized.replace(/\s+/gu, " ").trim();
+  if (compacted.length <= maxChars) {
+    return compacted;
+  }
+  if (maxChars <= 3) {
+    return compacted.slice(0, maxChars);
+  }
+  return `${compacted.slice(0, maxChars - 3)}...`;
+}
+
+async function emitLifecycleEvent(
+  context: VcwAgentToolContext,
+  event: Parameters<NonNullable<VcwAgentToolContext["onToolLifecycle"]>>[0],
+): Promise<void> {
+  if (!context.onToolLifecycle) {
+    return;
+  }
+  try {
+    await context.onToolLifecycle(event);
+  } catch {
+    // Tool lifecycle logging must never fail tool execution.
+  }
+}
+
 async function executeListSymbols(
   context: VcwAgentToolContext,
   rawInput: unknown,
@@ -332,17 +368,56 @@ export async function executeVcwAgentToolCall(
   toolName: string,
   rawInput: unknown,
 ): Promise<unknown> {
-  switch (toolName) {
-    case "vcw_list_symbols":
-      return executeListSymbols(context, rawInput);
-    case "vcw_get_symbol":
-      return executeGetSymbol(context, rawInput);
-    case "vcw_search_symbols":
-      return executeSearchSymbols(context, rawInput);
-    case "vcw_web_search":
-      return executeWebSearch(context, rawInput);
-    default:
-      throw new Error(`unknown_vcw_tool:${toolName}`);
+  const now = context.now ?? (() => Date.now());
+  const startedAt = now();
+  const argsPreview = previewValue(rawInput);
+
+  await emitLifecycleEvent(context, {
+    type: "tool_call_started",
+    toolName,
+    argsPreview,
+    timestampMs: startedAt,
+  });
+
+  try {
+    let result: unknown;
+    switch (toolName) {
+      case "vcw_list_symbols":
+        result = await executeListSymbols(context, rawInput);
+        break;
+      case "vcw_get_symbol":
+        result = await executeGetSymbol(context, rawInput);
+        break;
+      case "vcw_search_symbols":
+        result = await executeSearchSymbols(context, rawInput);
+        break;
+      case "vcw_web_search":
+        result = await executeWebSearch(context, rawInput);
+        break;
+      default:
+        throw new Error(`unknown_vcw_tool:${toolName}`);
+    }
+
+    await emitLifecycleEvent(context, {
+      type: "tool_call_completed",
+      toolName,
+      argsPreview,
+      resultPreview: previewValue(result),
+      durationMs: Math.max(0, now() - startedAt),
+      timestampMs: now(),
+    });
+
+    return result;
+  } catch (error) {
+    await emitLifecycleEvent(context, {
+      type: "tool_call_failed",
+      toolName,
+      argsPreview,
+      errorMessage: error instanceof Error ? error.message : String(error),
+      durationMs: Math.max(0, now() - startedAt),
+      timestampMs: now(),
+    });
+    throw error;
   }
 }
 

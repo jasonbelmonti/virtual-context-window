@@ -7,24 +7,20 @@ export type TraceRenderOptions = {
   color?: boolean;
 };
 
-function getTelemetryByType(
+const MAX_SYMBOL_ROWS = 8;
+
+function getPreTelemetry(
   telemetry: TelemetryEvent[],
-): {
-  pre?: Extract<TelemetryEvent, { type: "pre_model" }>;
-  post?: Extract<TelemetryEvent, { type: "post_model" }>;
-} {
+): Extract<TelemetryEvent, { type: "pre_model" }> | undefined {
   let pre: Extract<TelemetryEvent, { type: "pre_model" }> | undefined;
-  let post: Extract<TelemetryEvent, { type: "post_model" }> | undefined;
 
   for (const event of telemetry) {
     if (event.type === "pre_model") {
       pre = event;
-    } else if (event.type === "post_model") {
-      post = event;
     }
   }
 
-  return { pre, post };
+  return pre;
 }
 
 function createKeyValueTable(
@@ -71,27 +67,18 @@ function renderEngineDiagnostics(trace: AgentTurnTrace): string {
   return table.toString();
 }
 
-function renderTelemetry(trace: AgentTurnTrace): string {
-  const { pre, post } = getTelemetryByType(trace.telemetry);
+function renderRetrievalSnapshot(trace: AgentTurnTrace): string {
+  const pre = getPreTelemetry(trace.telemetry);
   const rows: Array<[string, string | number | boolean]> = [];
   if (pre) {
     rows.push(["historyTurnsUsed", pre.historyTurnsUsed]);
     rows.push(["retrievalQueryChars", pre.retrievalQueryChars]);
+    rows.push(["contextPackChars", pre.contextPackChars]);
+    rows.push(["focusedInjected", pre.focusedInjectedCount]);
+    rows.push(["recallInjected", pre.recallInjectedCount]);
     rows.push(["lexicalCandidates", pre.lexicalCandidateCount]);
     rows.push(["vectorCandidates", pre.vectorCandidateCount]);
     rows.push(["rerankedCandidates", pre.rerankedCandidateCount]);
-    rows.push(["focusedInjected", pre.focusedInjectedCount]);
-    rows.push(["recallInjected", pre.recallInjectedCount]);
-    rows.push(["trustedRefIdsUsed", pre.trustedRefIdsUsed]);
-  }
-  if (post) {
-    rows.push(["parseOutcome", post.parseOutcome]);
-    rows.push(["parsedEventCount", post.parsedEventCount]);
-    rows.push(["eventsAccepted", post.eventsAccepted]);
-    rows.push(["eventsRejected", post.eventsRejected]);
-    rows.push(["writeFailures", post.writeFailures]);
-    rows.push(["scrubbedControlLeaks", post.scrubbedControlLeakCount]);
-    rows.push(["scrubbedSymbolEchoes", post.scrubbedSymbolEchoCount]);
   }
 
   if (rows.length === 0) {
@@ -99,29 +86,6 @@ function renderTelemetry(trace: AgentTurnTrace): string {
   }
 
   return createKeyValueTable(rows).toString();
-}
-
-function renderAutoSymbol(trace: AgentTurnTrace): string {
-  const table = createKeyValueTable([
-    ["autoMode", trace.autoSymbol.mode],
-    ["triggered", trace.autoSymbol.triggered],
-    ["confidence", trace.autoSymbol.confidence.toFixed(2)],
-    ["reason", trace.autoSymbol.reason],
-    ["eventCount", trace.autoSymbol.eventCount],
-    ["suppressed", trace.autoSymbol.suppressed],
-    ["writeApplied", trace.autoSymbol.writeApplied],
-    ["scorerVersion", trace.autoSymbol.scorerVersion],
-    ["score", trace.autoSymbol.score.toFixed(2)],
-    ["scoreBand", trace.autoSymbol.scoreBand],
-    ["overrideApplied", trace.autoSymbol.overrideApplied],
-    [
-      "topFeatures",
-      trace.autoSymbol.topFeatures.length > 0
-        ? trace.autoSymbol.topFeatures.join(", ")
-        : "(none)",
-    ],
-  ]);
-  return table.toString();
 }
 
 function renderAgentLoop(trace: AgentTurnTrace): string {
@@ -172,6 +136,78 @@ function renderPassiveSliding(trace: AgentTurnTrace): string {
   return table.toString();
 }
 
+function renderLifecycle(trace: AgentTurnTrace): string {
+  const lifecycle = trace.lifecycle ?? [];
+  if (lifecycle.length === 0) {
+    return "(none)";
+  }
+
+  const table = new Table({
+    head: ["#", "event", "detail"],
+    style: {
+      head: [],
+      border: [],
+      compact: true,
+    },
+    colWidths: [6, 26, 90],
+    wordWrap: true,
+  });
+
+  for (const event of lifecycle) {
+    if (event.type === "retrieval_candidates") {
+      table.push([
+        event.seq,
+        "retrieval_candidates",
+        `candidates=${event.candidateSymbolIds.join(",") || "(none)"} focused=${event.focusedCandidates
+          .map((candidate) => candidate.symbolId)
+          .join(",") || "(none)"} recall=${event.recallCandidates
+          .map((candidate) => candidate.symbolId)
+          .join(",") || "(none)"}`,
+      ]);
+      continue;
+    }
+    if (event.type === "compaction_candidates") {
+      const samples = event.candidateEntries
+        .slice(0, 2)
+        .map((entry) => `${entry.entryId}:${entry.preview}`)
+        .join(" | ");
+      table.push([
+        event.seq,
+        "compaction_candidates",
+        `trigger=${event.compactionTriggered} reason=${event.compactionReason} schedule=${event.scheduleResult} pressure=${event.pressureRatio.toFixed(
+          3,
+        )} candidates=${event.candidateEntries
+          .map((entry) => entry.entryId)
+          .join(",") || "(none)"} sample=${samples || "(none)"}`,
+      ]);
+      continue;
+    }
+    if (event.type === "tool_call_started") {
+      table.push([
+        event.seq,
+        "tool_call_started",
+        `${event.toolName} args=${event.argsPreview || "{}"}`,
+      ]);
+      continue;
+    }
+    if (event.type === "tool_call_completed") {
+      table.push([
+        event.seq,
+        "tool_call_completed",
+        `${event.toolName} durationMs=${event.durationMs.toFixed(2)} result=${event.resultPreview || "(empty)"}`,
+      ]);
+      continue;
+    }
+    table.push([
+      event.seq,
+      "tool_call_failed",
+      `${event.toolName} durationMs=${event.durationMs.toFixed(2)} error=${event.errorMessage}`,
+    ]);
+  }
+
+  return table.toString();
+}
+
 function renderSymbolTable(trace: AgentTurnTrace): string {
   if (trace.symbolTable.length === 0) {
     return "(empty)";
@@ -188,13 +224,19 @@ function renderSymbolTable(trace: AgentTurnTrace): string {
     wordWrap: true,
   });
 
-  for (const record of trace.symbolTable) {
+  const visibleRecords = trace.symbolTable.slice(0, MAX_SYMBOL_ROWS);
+  for (const record of visibleRecords) {
     table.push([
       record.symbolId,
       record.kind,
       record.summary,
       record.meta ? JSON.stringify(record.meta) : "",
     ]);
+  }
+
+  if (trace.symbolTable.length > MAX_SYMBOL_ROWS) {
+    const remaining = trace.symbolTable.length - MAX_SYMBOL_ROWS;
+    return `${table.toString()}\n... (${remaining} more symbols hidden; use /symbols to inspect all)`;
   }
 
   return table.toString();
@@ -213,12 +255,12 @@ export function renderTurnTrace(
     renderSummary(trace),
     theme.section("Engine Diagnostics"),
     renderEngineDiagnostics(trace),
-    theme.section("Retrieval + Post-Model"),
-    renderTelemetry(trace),
-    theme.section("Auto Symbol Recognition"),
-    renderAutoSymbol(trace),
+    theme.section("Retrieval Snapshot"),
+    renderRetrievalSnapshot(trace),
     theme.section("Agent Loop"),
     renderAgentLoop(trace),
+    theme.section("Lifecycle"),
+    renderLifecycle(trace),
     theme.section("Passive Sliding"),
     renderPassiveSliding(trace),
     theme.section("Symbol Table"),

@@ -32,7 +32,8 @@ test("agent runtime ignores model-origin writes and still sanitizes output", asy
 
   const view = await runtime.executeCommand({ type: "trace", action: "view" });
   expect(view.output).toContain("Agent Loop");
-  expect(view.output).toContain("parseOutcome");
+  expect(view.output).toContain("Retrieval Snapshot");
+  expect(view.output).not.toContain("parseOutcome");
 
   const pack = await runtime.executeCommand({ type: "trace", action: "pack" });
   expect(pack.output).toContain("--- Context Pack ---");
@@ -139,4 +140,23 @@ test("history window can be set via environment variable", async () => {
     action: "status",
   });
   expect(status.output).toContain("historyTurnLimit=2");
+});
+
+test("runtime emits lifecycle events for retrieval and compaction candidates", async () => {
+  const runtime = new AgentCliRuntime({
+    mock: true,
+  });
+
+  const lifecycleEvents: string[] = [];
+  const turn = await runtime.processUserMessage("lifecycle visibility check", {
+    onLifecycleEvent: (event) => {
+      lifecycleEvents.push(event.type);
+    },
+  });
+
+  expect(lifecycleEvents).toContain("retrieval_candidates");
+  expect(lifecycleEvents).toContain("compaction_candidates");
+  expect((turn.trace.lifecycle ?? []).map((event) => event.type)).toEqual(
+    lifecycleEvents,
+  );
 });

@@ -38,9 +38,11 @@ test("--once with --trace prints trace output in mock mode", async () => {
   expect(exitCode).toBe(0);
   const output = printed.join("\n");
   expect(output).toContain("Mock agent: remember: keep agent tests deterministic");
-  expect(output).toContain("--- Agent Turn Trace ---");
-  expect(output).toContain("parseOutcome");
-  expect(output).toContain("no_control_block");
+  expect(output).toContain("PRE-MODEL");
+  expect(output).toContain("Assembly");
+  expect(output).toContain("Context Pack: Content");
+  expect(output).toContain("Lifecycle #");
+  expect(output).toContain("remember: keep agent tests deterministic");
 });
 
 test("live startup fails fast when VCW_OLLAMA_MODEL is missing", async () => {

@@ -67,6 +67,45 @@ export type VirtualContextTurnStreamEvent =
       threadId: string;
     }
   | {
+      type: "retrieval_candidates";
+      threadId: string;
+      queryText: string;
+      candidateSymbolIds: string[];
+      focusedCandidates: Array<{
+        symbolId: string;
+        score: number;
+      }>;
+      recallCandidates: Array<{
+        symbolId: string;
+        score: number;
+      }>;
+    }
+  | {
+      type: "context_pack_compiled";
+      threadId: string;
+      contextPackText: string;
+    }
+  | {
+      type: "compaction_candidates";
+      threadId: string;
+      pressureRatio: number;
+      pressureState: "normal" | "compact";
+      compactionTriggered: boolean;
+      compactionReason: "high_watermark" | "below_threshold" | "none";
+      scheduleResult:
+        | "none"
+        | "in_flight"
+        | "low_pressure"
+        | "no_candidates"
+        | "extractor_error";
+      candidateEntries: Array<{
+        entryId: string;
+        role: "user" | "assistant";
+        chars: number;
+        preview: string;
+      }>;
+    }
+  | {
       type: "stage";
       threadId: string;
       stage: EngineStage;

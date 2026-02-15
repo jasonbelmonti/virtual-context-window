@@ -39,8 +39,9 @@ test("--once with --trace prints trace output", async () => {
   const output = printed.join("\n");
   expect(output).toContain("Mock assistant: remember: keep deterministic tests");
   expect(output).toContain("--- Turn Trace ---");
-  expect(output).toContain("parseOutcome");
-  expect(output).toContain("no_control_block");
+  expect(output).toContain("Retrieval Snapshot");
+  expect(output).toContain("Passive Sliding");
+  expect(output).not.toContain("parseOutcome");
   expect(output).toContain("symbolTableCount");
 });
 

@@ -7,62 +7,87 @@ import {
 } from "../../scripts/demo-showdown-renderer";
 
 test("renderBanner and renderPhase include expected text", () => {
-  const banner = renderBanner("VCW Cinematic Incident Showdown");
+  const banner = renderBanner("Showdown v3");
   const phase = renderPhase("initializing run");
 
-  expect(banner).toContain("VCW Cinematic Incident Showdown");
+  expect(banner).toContain("Showdown v3");
   expect(phase).toContain("initializing run");
 });
 
 test("renderLaneEvent includes lane prefix and detail", () => {
-  const line = renderLaneEvent("compaction_on", "lane completed", "strict=true");
+  const line = renderLaneEvent(
+    "passive_sliding_window",
+    "lane completed",
+    "strict=true",
+  );
 
-  expect(line).toContain("compaction_on");
+  expect(line).toContain("passive_sliding_window");
   expect(line).toContain("lane completed");
   expect(line).toContain("strict=true");
 });
 
-test("renderFinalScoreboard includes table rows for both lanes", () => {
+test("renderFinalScoreboard includes aggregate and latest run lane rows", () => {
   const output = renderFinalScoreboard({
-    runId: "demo-run",
     provider: "ollama",
     scenario: "incident_response",
-    runDurationMs: 123.45,
+    runDurationMs: 456.78,
     outputDir: "/tmp/demo",
-    metrics: [
+    runsRequested: 5,
+    runsCompleted: 5,
+    headToHeadPassed: true,
+    reliabilityPassed: true,
+    aggregate: {
+      passiveWinCount: 4,
+      historyWinCount: 1,
+      tieCount: 0,
+      passivePassRate: 0.8,
+      historyPassRate: 0.2,
+    },
+    latestRunId: "run-05",
+    outcomes: [
       {
-        lane: "compaction_off",
-        answerCorrect: false,
-        requiredToolCallsSatisfied: false,
-        briefFormatSatisfied: true,
-        memoryEvidenceSatisfied: false,
-        webEvidenceSatisfied: false,
+        runIndex: 1,
+        runId: "run-01",
+        seed: "seed-01",
+        winner: "passive_sliding_window",
+        passiveStrict: true,
+        historyStrict: false,
+      },
+    ],
+    latestMetrics: [
+      {
+        lane: "history_only_window",
+        memoryGatePassed: false,
+        structureGatePassed: true,
         strictGatePassed: false,
-        historyTurnsUsed: 2,
+        requiredFactsCorrect: 2,
+        requiredFactsTotal: 4,
+        agentToolCallCount: 0,
+        historyTurnsUsed: 1,
         focusedInjectedCount: 0,
         recallInjectedCount: 0,
-        symbolTableCount: 0,
-        pressurePeak: 0.9,
-        pressureFinal: 0.88,
+        symbolTableCount: 2,
+        pressurePeak: 0.75,
+        pressureFinal: 0.62,
         compactionJobsTriggered: 0,
         committedSymbolsCount: 0,
-        attemptsUsed: 3,
-        failureReasons: ["missing_tool:vcw_search_symbols"],
+        attemptsUsed: 1,
+        failureReasons: ["latest_fact_mismatch:ownerLatest"],
       },
       {
-        lane: "compaction_on",
-        answerCorrect: true,
-        requiredToolCallsSatisfied: true,
-        briefFormatSatisfied: true,
-        memoryEvidenceSatisfied: true,
-        webEvidenceSatisfied: true,
+        lane: "passive_sliding_window",
+        memoryGatePassed: true,
+        structureGatePassed: true,
         strictGatePassed: true,
+        requiredFactsCorrect: 4,
+        requiredFactsTotal: 4,
+        agentToolCallCount: 0,
         historyTurnsUsed: 1,
         focusedInjectedCount: 1,
-        recallInjectedCount: 0,
-        symbolTableCount: 4,
-        pressurePeak: 0.81,
-        pressureFinal: 0.62,
+        recallInjectedCount: 1,
+        symbolTableCount: 3,
+        pressurePeak: 0.89,
+        pressureFinal: 0.58,
         compactionJobsTriggered: 2,
         committedSymbolsCount: 3,
         attemptsUsed: 1,
@@ -71,9 +96,9 @@ test("renderFinalScoreboard includes table rows for both lanes", () => {
     ],
   });
 
-  expect(output).toContain("COMPACTION OFF");
-  expect(output).toContain("COMPACTION ON");
-  expect(output).toContain("missing_tool:vcw_search_symbols");
-  expect(output).toContain("runId=demo-run");
-  expect(output).toContain("scenario=incident_response");
+  expect(output).toContain("Showdown v3: History-Only vs Passive Sliding");
+  expect(output).toContain("HISTORY ONLY");
+  expect(output).toContain("PASSIVE SLIDING");
+  expect(output).toContain("passiveWins=4 historyWins=1 ties=0");
+  expect(output).toContain("latest_fact_mismatch:ownerLatest");
 });

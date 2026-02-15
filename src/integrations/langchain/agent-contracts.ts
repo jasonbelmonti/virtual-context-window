@@ -52,6 +52,30 @@ export type FetchLike = (
   init?: RequestInit,
 ) => Promise<Response>;
 
+export type VcwToolLifecycleEvent =
+  | {
+      type: "tool_call_started";
+      toolName: string;
+      argsPreview: string;
+      timestampMs: number;
+    }
+  | {
+      type: "tool_call_completed";
+      toolName: string;
+      argsPreview: string;
+      resultPreview: string;
+      durationMs: number;
+      timestampMs: number;
+    }
+  | {
+      type: "tool_call_failed";
+      toolName: string;
+      argsPreview: string;
+      errorMessage: string;
+      durationMs: number;
+      timestampMs: number;
+    };
+
 export type VcwAgentToolContext = {
   store: SymbolStore;
   threadId: string;
@@ -66,6 +90,10 @@ export type VcwAgentToolContext = {
     source?: string;
     fetchFn?: FetchLike;
   };
+  now?: () => number;
+  onToolLifecycle?: (
+    event: VcwToolLifecycleEvent,
+  ) => void | Promise<void>;
 };
 
 export interface LangChainAgentRuntime {

@@ -43,10 +43,74 @@ export type AgentAssistantTraceMetadata = {
   agentLoopDurationMs: number;
 };
 
+export type AgentLifecycleEvent =
+  | {
+      seq: number;
+      timestampMs: number;
+      type: "retrieval_candidates";
+      queryText: string;
+      candidateSymbolIds: string[];
+      focusedCandidates: Array<{
+        symbolId: string;
+        score: number;
+      }>;
+      recallCandidates: Array<{
+        symbolId: string;
+        score: number;
+      }>;
+    }
+  | {
+      seq: number;
+      timestampMs: number;
+      type: "compaction_candidates";
+      pressureRatio: number;
+      pressureState: "normal" | "compact";
+      compactionTriggered: boolean;
+      compactionReason: "high_watermark" | "below_threshold" | "none";
+      scheduleResult:
+        | "none"
+        | "in_flight"
+        | "low_pressure"
+        | "no_candidates"
+        | "extractor_error";
+      candidateEntries: Array<{
+        entryId: string;
+        role: "user" | "assistant";
+        chars: number;
+        preview: string;
+      }>;
+    }
+  | {
+      seq: number;
+      timestampMs: number;
+      type: "tool_call_started";
+      toolName: string;
+      argsPreview: string;
+    }
+  | {
+      seq: number;
+      timestampMs: number;
+      type: "tool_call_completed";
+      toolName: string;
+      argsPreview: string;
+      resultPreview: string;
+      durationMs: number;
+    }
+  | {
+      seq: number;
+      timestampMs: number;
+      type: "tool_call_failed";
+      toolName: string;
+      argsPreview: string;
+      errorMessage: string;
+      durationMs: number;
+    };
+
 export type AgentTurnTrace = {
   threadId: string;
   stages: EngineStage[];
   telemetry: TelemetryEvent[];
+  lifecycle?: AgentLifecycleEvent[];
   symbolTable: SymbolRecord[];
   contextPackText: string;
   rawModelContent: string;

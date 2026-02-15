@@ -1,14 +1,27 @@
-# Demo Runbook: Passive Sliding Showdown
+# Demo Runbook: Showdown v3 (Fair A/B)
+
+## Goal
+Run a fair A/B between two viable approaches under the same context pressure:
+1. `history_only_window`: conversation history window only (`last N turns`), passive compaction effectively off.
+2. `passive_sliding_window`: same history window plus passive compaction/hydration.
+
+The winner is based on latest-fact recall and brief structure, not tool-name trivia.
 
 ## Prerequisites
 - `bun install`
 - Provider configured:
-  - Ollama: `VCW_OLLAMA_MODEL` (and optional `VCW_OLLAMA_BASE_URL`)
+  - Ollama: `VCW_OLLAMA_MODEL` (optional `VCW_OLLAMA_BASE_URL`)
   - OpenAI: `OPENAI_API_KEY`, `VCW_OPENAI_MODEL`
 
-## Run
+## Commands
+Default run:
 ```bash
 bun run demo:showdown
+```
+
+Reliability mode (recommended presenter run):
+```bash
+bun run demo:showdown --runs 5
 ```
 
 Fast smoke:
@@ -18,44 +31,45 @@ bun run demo:showdown:fast
 
 OpenAI:
 ```bash
-bun run demo:showdown:openai
+bun run demo:showdown:openai --runs 5
 ```
 
-## What It Runs
-Two isolated lanes with identical prompts:
-1. `compaction_off`: passive kernel with high watermark set near 1.0
-2. `compaction_on`: passive kernel defaults (`0.80/0.60` hysteresis)
+## Scenario Flow
+1. Seed incident facts in both lanes.
+2. Run distractor turns with history cap pressure.
+3. Inject update events (owner and unlock token rotate).
+4. Ask for incident brief using latest values.
 
-Both lanes:
-- seed high-entropy incident facts via deterministic `/remember`
-- run distractor turns with tight history window
-- answer the same incident brief prompt with required memory/web evidence
-
-## What to Highlight
-- Live lane ticker (`[compaction_off]`, `[compaction_on]`)
+## What To Watch
+- Lane ticker lines:
+  - `[history_only_window] ...`
+  - `[passive_sliding_window] ...`
 - Scoreboard columns:
+  - `facts` (`requiredFactsCorrect/requiredFactsTotal`)
   - `peak/final` pressure
-  - `jobs` (compaction jobs)
-  - `commits` (symbols committed)
-- `/trace pack` and `/trace tape` in interactive CLIs for internals
+  - `jobs` and `commits`
+  - failure reasons (`latest_fact_mismatch:*`, `missing_required_field:*`)
 
-## Win Conditions
-- `compaction_on.answerCorrect = true`
-- `compaction_on.strictGatePassed = true`
-- `compaction_on.compactionJobsTriggered > 0`
-- `compaction_off` loses one or more strict gates under the same pressure
+## Win Rules
+Single run (`--runs 1`):
+- `headToHeadPassed=true` means passive lane beat history-only lane on weighted memory-first score.
+
+Multi-run (`--runs N`):
+- `reliabilityPassed=true` when:
+  - passive wins at least `ceil(0.6 * N)` head-to-head runs
+  - passive pass rate is at least history-only pass rate
 
 ## Artifacts
 - `reports/demo-showdown/<timestamp>/summary.md`
 - `reports/demo-showdown/<timestamp>/metrics.json`
-- `reports/demo-showdown/<timestamp>/transcript-compaction-off.txt`
-- `reports/demo-showdown/<timestamp>/transcript-compaction-on.txt`
-- `reports/demo-showdown/<timestamp>/brief-compaction-off.md`
-- `reports/demo-showdown/<timestamp>/brief-compaction-on.md`
-- `reports/demo-showdown/<timestamp>/timeline.jsonl`
+- `reports/demo-showdown/<timestamp>/runs/run-*/transcript-history-only-window.txt`
+- `reports/demo-showdown/<timestamp>/runs/run-*/transcript-passive-sliding-window.txt`
+- `reports/demo-showdown/<timestamp>/runs/run-*/brief-history-only-window.md`
+- `reports/demo-showdown/<timestamp>/runs/run-*/brief-passive-sliding-window.md`
+- `reports/demo-showdown/<timestamp>/runs/run-*/timeline.jsonl`
 
-## Fallback
-If provider health checks fail:
-1. run `bun run demo:showdown --provider ollama --stream off`
-2. switch to OpenAI lane: `bun run demo:showdown:openai`
-3. run mock-only check for CI-style sanity by injecting a mock assistant in tests
+## Notes
+- Tool usage is informational only in v3 gates.
+- Demo-local tool call budget defaults to `VCW_AGENT_MAX_TOOL_CALLS=24` unless already set.
+- Provider preflight is a simple health check; no required-tool-name probe.
+- Defaults are tuned for the target comparison: `history limit 5`, `distractor turns 20`.

@@ -7,10 +7,18 @@ bun install
 ```
 
 ## Demo (canonical)
-Run the passive sliding showdown (same kernel, two lanes: compaction off vs compaction on):
+Run the fair A/B showdown:
+- `history_only_window`: conversation history window only (`last N turns`), passive compaction effectively off.
+- `passive_sliding_window`: same history window, passive compaction/hydration enabled.
 
 ```bash
 bun run demo:showdown
+```
+
+Recommended reliability run:
+
+```bash
+bun run demo:showdown --runs 5
 ```
 
 Fast smoke run:
@@ -32,9 +40,10 @@ reports/demo-showdown/<timestamp>/
 ```
 
 Success looks like:
-- `compaction_on` passes recall and incident gates under pressure
-- `compaction_off` degrades sooner under the same history cap and distractor load
-- passive diagnostics show compaction/hydration activity in the winning lane
+- `--runs 1`: `headToHeadPassed=true` and passive lane wins on latest-fact recall
+- `--runs 5`: `reliabilityPassed=true` with passive winning at least 60% of runs
+- scoreboards show passive diagnostics (`peak/final/jobs/commits`) for interpretability
+- defaults target long-chat pressure (`history limit 5`, `distractor turns 20`)
 
 ## Interactive CLIs
 Chat:

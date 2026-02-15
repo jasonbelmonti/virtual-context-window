@@ -143,3 +143,63 @@ test("vcw_web_search reports disabled state deterministically", async () => {
   expect(result.hits).toEqual([]);
   expect(result.error).toBe("web_search_disabled");
 });
+
+test("tool lifecycle callbacks emit start and completion events", async () => {
+  const store = new InMemorySymbolStore({ now: () => 1000 });
+  await store.upsert("thread-lifecycle", {
+    symbolId: "sym_life_1",
+    summary: "Lifecycle symbol",
+    content: "Lifecycle test content",
+    kind: "note",
+  });
+
+  const events: Array<{
+    type: string;
+    toolName: string;
+    argsPreview: string;
+    durationMs?: number;
+  }> = [];
+
+  const tools = createVcwAgentTools({
+    store,
+    threadId: "thread-lifecycle",
+    request: {
+      threadId: "thread-lifecycle",
+      messages: [],
+    },
+    trustedSymbolRefsEnabled: false,
+    retrievalStrategy: "hybrid_v2",
+    now: (() => {
+      let tick = 1000;
+      return () => {
+        tick += 5;
+        return tick;
+      };
+    })(),
+    onToolLifecycle: (event) => {
+      events.push({
+        type: event.type,
+        toolName: event.toolName,
+        argsPreview: event.argsPreview,
+        durationMs: "durationMs" in event ? event.durationMs : undefined,
+      });
+    },
+  });
+
+  const result = (await findTool(tools, "vcw_search_symbols").invoke({
+    query: "lifecycle",
+    limit: 1,
+  })) as { hits: Array<{ symbolId: string }> };
+  expect(result.hits[0]?.symbolId).toBe("sym_life_1");
+
+  expect(events.length).toBe(2);
+  expect(events[0]).toMatchObject({
+    type: "tool_call_started",
+    toolName: "vcw_search_symbols",
+  });
+  expect(events[1]).toMatchObject({
+    type: "tool_call_completed",
+    toolName: "vcw_search_symbols",
+  });
+  expect(events[1].durationMs).toBeGreaterThanOrEqual(0);
+});

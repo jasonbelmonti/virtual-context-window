@@ -49,6 +49,7 @@ test("createShowdownScenario is deterministic for fixed seed and timestamp", () 
   });
 
   expect(first.expectedToken).toBe(second.expectedToken);
-  expect(first.sentinels).toEqual(second.sentinels);
+  expect(first.initialFacts).toEqual(second.initialFacts);
+  expect(first.updateFacts).toEqual(second.updateFacts);
   expect(first.finalQuestion).toBe(second.finalQuestion);
 });

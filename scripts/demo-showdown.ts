@@ -1,18 +1,14 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { AgentCliRuntime, type AgentTurnTrace } from "../src/agent-cli";
-import type {
-  AssistantGenerateFn,
-  PreModelTelemetry,
-} from "../src/engine";
+import type { AssistantGenerateFn, PreModelTelemetry } from "../src/engine";
 import {
   evaluateLaneGates,
-  INCIDENT_REQUIRED_HEADINGS,
-  INCIDENT_REQUIRED_TOOL_NAMES,
+  INCIDENT_REQUIRED_HEADINGS_MIN,
   type ShowdownLaneGateResult,
 } from "./demo-showdown-gates";
 import {
-  buildSentinelSeedTurnText,
+  buildIncidentFactTurnText,
   createShowdownScenario,
   type ShowdownLane,
   type ShowdownScenario,
@@ -24,6 +20,7 @@ import {
   renderLaneEvent,
   renderPhase,
   type RenderLaneMetric,
+  type RenderRunOutcome,
   type RenderRunSummary,
 } from "./demo-showdown-renderer";
 
@@ -37,6 +34,7 @@ export type ShowdownCliOptions = {
   outputDir?: string;
   scenario: ShowdownScenarioKind;
   maxRetries: number;
+  runs: number;
   seed?: string;
 };
 
@@ -50,8 +48,15 @@ export type ShowdownTimelineEvent = {
 
 export type ShowdownLaneMetric = {
   lane: ShowdownLane;
-  answerCorrect: boolean;
   answerText: string;
+  answerCorrect: boolean;
+  memoryGatePassed: boolean;
+  structureGatePassed: boolean;
+  strictGatePassed: boolean;
+  requiredFactsTotal: number;
+  requiredFactsCorrect: number;
+  latestFactMismatchFields: string[];
+  missingRequiredFields: string[];
   contextPackChars: number;
   historyTurnsUsed: number;
   focusedInjectedCount: number;
@@ -63,12 +68,6 @@ export type ShowdownLaneMetric = {
   symbolTableCount: number;
   agentToolCallCount: number;
   agentToolNames: string[];
-  requiredToolCallsSatisfied: boolean;
-  briefFormatSatisfied: boolean;
-  memoryEvidenceSatisfied: boolean;
-  webEvidenceSatisfied: boolean;
-  strictGatePassed: boolean;
-  failureReasons: string[];
   attemptsUsed: number;
   pressurePeak: number;
   pressureFinal: number;
@@ -78,24 +77,47 @@ export type ShowdownLaneMetric = {
   committedSymbolsCount: number;
   hydratedSymbolsCount: number;
   ignoredModelEventCount: number;
+  failureReasons: string[];
 };
 
-export type ShowdownRunResult = {
-  schemaVersion: "2.0";
+export type ShowdownSingleRunResult = {
   runId: string;
-  provider: DemoProvider;
-  scenario: ShowdownScenarioKind;
   seed: string;
-  outputDir: string;
   expectedToken: string;
   historyLimit: number;
   distractorTurns: number;
   maxRetries: number;
   runDurationMs: number;
-  strictGatePassed: boolean;
-  advantageConditionPassed: boolean;
+  headToHeadWinner: ShowdownLane | "tie";
+  headToHeadPassed: boolean;
   metrics: ShowdownLaneMetric[];
   timeline: ShowdownTimelineEvent[];
+  artifactDir: string;
+};
+
+export type ShowdownAggregateResult = {
+  passiveWinCount: number;
+  historyWinCount: number;
+  tieCount: number;
+  passivePassRate: number;
+  historyPassRate: number;
+};
+
+export type ShowdownRunResult = {
+  schemaVersion: "3.0";
+  provider: DemoProvider;
+  scenario: ShowdownScenarioKind;
+  outputDir: string;
+  historyLimit: number;
+  distractorTurns: number;
+  maxRetries: number;
+  runsRequested: number;
+  runsCompleted: number;
+  runDurationMs: number;
+  headToHeadPassed: boolean;
+  reliabilityPassed: boolean;
+  aggregate: ShowdownAggregateResult;
+  runs: ShowdownSingleRunResult[];
 };
 
 type LaneExecutionResult = {
@@ -112,14 +134,12 @@ type RunShowdownOptions = {
   outputDir: string;
   scenarioKind?: ShowdownScenarioKind;
   maxRetries?: number;
+  runs?: number;
   seed?: string;
   env?: Record<string, string | undefined>;
   scenario?: ShowdownScenario;
   mock?: boolean;
   assistantGenerate?: AssistantGenerateFn;
-  requiredToolNames?: string[];
-  gateToolNameOverrides?: Partial<Record<ShowdownLane, string[]>>;
-  timelineEvents?: ShowdownTimelineEvent[];
   progressReporter?: ShowdownProgressReporter;
 };
 
@@ -132,9 +152,16 @@ type ShowdownProgressEvent = {
 
 type ShowdownProgressReporter = (event: ShowdownProgressEvent) => void;
 
-const DEFAULT_DISTRACTOR_TURNS = 6;
+const DEFAULT_DISTRACTOR_TURNS = 20;
 const DEFAULT_MAX_RETRIES = 2;
+const DEFAULT_RUNS = 1;
 const DEFAULT_SCENARIO: ShowdownScenarioKind = "incident_response";
+const DEFAULT_TOOL_CALL_LIMIT = "24";
+
+type LaneConfig = {
+  lane: ShowdownLane;
+  env: Record<string, string | undefined>;
+};
 
 function parsePositiveInt(raw: string, label: string): number {
   const parsed = Number.parseInt(raw, 10);
@@ -177,11 +204,12 @@ function parseScenario(raw: string): ShowdownScenarioKind {
 export function parseShowdownArgs(argv: string[]): ShowdownCliOptions {
   const parsed: ShowdownCliOptions = {
     provider: "ollama",
-    historyLimit: 1,
+    historyLimit: 5,
     distractorTurns: DEFAULT_DISTRACTOR_TURNS,
     stream: false,
     scenario: DEFAULT_SCENARIO,
     maxRetries: DEFAULT_MAX_RETRIES,
+    runs: DEFAULT_RUNS,
   };
 
   for (let index = 0; index < argv.length; index += 1) {
@@ -221,6 +249,12 @@ export function parseShowdownArgs(argv: string[]): ShowdownCliOptions {
 
     if (token === "--max-retries") {
       parsed.maxRetries = parsePositiveInt(argv[index + 1] ?? "", "max_retries");
+      index += 1;
+      continue;
+    }
+
+    if (token === "--runs") {
+      parsed.runs = parsePositiveInt(argv[index + 1] ?? "", "runs");
       index += 1;
       continue;
     }
@@ -320,12 +354,10 @@ function compactPreview(text: string, maxChars = 72): string {
 
 function describeGateOutcome(gate: ShowdownLaneGateResult): string {
   const checks = [
-    `answer=${gate.answerCorrect ? "PASS" : "FAIL"}`,
-    `tools=${gate.requiredToolCallsSatisfied ? "PASS" : "FAIL"}`,
-    `brief=${gate.briefFormatSatisfied ? "PASS" : "FAIL"}`,
-    `memory=${gate.memoryEvidenceSatisfied ? "PASS" : "FAIL"}`,
-    `web=${gate.webEvidenceSatisfied ? "PASS" : "FAIL"}`,
+    `memory=${gate.memoryGatePassed ? "PASS" : "FAIL"}`,
+    `structure=${gate.structureGatePassed ? "PASS" : "FAIL"}`,
     `strict=${gate.strictGatePassed ? "PASS" : "FAIL"}`,
+    `facts=${gate.requiredFactsCorrect}/${gate.requiredFactsTotal}`,
   ];
   if (gate.failureReasons.length === 0) {
     return checks.join(" ");
@@ -333,70 +365,19 @@ function describeGateOutcome(gate: ShowdownLaneGateResult): string {
   return `${checks.join(" ")} reasons=${gate.failureReasons.join(",")}`;
 }
 
-function renderSummaryMarkdown(result: ShowdownRunResult): string {
-  const lines: string[] = [];
-  lines.push("# Cinematic Incident Showdown Summary");
-  lines.push("");
-  lines.push(`- Schema version: ${result.schemaVersion}`);
-  lines.push(`- Run ID: ${result.runId}`);
-  lines.push(`- Provider: ${result.provider}`);
-  lines.push(`- Scenario: ${result.scenario}`);
-  lines.push(`- Seed: ${result.seed}`);
-  lines.push(`- History limit: ${result.historyLimit}`);
-  lines.push(`- Distractor turns: ${result.distractorTurns}`);
-  lines.push(`- Max retries: ${result.maxRetries}`);
-  lines.push(`- Run duration (ms): ${result.runDurationMs.toFixed(2)}`);
-  lines.push(`- Strict gate passed: ${result.strictGatePassed}`);
-  lines.push(`- Advantage condition passed: ${result.advantageConditionPassed}`);
-  lines.push("");
-  lines.push("## Scoreboard");
-  lines.push("");
-  lines.push("| Lane | Answer | Tools | Brief | Memory | Web | Strict | history | focus | recall | symbols | peak | final | jobs | commits | tries | Reasons |");
-  lines.push("| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |");
-
-  for (const metric of result.metrics) {
-    lines.push(
-      `| ${metric.lane} | ${metric.answerCorrect ? "PASS" : "FAIL"} | ${metric.requiredToolCallsSatisfied ? "PASS" : "FAIL"} | ${metric.briefFormatSatisfied ? "PASS" : "FAIL"} | ${metric.memoryEvidenceSatisfied ? "PASS" : "FAIL"} | ${metric.webEvidenceSatisfied ? "PASS" : "FAIL"} | ${metric.strictGatePassed ? "PASS" : "FAIL"} | ${metric.historyTurnsUsed} | ${metric.focusedInjectedCount} | ${metric.recallInjectedCount} | ${metric.symbolTableCount} | ${metric.pressurePeak.toFixed(2)} | ${metric.pressureFinal.toFixed(2)} | ${metric.compactionJobsTriggered} | ${metric.committedSymbolsCount} | ${metric.attemptsUsed} | ${metric.failureReasons.length > 0 ? metric.failureReasons.join(", ") : "-"} |`,
-    );
-  }
-
-  lines.push("");
-  lines.push("## Artifact Paths");
-  lines.push("");
-  lines.push(`- ${result.outputDir}/summary.md`);
-  lines.push(`- ${result.outputDir}/metrics.json`);
-  lines.push(`- ${result.outputDir}/transcript-compaction-off.txt`);
-  lines.push(`- ${result.outputDir}/transcript-compaction-on.txt`);
-  lines.push(`- ${result.outputDir}/brief-compaction-off.md`);
-  lines.push(`- ${result.outputDir}/brief-compaction-on.md`);
-  lines.push(`- ${result.outputDir}/timeline.jsonl`);
-
-  return lines.join("\n");
+function laneFileStem(lane: ShowdownLane): string {
+  return lane === "history_only_window"
+    ? "history-only-window"
+    : "passive-sliding-window";
 }
 
-function renderRetryPrompt(
-  scenario: ShowdownScenario,
-  gate: ShowdownLaneGateResult,
-): string {
+function renderRetryPrompt(scenario: ShowdownScenario, gate: ShowdownLaneGateResult): string {
   const lines: string[] = [];
   lines.push("Retry due to failed acceptance gates.");
   if (gate.failureReasons.length > 0) {
     lines.push(`Failed checks: ${gate.failureReasons.join(", ")}.`);
   }
-  if (gate.missingToolNames.length > 0) {
-    lines.push(
-      `You must call required tools before finalizing your answer: ${gate.missingToolNames.join(", ")}.`,
-    );
-  }
-  if (!gate.briefFormatSatisfied) {
-    lines.push("Use exact required section headings.");
-  }
-  if (!gate.memoryEvidenceSatisfied) {
-    lines.push("Recover exact values from durable memory and include them verbatim.");
-  }
-  if (!gate.webEvidenceSatisfied) {
-    lines.push("Include at least one URL and a line that starts with 'Source:'.");
-  }
+  lines.push("Focus on latest facts and required headings.");
   lines.push(scenario.finalQuestion);
   return lines.join("\n\n");
 }
@@ -404,364 +385,42 @@ function renderRetryPrompt(
 function gateForTurn(options: {
   lane: ShowdownLane;
   scenario: ShowdownScenario;
-  requiredToolNames: string[];
   turn: { content: string; trace: AgentTurnTrace };
-  toolNameOverride?: string[];
 }): ShowdownLaneGateResult {
+  const incident = options.scenario.incident;
+  if (!incident) {
+    throw new Error("scenario_incident_details_missing");
+  }
+
   return evaluateLaneGates({
     lane: options.lane,
     scenarioKind: options.scenario.kind,
     answerText: options.turn.content,
-    expectedToken: options.scenario.expectedToken,
     trace: options.turn.trace,
-    requiredToolNames: options.requiredToolNames,
-    requiredHeadings:
-      options.scenario.kind === "incident_response"
-        ? options.scenario.incident?.expectedHeadings ?? [...INCIDENT_REQUIRED_HEADINGS]
-        : [],
-    memoryEvidenceTokens:
-      options.scenario.kind === "incident_response"
-        ? options.scenario.incident?.memoryEvidenceTokens ?? []
-        : [],
-    toolNameOverride: options.toolNameOverride,
+    latestFacts: incident.requiredFacts,
+    requiredHeadings: incident.expectedHeadings ?? [...INCIDENT_REQUIRED_HEADINGS_MIN],
   });
-}
-
-async function executeLane(options: {
-  lane: ShowdownLane;
-  provider: DemoProvider;
-  historyLimit: number;
-  stream: boolean;
-  maxRetries: number;
-  requiredToolNames: string[];
-  env: Record<string, string | undefined>;
-  scenario: ShowdownScenario;
-  timeline: ShowdownTimelineEvent[];
-  gateToolNameOverride?: string[];
-  mock?: boolean;
-  assistantGenerate?: AssistantGenerateFn;
-  progressReporter?: ShowdownProgressReporter;
-}): Promise<LaneExecutionResult> {
-  const runtime = new AgentCliRuntime({
-    provider: options.provider,
-    streamEnabled: options.stream,
-    traceEnabled: false,
-    threadId: `${options.scenario.runId}-${options.lane}`,
-    env: options.env,
-    mock: options.mock,
-    assistantGenerate: options.assistantGenerate,
-  });
-
-  const transcript: string[] = [];
-  const pushUser = (text: string) => transcript.push(`USER> ${text}`);
-  const pushAssistant = (text: string) => transcript.push(`ASSISTANT> ${text}`);
-  const pushCommand = (text: string) => transcript.push(`CMD> ${text}`);
-
-  timelinePush(options.timeline, "lane_started", "lane runtime initialized", options.lane);
-  emitProgress(options.progressReporter, {
-    kind: "lane",
-    lane: options.lane,
-    message: "lane booted",
-    detail: `historyLimit=${options.historyLimit}`,
-  });
-
-  const historyLimitResult = await runtime.executeCommand({
-    type: "history_limit",
-    turns: options.historyLimit,
-  });
-  pushCommand(`/history limit ${options.historyLimit}`);
-  pushAssistant(historyLimitResult.output ?? "");
-  timelinePush(
-    options.timeline,
-    "config",
-    "history limit configured",
-    options.lane,
-    { historyLimit: options.historyLimit },
-  );
-  emitProgress(options.progressReporter, {
-    kind: "lane",
-    lane: options.lane,
-    message: "history window set",
-    detail: `turns=${options.historyLimit}`,
-  });
-
-  for (const [index, fact] of options.scenario.sentinels.entries()) {
-    const seedTurnText = buildSentinelSeedTurnText(fact);
-    pushUser(seedTurnText);
-    const seedTurn = await runtime.processUserMessage(seedTurnText);
-    pushAssistant(seedTurn.content);
-
-    emitProgress(options.progressReporter, {
-      kind: "lane",
-      lane: options.lane,
-      message: "seed tape",
-      detail: `${index + 1}/${options.scenario.sentinels.length} ${fact.key}`,
-    });
-  }
-  timelinePush(
-    options.timeline,
-    "seed",
-    "incident seed events appended to tape",
-    options.lane,
-    { seedTurnCount: options.scenario.sentinels.length },
-  );
-  emitProgress(options.progressReporter, {
-    kind: "lane",
-    lane: options.lane,
-    message: "seed tape complete",
-    detail: `turns=${options.scenario.sentinels.length}`,
-  });
-
-  for (const [index, prompt] of options.scenario.distractorPrompts.entries()) {
-    pushUser(prompt);
-    const turn = await runtime.processUserMessage(prompt);
-    pushAssistant(turn.content);
-    emitProgress(options.progressReporter, {
-      kind: "lane",
-      lane: options.lane,
-      message: "distractor turn",
-      detail: `${index + 1}/${options.scenario.distractorPrompts.length} ${compactPreview(prompt)}`,
-    });
-  }
-  timelinePush(
-    options.timeline,
-    "distractors",
-    "distractor turns completed",
-    options.lane,
-    { distractorTurns: options.scenario.distractorPrompts.length },
-  );
-  emitProgress(options.progressReporter, {
-    kind: "lane",
-    lane: options.lane,
-    message: "distractors complete",
-    detail: `turns=${options.scenario.distractorPrompts.length}`,
-  });
-
-  const historyCleared = await runtime.executeCommand({
-    type: "history",
-    action: "clear",
-  });
-  pushCommand("/history clear");
-  pushAssistant(historyCleared.output ?? "");
-  timelinePush(
-    options.timeline,
-    "history_branch",
-    "conversation history cleared before mission",
-    options.lane,
-  );
-  emitProgress(options.progressReporter, {
-    kind: "lane",
-    lane: options.lane,
-    message: "history cleared",
-    detail: "mission starts with fresh chat window",
-  });
-
-  timelinePush(options.timeline, "lane_mode", "lane compaction mode active", options.lane, {
-    mode: options.lane,
-  });
-
-  let attempt = 0;
-  let finalTurn: { content: string; trace: AgentTurnTrace } | null = null;
-  let gateResult: ShowdownLaneGateResult | null = null;
-  const missionToolNames = new Set<string>();
-  let missionToolCallCount = 0;
-  let lastAttemptError = "";
-
-  while (attempt < Math.max(1, options.maxRetries + 1)) {
-    attempt += 1;
-    const isFirstAttempt = attempt === 1;
-    const prompt = isFirstAttempt
-      ? options.scenario.finalQuestion
-      : renderRetryPrompt(
-          options.scenario,
-          gateResult ?? {
-            answerCorrect: false,
-            agentToolCallCount: 0,
-            agentToolNames: [],
-            missingToolNames: options.requiredToolNames,
-            requiredToolCallsSatisfied: false,
-            briefFormatSatisfied: false,
-            memoryEvidenceSatisfied: false,
-            webEvidenceSatisfied: false,
-            strictGatePassed: false,
-            failureReasons: ["retry_without_gate_result"],
-          },
-        );
-
-    pushUser(prompt);
-    emitProgress(options.progressReporter, {
-      kind: "lane",
-      lane: options.lane,
-      message: `mission attempt ${attempt}`,
-      detail: compactPreview(prompt),
-    });
-    let turn: { content: string; trace: AgentTurnTrace };
-    try {
-      turn = await runtime.processUserMessage(prompt);
-    } catch (error) {
-      lastAttemptError = toErrorMessage(error);
-      pushAssistant(`ERROR> ${lastAttemptError}`);
-      gateResult = {
-        answerCorrect: false,
-        agentToolCallCount: missionToolCallCount,
-        agentToolNames: Array.from(missionToolNames),
-        missingToolNames: options.requiredToolNames,
-        requiredToolCallsSatisfied: false,
-        briefFormatSatisfied: false,
-        memoryEvidenceSatisfied: false,
-        webEvidenceSatisfied: false,
-        strictGatePassed: false,
-        failureReasons: [`runtime_error:${lastAttemptError}`],
-      };
-      timelinePush(
-        options.timeline,
-        "mission_attempt_error",
-        "mission turn runtime error",
-        options.lane,
-        {
-          attempt,
-          error: lastAttemptError,
-        },
-      );
-      emitProgress(options.progressReporter, {
-        kind: "lane",
-        lane: options.lane,
-        message: `attempt ${attempt} runtime error`,
-        detail: compactPreview(lastAttemptError, 120),
-      });
-      continue;
-    }
-    pushAssistant(turn.content);
-    const turnToolNames = (turn.trace.agent?.agentToolNames ?? [])
-      .map((name) => name.trim().toLowerCase())
-      .filter((name) => name.length > 0);
-    for (const toolName of turnToolNames) {
-      missionToolNames.add(toolName);
-    }
-    missionToolCallCount += turn.trace.agent?.agentToolCallCount ?? turnToolNames.length;
-
-    finalTurn = turn;
-    gateResult = gateForTurn({
-      lane: options.lane,
-      scenario: options.scenario,
-      requiredToolNames: options.requiredToolNames,
-      turn,
-      toolNameOverride:
-        options.gateToolNameOverride ?? Array.from(missionToolNames),
-    });
-
-    timelinePush(
-      options.timeline,
-      "mission_attempt",
-      "mission turn evaluated",
-      options.lane,
-      {
-        attempt,
-        requiredToolCallsSatisfied: gateResult.requiredToolCallsSatisfied,
-        strictGatePassed: gateResult.strictGatePassed,
-        missingToolNames: gateResult.missingToolNames,
-      },
-    );
-    emitProgress(options.progressReporter, {
-      kind: "lane",
-      lane: options.lane,
-      message: `attempt ${attempt} evaluated`,
-      detail: describeGateOutcome(gateResult),
-    });
-
-    if (gateResult.strictGatePassed) {
-      break;
-    }
-  }
-
-  if (!finalTurn || !gateResult) {
-    const suffix = lastAttemptError ? `:${lastAttemptError}` : "";
-    const message = `lane_execution_missing_final_turn:${options.lane}${suffix}`;
-    timelinePush(options.timeline, "lane_completed", "lane completed", options.lane, {
-      strictGatePassed: false,
-      failureReasons: [`runtime_error:${message}`],
-    });
-    emitProgress(options.progressReporter, {
-      kind: "lane",
-      lane: options.lane,
-      message: "lane completed",
-      detail: `strict=false tools=${Array.from(missionToolNames).join(",") || "none"} history=0 focus=0 recall=0`,
-    });
-    return buildLaneFailureResult({
-      lane: options.lane,
-      message,
-      attempt,
-    });
-  }
-
-  const pre = extractPreModel(finalTurn.trace);
-  const passive = finalTurn.trace.diagnostics.passive;
-
-  const metric: ShowdownLaneMetric = {
-    lane: options.lane,
-    answerCorrect: gateResult.answerCorrect,
-    answerText: finalTurn.content,
-    contextPackChars: finalTurn.trace.contextPackText.length,
-    historyTurnsUsed: pre?.historyTurnsUsed ?? 0,
-    focusedInjectedCount: pre?.focusedInjectedCount ?? 0,
-    recallInjectedCount: pre?.recallInjectedCount ?? 0,
-    generationCallCount: finalTurn.trace.diagnostics.generationCallCount,
-    retrievalDegraded: finalTurn.trace.diagnostics.retrievalDegraded,
-    preModelMs: finalTurn.trace.diagnostics.preModelMs,
-    postModelMs: finalTurn.trace.diagnostics.postModelMs,
-    symbolTableCount: finalTurn.trace.symbolTable.length,
-    agentToolNames:
-      options.gateToolNameOverride ?? Array.from(missionToolNames),
-    agentToolCallCount:
-      options.gateToolNameOverride !== undefined
-        ? gateResult.agentToolCallCount
-        : missionToolCallCount,
-    requiredToolCallsSatisfied: gateResult.requiredToolCallsSatisfied,
-    briefFormatSatisfied: gateResult.briefFormatSatisfied,
-    memoryEvidenceSatisfied: gateResult.memoryEvidenceSatisfied,
-    webEvidenceSatisfied: gateResult.webEvidenceSatisfied,
-    strictGatePassed: gateResult.strictGatePassed,
-    failureReasons: gateResult.failureReasons,
-    attemptsUsed: attempt,
-    pressurePeak: passive?.pressurePeak ?? 0,
-    pressureFinal: passive?.pressureRatio ?? 0,
-    compactionJobsTriggered: passive?.compactionJobsTriggered ?? 0,
-    extractorCalls: passive?.extractorCalls ?? 0,
-    proposalsCount: passive?.proposalsCount ?? 0,
-    committedSymbolsCount: passive?.committedSymbolsCount ?? 0,
-    hydratedSymbolsCount: passive?.hydratedSymbolsCount ?? 0,
-    ignoredModelEventCount: passive?.ignoredModelEventCount ?? 0,
-  };
-
-  timelinePush(options.timeline, "lane_completed", "lane completed", options.lane, {
-    strictGatePassed: metric.strictGatePassed,
-    failureReasons: metric.failureReasons,
-  });
-  emitProgress(options.progressReporter, {
-    kind: "lane",
-    lane: options.lane,
-    message: "lane completed",
-    detail: `strict=${metric.strictGatePassed} tools=${metric.agentToolNames.join(",") || "none"} history=${metric.historyTurnsUsed} focus=${metric.focusedInjectedCount} recall=${metric.recallInjectedCount}`,
-  });
-
-  return {
-    metric,
-    transcript: transcript.join("\n"),
-    brief: finalTurn.content,
-  };
 }
 
 function buildLaneFailureResult(options: {
   lane: ShowdownLane;
   message: string;
   attempt: number;
+  requiredFactsTotal: number;
 }): LaneExecutionResult {
   const failureReason = `runtime_error:${options.message}`;
   return {
     metric: {
       lane: options.lane,
-      answerCorrect: false,
       answerText: "",
+      answerCorrect: false,
+      memoryGatePassed: false,
+      structureGatePassed: false,
+      strictGatePassed: false,
+      requiredFactsTotal: options.requiredFactsTotal,
+      requiredFactsCorrect: 0,
+      latestFactMismatchFields: [],
+      missingRequiredFields: [],
       contextPackChars: 0,
       historyTurnsUsed: 0,
       focusedInjectedCount: 0,
@@ -773,12 +432,6 @@ function buildLaneFailureResult(options: {
       symbolTableCount: 0,
       agentToolCallCount: 0,
       agentToolNames: [],
-      requiredToolCallsSatisfied: false,
-      briefFormatSatisfied: false,
-      memoryEvidenceSatisfied: false,
-      webEvidenceSatisfied: false,
-      strictGatePassed: false,
-      failureReasons: [failureReason],
       attemptsUsed: Math.max(1, options.attempt),
       pressurePeak: 0,
       pressureFinal: 0,
@@ -788,9 +441,334 @@ function buildLaneFailureResult(options: {
       committedSymbolsCount: 0,
       hydratedSymbolsCount: 0,
       ignoredModelEventCount: 0,
+      failureReasons: [failureReason],
     },
     transcript: `ERROR> ${failureReason}`,
     brief: `# Lane Failure\n\n${failureReason}\n`,
+  };
+}
+
+function laneConfigs(env: Record<string, string | undefined>): LaneConfig[] {
+  return [
+    {
+      lane: "history_only_window",
+      env: {
+        ...env,
+        VCW_PASSIVE_HIGH_WATERMARK: "0.999",
+        VCW_PASSIVE_LOW_WATERMARK: "0.95",
+        VCW_PASSIVE_PACK_TOTAL_CHARS: env.VCW_PASSIVE_PACK_TOTAL_CHARS ?? "320",
+      },
+    },
+    {
+      lane: "passive_sliding_window",
+      env: {
+        ...env,
+        VCW_PASSIVE_HIGH_WATERMARK: "0.8",
+        VCW_PASSIVE_LOW_WATERMARK: "0.6",
+        VCW_PASSIVE_PACK_TOTAL_CHARS: env.VCW_PASSIVE_PACK_TOTAL_CHARS ?? "320",
+      },
+    },
+  ];
+}
+
+async function executeLane(options: {
+  config: LaneConfig;
+  provider: DemoProvider;
+  historyLimit: number;
+  stream: boolean;
+  maxRetries: number;
+  scenario: ShowdownScenario;
+  timeline: ShowdownTimelineEvent[];
+  mock?: boolean;
+  assistantGenerate?: AssistantGenerateFn;
+  progressReporter?: ShowdownProgressReporter;
+}): Promise<LaneExecutionResult> {
+  const runtime = new AgentCliRuntime({
+    provider: options.provider,
+    streamEnabled: options.stream,
+    traceEnabled: false,
+    threadId: `${options.scenario.runId}-${options.config.lane}`,
+    env: options.config.env,
+    mock: options.mock,
+    assistantGenerate: options.assistantGenerate,
+  });
+
+  const transcript: string[] = [];
+  const pushUser = (text: string) => transcript.push(`USER> ${text}`);
+  const pushAssistant = (text: string) => transcript.push(`ASSISTANT> ${text}`);
+  const pushCommand = (text: string) => transcript.push(`CMD> ${text}`);
+
+  timelinePush(
+    options.timeline,
+    "lane_started",
+    "lane runtime initialized",
+    options.config.lane,
+  );
+  emitProgress(options.progressReporter, {
+    kind: "lane",
+    lane: options.config.lane,
+    message: "lane booted",
+    detail: `historyLimit=${options.historyLimit}`,
+  });
+
+  const historyLimitResult = await runtime.executeCommand({
+    type: "history_limit",
+    turns: options.historyLimit,
+  });
+  pushCommand(`/history limit ${options.historyLimit}`);
+  pushAssistant(historyLimitResult.output ?? "");
+
+  for (const [index, fact] of options.scenario.initialFacts.entries()) {
+    const seedTurnText = buildIncidentFactTurnText(fact, "seed");
+    pushUser(seedTurnText);
+    const seedTurn = await runtime.processUserMessage(seedTurnText);
+    pushAssistant(seedTurn.content);
+
+    emitProgress(options.progressReporter, {
+      kind: "lane",
+      lane: options.config.lane,
+      message: "seed event",
+      detail: `${index + 1}/${options.scenario.initialFacts.length} ${fact.key}`,
+    });
+  }
+
+  timelinePush(
+    options.timeline,
+    "seed",
+    "initial incident facts appended",
+    options.config.lane,
+    {
+      seedTurnCount: options.scenario.initialFacts.length,
+    },
+  );
+
+  for (const [index, prompt] of options.scenario.distractorPrompts.entries()) {
+    pushUser(prompt);
+    const turn = await runtime.processUserMessage(prompt);
+    pushAssistant(turn.content);
+
+    emitProgress(options.progressReporter, {
+      kind: "lane",
+      lane: options.config.lane,
+      message: "distractor turn",
+      detail: `${index + 1}/${options.scenario.distractorPrompts.length} ${compactPreview(prompt)}`,
+    });
+  }
+
+  timelinePush(
+    options.timeline,
+    "distractors",
+    "distractor turns completed",
+    options.config.lane,
+    { distractorTurns: options.scenario.distractorPrompts.length },
+  );
+
+  for (const [index, fact] of options.scenario.updateFacts.entries()) {
+    const updateTurnText = buildIncidentFactTurnText(fact, "update");
+    pushUser(updateTurnText);
+    const updateTurn = await runtime.processUserMessage(updateTurnText);
+    pushAssistant(updateTurn.content);
+
+    emitProgress(options.progressReporter, {
+      kind: "lane",
+      lane: options.config.lane,
+      message: "update event",
+      detail: `${index + 1}/${options.scenario.updateFacts.length} ${fact.key}`,
+    });
+  }
+
+  timelinePush(
+    options.timeline,
+    "updates",
+    "latest incident updates appended",
+    options.config.lane,
+    { updateTurnCount: options.scenario.updateFacts.length },
+  );
+
+  timelinePush(options.timeline, "history_window", "history window remains active", options.config.lane, {
+    historyLimit: options.historyLimit,
+  });
+
+  let attempt = 0;
+  let finalTurn: { content: string; trace: AgentTurnTrace } | null = null;
+  let gateResult: ShowdownLaneGateResult | null = null;
+  const missionToolNames = new Set<string>();
+  let missionToolCallCount = 0;
+  let lastAttemptError = "";
+
+  while (attempt < Math.max(1, options.maxRetries + 1)) {
+    attempt += 1;
+    const prompt =
+      attempt === 1
+        ? options.scenario.finalQuestion
+        : renderRetryPrompt(
+            options.scenario,
+            gateResult ?? {
+              answerCorrect: false,
+              memoryGatePassed: false,
+              structureGatePassed: false,
+              strictGatePassed: false,
+              requiredFactsTotal: 4,
+              requiredFactsCorrect: 0,
+              latestFactMismatchFields: [],
+              missingRequiredFields: [],
+              agentToolCallCount: 0,
+              agentToolNames: [],
+              failureReasons: ["retry_without_gate_result"],
+            },
+          );
+
+    pushUser(prompt);
+    emitProgress(options.progressReporter, {
+      kind: "lane",
+      lane: options.config.lane,
+      message: `mission attempt ${attempt}`,
+      detail: compactPreview(prompt),
+    });
+
+    let turn: { content: string; trace: AgentTurnTrace };
+    try {
+      turn = await runtime.processUserMessage(prompt);
+    } catch (error) {
+      lastAttemptError = toErrorMessage(error);
+      pushAssistant(`ERROR> ${lastAttemptError}`);
+      timelinePush(
+        options.timeline,
+        "mission_attempt_error",
+        "mission turn runtime error",
+        options.config.lane,
+        {
+          attempt,
+          error: lastAttemptError,
+        },
+      );
+      emitProgress(options.progressReporter, {
+        kind: "lane",
+        lane: options.config.lane,
+        message: `attempt ${attempt} runtime error`,
+        detail: compactPreview(lastAttemptError, 120),
+      });
+      continue;
+    }
+
+    pushAssistant(turn.content);
+    const turnToolNames = (turn.trace.agent?.agentToolNames ?? [])
+      .map((name) => name.trim().toLowerCase())
+      .filter((name) => name.length > 0);
+    for (const toolName of turnToolNames) {
+      missionToolNames.add(toolName);
+    }
+    missionToolCallCount += turn.trace.agent?.agentToolCallCount ?? turnToolNames.length;
+
+    finalTurn = turn;
+    gateResult = gateForTurn({
+      lane: options.config.lane,
+      scenario: options.scenario,
+      turn,
+    });
+
+    timelinePush(
+      options.timeline,
+      "mission_attempt",
+      "mission turn evaluated",
+      options.config.lane,
+      {
+        attempt,
+        strictGatePassed: gateResult.strictGatePassed,
+        requiredFactsCorrect: gateResult.requiredFactsCorrect,
+        requiredFactsTotal: gateResult.requiredFactsTotal,
+      },
+    );
+
+    emitProgress(options.progressReporter, {
+      kind: "lane",
+      lane: options.config.lane,
+      message: `attempt ${attempt} evaluated`,
+      detail: describeGateOutcome(gateResult),
+    });
+
+    if (gateResult.strictGatePassed) {
+      break;
+    }
+  }
+
+  const incident = options.scenario.incident;
+  const requiredFactsTotal = incident ? Object.keys(incident.requiredFacts).length : 4;
+
+  if (!finalTurn || !gateResult) {
+    const suffix = lastAttemptError ? `:${lastAttemptError}` : "";
+    const message = `lane_execution_missing_final_turn:${options.config.lane}${suffix}`;
+    timelinePush(options.timeline, "lane_completed", "lane completed", options.config.lane, {
+      strictGatePassed: false,
+      failureReasons: [`runtime_error:${message}`],
+    });
+    emitProgress(options.progressReporter, {
+      kind: "lane",
+      lane: options.config.lane,
+      message: "lane completed",
+      detail: `strict=false tools=${Array.from(missionToolNames).join(",") || "none"}`,
+    });
+    return buildLaneFailureResult({
+      lane: options.config.lane,
+      message,
+      attempt,
+      requiredFactsTotal,
+    });
+  }
+
+  const pre = extractPreModel(finalTurn.trace);
+  const passive = finalTurn.trace.diagnostics.passive;
+
+  const metric: ShowdownLaneMetric = {
+    lane: options.config.lane,
+    answerText: finalTurn.content,
+    answerCorrect: gateResult.answerCorrect,
+    memoryGatePassed: gateResult.memoryGatePassed,
+    structureGatePassed: gateResult.structureGatePassed,
+    strictGatePassed: gateResult.strictGatePassed,
+    requiredFactsTotal: gateResult.requiredFactsTotal,
+    requiredFactsCorrect: gateResult.requiredFactsCorrect,
+    latestFactMismatchFields: gateResult.latestFactMismatchFields,
+    missingRequiredFields: gateResult.missingRequiredFields,
+    contextPackChars: finalTurn.trace.contextPackText.length,
+    historyTurnsUsed: pre?.historyTurnsUsed ?? 0,
+    focusedInjectedCount: pre?.focusedInjectedCount ?? 0,
+    recallInjectedCount: pre?.recallInjectedCount ?? 0,
+    generationCallCount: finalTurn.trace.diagnostics.generationCallCount,
+    retrievalDegraded: finalTurn.trace.diagnostics.retrievalDegraded,
+    preModelMs: finalTurn.trace.diagnostics.preModelMs,
+    postModelMs: finalTurn.trace.diagnostics.postModelMs,
+    symbolTableCount: finalTurn.trace.symbolTable.length,
+    agentToolCallCount: missionToolCallCount,
+    agentToolNames: Array.from(missionToolNames),
+    attemptsUsed: attempt,
+    pressurePeak: passive?.pressurePeak ?? 0,
+    pressureFinal: passive?.pressureRatio ?? 0,
+    compactionJobsTriggered: passive?.compactionJobsTriggered ?? 0,
+    extractorCalls: passive?.extractorCalls ?? 0,
+    proposalsCount: passive?.proposalsCount ?? 0,
+    committedSymbolsCount: passive?.committedSymbolsCount ?? 0,
+    hydratedSymbolsCount: passive?.hydratedSymbolsCount ?? 0,
+    ignoredModelEventCount: passive?.ignoredModelEventCount ?? 0,
+    failureReasons: gateResult.failureReasons,
+  };
+
+  timelinePush(options.timeline, "lane_completed", "lane completed", options.config.lane, {
+    strictGatePassed: metric.strictGatePassed,
+    failureReasons: metric.failureReasons,
+  });
+
+  emitProgress(options.progressReporter, {
+    kind: "lane",
+    lane: options.config.lane,
+    message: "lane completed",
+    detail: `strict=${metric.strictGatePassed} facts=${metric.requiredFactsCorrect}/${metric.requiredFactsTotal} tools=${metric.agentToolNames.join(",") || "none"}`,
+  });
+
+  return {
+    metric,
+    transcript: transcript.join("\n"),
+    brief: finalTurn.content,
   };
 }
 
@@ -798,7 +776,6 @@ async function validateProvider(options: {
   provider: DemoProvider;
   env: Record<string, string | undefined>;
   stream: boolean;
-  requiredToolNames: string[];
   assistantGenerate?: AssistantGenerateFn;
   mock?: boolean;
   progressReporter?: ShowdownProgressReporter;
@@ -834,115 +811,269 @@ async function validateProvider(options: {
     throw new Error("provider_healthcheck_empty_response");
   }
 
-  const normalizedRequiredTools = Array.from(
-    new Set(
-      options.requiredToolNames
-        .map((name) => name.trim().toLowerCase())
-        .filter((name) => name.length > 0),
-    ),
-  );
-  if (normalizedRequiredTools.length === 0) {
-    emitProgress(options.progressReporter, {
-      kind: "phase",
-      message: "provider healthcheck passed",
-      detail: "no required tools",
-    });
-    return;
+  emitProgress(options.progressReporter, {
+    kind: "phase",
+    message: "provider healthcheck passed",
+    detail: `reply=${compactPreview(result.content, 32)}`,
+  });
+}
+
+function laneScore(metric: ShowdownLaneMetric): number {
+  const memoryScore =
+    metric.requiredFactsTotal > 0 ? metric.requiredFactsCorrect / metric.requiredFactsTotal : 0;
+  const structureScore = metric.structureGatePassed ? 1 : 0;
+  const strictScore = metric.strictGatePassed ? 1 : 0;
+  return memoryScore * 0.8 + structureScore * 0.15 + strictScore * 0.05;
+}
+
+function determineHeadToHead(options: {
+  metrics: ShowdownLaneMetric[];
+}): {
+  winner: ShowdownLane | "tie";
+  headToHeadPassed: boolean;
+} {
+  const historyOnly = options.metrics.find((metric) => metric.lane === "history_only_window");
+  const passive = options.metrics.find((metric) => metric.lane === "passive_sliding_window");
+  if (!historyOnly || !passive) {
+    return {
+      winner: "tie",
+      headToHeadPassed: false,
+    };
   }
 
-  try {
-    emitProgress(options.progressReporter, {
-      kind: "phase",
-      message: "tool capability probe",
-      detail: `required=${normalizedRequiredTools.join(",")}`,
-    });
+  const historyScore = laneScore(historyOnly);
+  const passiveScore = laneScore(passive);
 
-    await runtime.executeCommand({
-      type: "remember",
-      content: "Fact key: Provider probe token. Fact value: VCW-PROBE-TOOLCHECK. Store this as durable memory and keep the value exact.",
-    });
-
-    const usedTools = new Set<string>();
-    const probeAttemptsPerTool = 2;
-
-    for (const requiredTool of normalizedRequiredTools) {
-      let satisfied = false;
-      let lastProbeError = "";
-
-      for (let attempt = 1; attempt <= probeAttemptsPerTool; attempt += 1) {
-        emitProgress(options.progressReporter, {
-          kind: "phase",
-          message: "tool capability probe attempt",
-          detail: `${requiredTool} attempt=${attempt}/${probeAttemptsPerTool}`,
-        });
-
-        try {
-          const probe = await runtime.processUserMessage([
-            "Provider tool capability check.",
-            `Call ${requiredTool} exactly once before your final answer.`,
-            "Do not call any other VCW tools in this probe turn.",
-            "After tool call completes, reply with exactly vcw_tool_health_ok.",
-          ].join("\n"));
-
-          const turnTools = new Set(
-            (probe.trace.agent?.agentToolNames ?? [])
-              .map((name) => name.trim().toLowerCase())
-              .filter((name) => name.length > 0),
-          );
-          if (turnTools.has(requiredTool)) {
-            satisfied = true;
-            usedTools.add(requiredTool);
-            break;
-          }
-
-          lastProbeError = `missing_required_tools:${requiredTool}`;
-        } catch (error) {
-          lastProbeError = toErrorMessage(error);
-        }
-      }
-
-      if (!satisfied) {
-        throw new Error(lastProbeError || `missing_required_tools:${requiredTool}`);
-      }
-    }
-
-    emitProgress(options.progressReporter, {
-      kind: "phase",
-      message: "provider healthcheck passed",
-      detail: `tools=${Array.from(usedTools).join(",") || "none"}`,
-    });
-  } catch (error) {
-    const message = toErrorMessage(error);
-    const model =
-      options.provider === "openai_responses"
-        ? options.env.VCW_OPENAI_MODEL ?? "(unset)"
-        : options.env.VCW_OLLAMA_MODEL ?? "(unset)";
-
-    if (/recursion limit|GRAPH_RECURSION_LIMIT/iu.test(message)) {
-      throw new Error(
-        `provider_tool_probe_failed:recursion_limit:model=${model}. Configure a tool-capable model for incident scenario.`,
-      );
-    }
-
-    throw new Error(
-      `provider_tool_probe_failed:${message}:model=${model}. Configure a tool-capable model for incident scenario.`,
-    );
+  if (Math.abs(passiveScore - historyScore) > 0.001) {
+    return {
+      winner: passiveScore > historyScore ? "passive_sliding_window" : "history_only_window",
+      headToHeadPassed: passiveScore > historyScore,
+    };
   }
+
+  if (passive.strictGatePassed !== historyOnly.strictGatePassed) {
+    return {
+      winner: passive.strictGatePassed ? "passive_sliding_window" : "history_only_window",
+      headToHeadPassed: passive.strictGatePassed,
+    };
+  }
+
+  if (passive.requiredFactsCorrect !== historyOnly.requiredFactsCorrect) {
+    return {
+      winner:
+        passive.requiredFactsCorrect > historyOnly.requiredFactsCorrect
+          ? "passive_sliding_window"
+          : "history_only_window",
+      headToHeadPassed: passive.requiredFactsCorrect > historyOnly.requiredFactsCorrect,
+    };
+  }
+
+  return {
+    winner: "tie",
+    headToHeadPassed: false,
+  };
 }
 
 function toTimelineJsonl(timeline: ShowdownTimelineEvent[]): string {
   return timeline.map((event) => JSON.stringify(event)).join("\n") + "\n";
 }
 
+async function runSingleShowdown(options: {
+  provider: DemoProvider;
+  historyLimit: number;
+  distractorTurns: number;
+  stream: boolean;
+  maxRetries: number;
+  scenario: ShowdownScenario;
+  env: Record<string, string | undefined>;
+  outputDir: string;
+  mock?: boolean;
+  assistantGenerate?: AssistantGenerateFn;
+  progressReporter?: ShowdownProgressReporter;
+}): Promise<ShowdownSingleRunResult> {
+  const startedAt = performance.now();
+  const timeline: ShowdownTimelineEvent[] = [];
+
+  const configs = laneConfigs(options.env);
+  const laneResults: LaneExecutionResult[] = [];
+
+  for (const config of configs) {
+    try {
+      const laneResult = await executeLane({
+        config,
+        provider: options.provider,
+        historyLimit: options.historyLimit,
+        stream: options.stream,
+        maxRetries: options.maxRetries,
+        scenario: options.scenario,
+        timeline,
+        mock: options.mock,
+        assistantGenerate: options.assistantGenerate,
+        progressReporter: options.progressReporter,
+      });
+      laneResults.push(laneResult);
+    } catch (error) {
+      const message = toErrorMessage(error);
+      timelinePush(timeline, "lane_error", "lane execution failed", config.lane, {
+        message,
+      });
+      emitProgress(options.progressReporter, {
+        kind: "lane",
+        lane: config.lane,
+        message: "lane failed",
+        detail: compactPreview(message, 120),
+      });
+
+      const requiredFactsTotal = options.scenario.incident
+        ? Object.keys(options.scenario.incident.requiredFacts).length
+        : 4;
+      laneResults.push(
+        buildLaneFailureResult({
+          lane: config.lane,
+          message,
+          attempt: options.maxRetries + 1,
+          requiredFactsTotal,
+        }),
+      );
+    }
+  }
+
+  const metrics = laneResults.map((result) => result.metric);
+  const headToHead = determineHeadToHead({ metrics });
+
+  const runDurationMs = performance.now() - startedAt;
+
+  await mkdir(options.outputDir, { recursive: true });
+
+  for (const laneResult of laneResults) {
+    const stem = laneFileStem(laneResult.metric.lane);
+    await Promise.all([
+      writeFile(
+        path.join(options.outputDir, `transcript-${stem}.txt`),
+        laneResult.transcript,
+        "utf8",
+      ),
+      writeFile(path.join(options.outputDir, `brief-${stem}.md`), laneResult.brief, "utf8"),
+    ]);
+  }
+
+  await writeFile(
+    path.join(options.outputDir, "timeline.jsonl"),
+    toTimelineJsonl(timeline),
+    "utf8",
+  );
+
+  return {
+    runId: options.scenario.runId,
+    seed: options.scenario.seed,
+    expectedToken: options.scenario.expectedToken,
+    historyLimit: options.historyLimit,
+    distractorTurns: options.distractorTurns,
+    maxRetries: options.maxRetries,
+    runDurationMs,
+    headToHeadWinner: headToHead.winner,
+    headToHeadPassed: headToHead.headToHeadPassed,
+    metrics,
+    timeline,
+    artifactDir: options.outputDir,
+  };
+}
+
+function summarizeAggregate(runs: ShowdownSingleRunResult[]): ShowdownAggregateResult {
+  let passiveWinCount = 0;
+  let historyWinCount = 0;
+  let tieCount = 0;
+  let passiveStrictPassCount = 0;
+  let historyStrictPassCount = 0;
+
+  for (const run of runs) {
+    if (run.headToHeadWinner === "passive_sliding_window") {
+      passiveWinCount += 1;
+    } else if (run.headToHeadWinner === "history_only_window") {
+      historyWinCount += 1;
+    } else {
+      tieCount += 1;
+    }
+
+    const passive = run.metrics.find((metric) => metric.lane === "passive_sliding_window");
+    const historyOnly = run.metrics.find((metric) => metric.lane === "history_only_window");
+    if (passive?.strictGatePassed) {
+      passiveStrictPassCount += 1;
+    }
+    if (historyOnly?.strictGatePassed) {
+      historyStrictPassCount += 1;
+    }
+  }
+
+  const runsCount = Math.max(1, runs.length);
+  return {
+    passiveWinCount,
+    historyWinCount,
+    tieCount,
+    passivePassRate: passiveStrictPassCount / runsCount,
+    historyPassRate: historyStrictPassCount / runsCount,
+  };
+}
+
+function renderSummaryMarkdown(result: ShowdownRunResult): string {
+  const lines: string[] = [];
+  lines.push("# Showdown v3 Summary");
+  lines.push("");
+  lines.push(`- Schema version: ${result.schemaVersion}`);
+  lines.push(`- Provider: ${result.provider}`);
+  lines.push(`- Scenario: ${result.scenario}`);
+  lines.push(`- Runs requested: ${result.runsRequested}`);
+  lines.push(`- Runs completed: ${result.runsCompleted}`);
+  lines.push(`- History limit: ${result.historyLimit}`);
+  lines.push(`- Distractor turns: ${result.distractorTurns}`);
+  lines.push(`- Max retries: ${result.maxRetries}`);
+  lines.push(`- Total duration (ms): ${result.runDurationMs.toFixed(2)}`);
+  lines.push(`- Head-to-head passed: ${result.headToHeadPassed}`);
+  lines.push(`- Reliability passed: ${result.reliabilityPassed}`);
+  lines.push("");
+  lines.push("## Aggregate");
+  lines.push("");
+  lines.push(`- Passive wins: ${result.aggregate.passiveWinCount}`);
+  lines.push(`- History-only wins: ${result.aggregate.historyWinCount}`);
+  lines.push(`- Ties: ${result.aggregate.tieCount}`);
+  lines.push(`- Passive pass rate: ${result.aggregate.passivePassRate.toFixed(2)}`);
+  lines.push(`- History-only pass rate: ${result.aggregate.historyPassRate.toFixed(2)}`);
+  lines.push("");
+  lines.push("## Per-Run Outcomes");
+  lines.push("");
+  lines.push("| Run | Seed | Winner | PassiveStrict | HistoryStrict | Artifact Dir |");
+  lines.push("| --- | --- | --- | --- | --- | --- |");
+  for (let index = 0; index < result.runs.length; index += 1) {
+    const run = result.runs[index];
+    const passive = run.metrics.find((metric) => metric.lane === "passive_sliding_window");
+    const historyOnly = run.metrics.find((metric) => metric.lane === "history_only_window");
+    lines.push(
+      `| ${index + 1} | ${run.seed} | ${run.headToHeadWinner} | ${passive?.strictGatePassed ?? false} | ${historyOnly?.strictGatePassed ?? false} | ${run.artifactDir} |`,
+    );
+  }
+
+  lines.push("");
+  lines.push("## Artifact Paths");
+  lines.push("");
+  lines.push(`- ${result.outputDir}/summary.md`);
+  lines.push(`- ${result.outputDir}/metrics.json`);
+  lines.push(`- ${result.outputDir}/runs/run-*/transcript-*.txt`);
+  lines.push(`- ${result.outputDir}/runs/run-*/brief-*.md`);
+  lines.push(`- ${result.outputDir}/runs/run-*/timeline.jsonl`);
+
+  return lines.join("\n");
+}
+
 function toRenderSummary(result: ShowdownRunResult): RenderRunSummary {
-  const metrics: RenderLaneMetric[] = result.metrics.map((metric) => ({
+  const latestRun = result.runs[result.runs.length - 1];
+  const latestMetrics: RenderLaneMetric[] = (latestRun?.metrics ?? []).map((metric) => ({
     lane: metric.lane,
-    answerCorrect: metric.answerCorrect,
-    requiredToolCallsSatisfied: metric.requiredToolCallsSatisfied,
-    briefFormatSatisfied: metric.briefFormatSatisfied,
-    memoryEvidenceSatisfied: metric.memoryEvidenceSatisfied,
-    webEvidenceSatisfied: metric.webEvidenceSatisfied,
+    memoryGatePassed: metric.memoryGatePassed,
+    structureGatePassed: metric.structureGatePassed,
     strictGatePassed: metric.strictGatePassed,
+    requiredFactsCorrect: metric.requiredFactsCorrect,
+    requiredFactsTotal: metric.requiredFactsTotal,
+    agentToolCallCount: metric.agentToolCallCount,
     historyTurnsUsed: metric.historyTurnsUsed,
     focusedInjectedCount: metric.focusedInjectedCount,
     recallInjectedCount: metric.recallInjectedCount,
@@ -955,13 +1086,32 @@ function toRenderSummary(result: ShowdownRunResult): RenderRunSummary {
     failureReasons: metric.failureReasons,
   }));
 
+  const outcomes: RenderRunOutcome[] = result.runs.map((run, index) => {
+    const passive = run.metrics.find((metric) => metric.lane === "passive_sliding_window");
+    const historyOnly = run.metrics.find((metric) => metric.lane === "history_only_window");
+    return {
+      runIndex: index + 1,
+      runId: run.runId,
+      seed: run.seed,
+      winner: run.headToHeadWinner,
+      passiveStrict: passive?.strictGatePassed ?? false,
+      historyStrict: historyOnly?.strictGatePassed ?? false,
+    };
+  });
+
   return {
-    runId: result.runId,
     provider: result.provider,
     scenario: result.scenario,
     runDurationMs: result.runDurationMs,
     outputDir: result.outputDir,
-    metrics,
+    runsRequested: result.runsRequested,
+    runsCompleted: result.runsCompleted,
+    headToHeadPassed: result.headToHeadPassed,
+    reliabilityPassed: result.reliabilityPassed,
+    aggregate: result.aggregate,
+    latestRunId: latestRun?.runId ?? "(none)",
+    latestMetrics,
+    outcomes,
   };
 }
 
@@ -970,7 +1120,7 @@ export async function runShowdown(
 ): Promise<ShowdownRunResult> {
   const scenarioKind = options.scenarioKind ?? DEFAULT_SCENARIO;
   const maxRetries = options.maxRetries ?? DEFAULT_MAX_RETRIES;
-  const requiredToolNames = options.requiredToolNames ?? [...INCIDENT_REQUIRED_TOOL_NAMES];
+  const runsRequested = options.runs ?? DEFAULT_RUNS;
 
   const env: Record<string, string | undefined> = {
     ...process.env,
@@ -981,230 +1131,100 @@ export async function runShowdown(
       options.env?.VCW_AGENT_RECURSION_LIMIT ??
       process.env.VCW_AGENT_RECURSION_LIMIT ??
       "48",
+    VCW_AGENT_MAX_TOOL_CALLS:
+      options.env?.VCW_AGENT_MAX_TOOL_CALLS ??
+      process.env.VCW_AGENT_MAX_TOOL_CALLS ??
+      DEFAULT_TOOL_CALL_LIMIT,
   };
 
-  const runStartedAt = performance.now();
-  const timeline: ShowdownTimelineEvent[] = options.timelineEvents ?? [];
-  timelinePush(timeline, "run_started", "showdown run started", undefined, {
-    provider: options.provider,
-    scenario: scenarioKind,
-    maxRetries,
-  });
-  emitProgress(options.progressReporter, {
-    kind: "phase",
-    message: "run started",
-    detail: `provider=${options.provider} scenario=${scenarioKind} maxRetries=${maxRetries}`,
-  });
+  const startedAt = performance.now();
 
   await validateProvider({
     provider: options.provider,
     env,
     stream: options.stream,
-    requiredToolNames,
     mock: options.mock,
     assistantGenerate: options.assistantGenerate,
     progressReporter: options.progressReporter,
   });
-  timelinePush(timeline, "provider_validated", "provider healthcheck passed");
 
-  const scenario =
-    options.scenario ??
-    createShowdownScenario({
-      kind: scenarioKind,
+  const runs: ShowdownSingleRunResult[] = [];
+  for (let index = 0; index < runsRequested; index += 1) {
+    const runSeed = options.seed
+      ? `${options.seed}-run-${String(index + 1).padStart(2, "0")}`
+      : undefined;
+    const scenario =
+      options.scenario && runsRequested === 1
+        ? options.scenario
+        : createShowdownScenario({
+            kind: scenarioKind,
+            distractorTurns: options.distractorTurns,
+            seed: runSeed,
+          });
+
+    const runOutputDir = path.join(
+      options.outputDir,
+      "runs",
+      `run-${String(index + 1).padStart(2, "0")}`,
+    );
+
+    emitProgress(options.progressReporter, {
+      kind: "phase",
+      message: "scenario ready",
+      detail: `run=${index + 1}/${runsRequested} runId=${scenario.runId} seed=${scenario.seed}`,
+    });
+
+    const runResult = await runSingleShowdown({
+      provider: options.provider,
+      historyLimit: options.historyLimit,
       distractorTurns: options.distractorTurns,
-      seed: options.seed,
-    });
-
-  timelinePush(timeline, "scenario_created", "scenario generated", undefined, {
-    runId: scenario.runId,
-    seed: scenario.seed,
-  });
-  emitProgress(options.progressReporter, {
-    kind: "phase",
-    message: "scenario ready",
-    detail: `runId=${scenario.runId} sentinels=${scenario.sentinels.length} seed=${scenario.seed}`,
-  });
-
-  const compactionOffEnv: Record<string, string | undefined> = {
-    ...env,
-    VCW_PASSIVE_HIGH_WATERMARK: "0.999",
-    VCW_PASSIVE_LOW_WATERMARK: "0.95",
-    VCW_PASSIVE_PACK_TOTAL_CHARS: env.VCW_PASSIVE_PACK_TOTAL_CHARS ?? "600",
-  };
-
-  let compactionOff: LaneExecutionResult;
-  try {
-    compactionOff = await executeLane({
-      lane: "compaction_off",
-      provider: options.provider,
-      historyLimit: options.historyLimit,
       stream: options.stream,
       maxRetries,
-      requiredToolNames,
-      env: compactionOffEnv,
       scenario,
-      timeline,
-      gateToolNameOverride: options.gateToolNameOverrides?.compaction_off,
+      env,
+      outputDir: runOutputDir,
       mock: options.mock,
       assistantGenerate: options.assistantGenerate,
       progressReporter: options.progressReporter,
     });
-  } catch (error) {
-    const message = toErrorMessage(error);
-    timelinePush(timeline, "lane_error", "lane execution failed", "compaction_off", {
-      message,
-    });
-    emitProgress(options.progressReporter, {
-      kind: "lane",
-      lane: "compaction_off",
-      message: "lane failed",
-      detail: compactPreview(message, 120),
-    });
-    compactionOff = buildLaneFailureResult({
-      lane: "compaction_off",
-      message,
-      attempt: maxRetries + 1,
-    });
+    runs.push(runResult);
   }
 
-  const compactionOnEnv: Record<string, string | undefined> = {
-    ...env,
-    VCW_PASSIVE_HIGH_WATERMARK: "0.8",
-    VCW_PASSIVE_LOW_WATERMARK: "0.6",
-    VCW_PASSIVE_PACK_TOTAL_CHARS: env.VCW_PASSIVE_PACK_TOTAL_CHARS ?? "320",
-  };
+  const aggregate = summarizeAggregate(runs);
+  const runsCompleted = runs.length;
+  const headToHeadPassed =
+    runsCompleted === 1
+      ? runs[0]?.headToHeadPassed ?? false
+      : aggregate.passiveWinCount > aggregate.historyWinCount;
 
-  let compactionOn: LaneExecutionResult;
-  try {
-    compactionOn = await executeLane({
-      lane: "compaction_on",
-      provider: options.provider,
-      historyLimit: options.historyLimit,
-      stream: options.stream,
-      maxRetries,
-      requiredToolNames,
-      env: compactionOnEnv,
-      scenario,
-      timeline,
-      gateToolNameOverride: options.gateToolNameOverrides?.compaction_on,
-      mock: options.mock,
-      assistantGenerate: options.assistantGenerate,
-      progressReporter: options.progressReporter,
-    });
-  } catch (error) {
-    const message = toErrorMessage(error);
-    timelinePush(timeline, "lane_error", "lane execution failed", "compaction_on", {
-      message,
-    });
-    emitProgress(options.progressReporter, {
-      kind: "lane",
-      lane: "compaction_on",
-      message: "lane failed",
-      detail: compactPreview(message, 120),
-    });
-    compactionOn = buildLaneFailureResult({
-      lane: "compaction_on",
-      message,
-      attempt: maxRetries + 1,
-    });
-  }
+  const reliabilityPassed =
+    runsCompleted > 1
+      ?
+          aggregate.passiveWinCount >= Math.ceil(0.6 * runsCompleted) &&
+          aggregate.passivePassRate >= aggregate.historyPassRate
+      : headToHeadPassed;
 
-  const metrics = [compactionOff.metric, compactionOn.metric];
-  const strictGatePassed = metrics.every((metric) => metric.strictGatePassed);
-  const compactionOffMetric = metrics.find((metric) => metric.lane === "compaction_off");
-  const compactionOnMetric = metrics.find((metric) => metric.lane === "compaction_on");
-  const advantageConditionPassed = Boolean(
-    compactionOffMetric &&
-      compactionOnMetric &&
-      !compactionOffMetric.strictGatePassed &&
-      compactionOnMetric.strictGatePassed,
-  );
-
-  const runDurationMs = performance.now() - runStartedAt;
   const result: ShowdownRunResult = {
-    schemaVersion: "2.0",
-    runId: scenario.runId,
+    schemaVersion: "3.0",
     provider: options.provider,
-    scenario: scenario.kind,
-    seed: scenario.seed,
+    scenario: scenarioKind,
     outputDir: options.outputDir,
-    expectedToken: scenario.expectedToken,
     historyLimit: options.historyLimit,
     distractorTurns: options.distractorTurns,
     maxRetries,
-    runDurationMs,
-    strictGatePassed,
-    advantageConditionPassed,
-    metrics,
-    timeline,
+    runsRequested,
+    runsCompleted,
+    runDurationMs: performance.now() - startedAt,
+    headToHeadPassed,
+    reliabilityPassed,
+    aggregate,
+    runs,
   };
 
-  timelinePush(timeline, "run_completed", "showdown run completed", undefined, {
-    strictGatePassed,
-    runDurationMs,
-  });
-  emitProgress(options.progressReporter, {
-    kind: "phase",
-    message: "run completed",
-    detail: `strictGatePassed=${strictGatePassed} durationMs=${runDurationMs.toFixed(2)}`,
-  });
-
   await mkdir(options.outputDir, { recursive: true });
-
   await Promise.all([
-    writeFile(
-      path.join(options.outputDir, "summary.md"),
-      renderSummaryMarkdown(result),
-      "utf8",
-    ),
-    writeFile(
-      path.join(options.outputDir, "metrics.json"),
-      JSON.stringify(
-        {
-          schemaVersion: result.schemaVersion,
-          runId: result.runId,
-          provider: result.provider,
-          scenario: result.scenario,
-          seed: result.seed,
-          expectedToken: result.expectedToken,
-          historyLimit: result.historyLimit,
-          distractorTurns: result.distractorTurns,
-          maxRetries: result.maxRetries,
-          runDurationMs: result.runDurationMs,
-          strictGatePassed: result.strictGatePassed,
-          advantageConditionPassed: result.advantageConditionPassed,
-          lanes: result.metrics,
-        },
-        null,
-        2,
-      ),
-      "utf8",
-    ),
-    writeFile(
-      path.join(options.outputDir, "transcript-compaction-off.txt"),
-      compactionOff.transcript,
-      "utf8",
-    ),
-    writeFile(
-      path.join(options.outputDir, "transcript-compaction-on.txt"),
-      compactionOn.transcript,
-      "utf8",
-    ),
-    writeFile(
-      path.join(options.outputDir, "brief-compaction-off.md"),
-      compactionOff.brief,
-      "utf8",
-    ),
-    writeFile(
-      path.join(options.outputDir, "brief-compaction-on.md"),
-      compactionOn.brief,
-      "utf8",
-    ),
-    writeFile(
-      path.join(options.outputDir, "timeline.jsonl"),
-      toTimelineJsonl(timeline),
-      "utf8",
-    ),
+    writeFile(path.join(options.outputDir, "summary.md"), renderSummaryMarkdown(result), "utf8"),
+    writeFile(path.join(options.outputDir, "metrics.json"), JSON.stringify(result, null, 2), "utf8"),
   ]);
 
   return result;
@@ -1234,7 +1254,7 @@ export async function runShowdownCli(argv: string[]): Promise<number> {
       console.log(renderPhase(`[t+${elapsedSeconds}s] ${event.message}${detail}`));
     };
 
-    console.log(renderBanner("VCW Cinematic Incident Showdown"));
+    console.log(renderBanner("VCW Showdown v3: History vs Passive"));
     console.log(renderPhase("initializing run"));
 
     const result = await runShowdown({
@@ -1245,6 +1265,7 @@ export async function runShowdownCli(argv: string[]): Promise<number> {
       outputDir,
       scenarioKind: parsed.scenario,
       maxRetries: parsed.maxRetries,
+      runs: parsed.runs,
       seed: parsed.seed,
       progressReporter,
     });
@@ -1252,8 +1273,13 @@ export async function runShowdownCli(argv: string[]): Promise<number> {
     console.log(renderPhase("rendering final scoreboard"));
     console.log(renderFinalScoreboard(toRenderSummary(result)));
 
-    if (!result.advantageConditionPassed) {
-      console.error("[demo-showdown] win condition failed: expected compaction_on PASS and compaction_off FAIL.");
+    const pass = parsed.runs > 1 ? result.reliabilityPassed : result.headToHeadPassed;
+    if (!pass) {
+      console.error(
+        parsed.runs > 1
+          ? "[demo-showdown] reliability failed: passive lane did not sustain expected win rate."
+          : "[demo-showdown] head-to-head failed: passive lane did not beat history-only baseline.",
+      );
       return 1;
     }
 

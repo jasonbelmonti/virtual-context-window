@@ -4,6 +4,7 @@ import {
   createVirtualContextEngine,
   type AssistantGenerateFn,
   type EngineStage,
+  type PreModelTelemetry,
   type SymbolRecord,
   type TelemetryEvent,
   type VirtualContextEngine,
@@ -12,6 +13,7 @@ import {
 import {
   createLangChainAgentAssistantGenerate,
   type LangChainAgentMetadata,
+  type VcwToolLifecycleEvent,
 } from "../integrations/langchain";
 import {
   createOpenAIResponsesAgentAssistantGenerate,
@@ -29,6 +31,7 @@ import {
   type RecognizerConfig,
 } from "../recognition";
 import type {
+  AgentLifecycleEvent,
   AgentCliCommand,
   AgentCliStateView,
   AgentThreadState,
@@ -227,6 +230,11 @@ export class AgentCliRuntime {
   private threadId: string;
   private activeStages: EngineStage[] | null = null;
   private activeTelemetry: TelemetryEvent[] | null = null;
+  private activeLifecycle: AgentLifecycleEvent[] | null = null;
+  private activeLifecycleSink:
+    | ((event: AgentLifecycleEvent) => void | Promise<void>)
+    | null = null;
+  private lifecycleSequence = 0;
   private activeAutoDecision: RecognitionDecision | null = null;
   private activeAgentMetadata: AgentAssistantMetadata | null = null;
   private lastAutoDecision: RecognitionDecision | null = null;
@@ -301,6 +309,8 @@ export class AgentCliRuntime {
             endpoint: env.VCW_WEB_SEARCH_ENDPOINT,
             source: "wikipedia_opensearch",
           },
+          now: () => Date.now(),
+          onToolLifecycle: (event) => this.recordToolLifecycle(event),
         }),
         onResultMetadata: (metadata) => {
           this.activeAgentMetadata = metadata;
@@ -322,11 +332,73 @@ export class AgentCliRuntime {
           endpoint: env.VCW_WEB_SEARCH_ENDPOINT,
           source: "wikipedia_opensearch",
         },
+        now: () => Date.now(),
+        onToolLifecycle: (event) => this.recordToolLifecycle(event),
       }),
       onResultMetadata: (metadata) => {
         this.activeAgentMetadata = metadata;
       },
     });
+  }
+
+  private async recordLifecycleEvent(
+    event: Omit<AgentLifecycleEvent, "seq" | "timestampMs">,
+    timestampMs?: number,
+  ): Promise<void> {
+    const seq = this.lifecycleSequence + 1;
+    const lifecycleEvent: AgentLifecycleEvent = {
+      ...event,
+      seq,
+      timestampMs: timestampMs ?? Date.now(),
+    } as AgentLifecycleEvent;
+    this.lifecycleSequence = seq;
+    this.activeLifecycle?.push(lifecycleEvent);
+    const sink = this.activeLifecycleSink;
+    if (!sink) {
+      return;
+    }
+    try {
+      await sink(lifecycleEvent);
+    } catch {
+      // Lifecycle sink must never fail turn processing.
+    }
+  }
+
+  private async recordToolLifecycle(event: VcwToolLifecycleEvent): Promise<void> {
+    if (event.type === "tool_call_started") {
+      await this.recordLifecycleEvent(
+        {
+          type: "tool_call_started",
+          toolName: event.toolName,
+          argsPreview: event.argsPreview,
+        },
+        event.timestampMs,
+      );
+      return;
+    }
+    if (event.type === "tool_call_completed") {
+      await this.recordLifecycleEvent(
+        {
+          type: "tool_call_completed",
+          toolName: event.toolName,
+          argsPreview: event.argsPreview,
+          resultPreview: event.resultPreview,
+          durationMs: event.durationMs,
+        },
+        event.timestampMs,
+      );
+      return;
+    }
+    await this.recordLifecycleEvent(
+      {
+        type: "tool_call_failed",
+        toolName: event.toolName,
+        argsPreview: event.argsPreview,
+        errorMessage: event.errorMessage,
+        durationMs: event.durationMs,
+      },
+      event.timestampMs,
+    );
   }
 
   private createEngine(): VirtualContextEngine {
@@ -549,6 +621,7 @@ export class AgentCliRuntime {
       threadId: this.threadId,
       stages: this.activeStages ?? [],
       telemetry: this.activeTelemetry ?? [],
+      lifecycle: this.activeLifecycle ? [...this.activeLifecycle] : [],
       symbolTable,
       contextPackText: response.contextPackText,
       rawModelContent: response.rawModelContent,
@@ -620,6 +693,11 @@ export class AgentCliRuntime {
     userInput: string,
     options?: {
       onAssistantDelta?: (delta: string) => void | Promise<void>;
+      onPreModel?: (event: PreModelTelemetry) => void | Promise<void>;
+      onContextPack?: (contextPackText: string) => void | Promise<void>;
+      onLifecycleEvent?: (
+        event: AgentLifecycleEvent,
+      ) => void | Promise<void>;
     },
   ): Promise<AgentTurnResult> {
     if (this.turnInFlight) {
@@ -645,6 +723,9 @@ export class AgentCliRuntime {
 
     this.activeStages = [];
     this.activeTelemetry = [];
+    this.activeLifecycle = [];
+    this.activeLifecycleSink = options?.onLifecycleEvent ?? null;
+    this.lifecycleSequence = 0;
     this.activeAutoDecision = autoDecision;
     this.activeAgentMetadata = null;
     this.turnInFlight = true;
@@ -693,6 +774,36 @@ export class AgentCliRuntime {
         | undefined;
       if (this.streamEnabled) {
         for await (const event of this.engine.processTurnStream(request)) {
+          if (
+            event.type === "telemetry" &&
+            event.event.type === "pre_model" &&
+            options?.onPreModel
+          ) {
+            await options.onPreModel(event.event);
+          }
+          if (event.type === "retrieval_candidates") {
+            await this.recordLifecycleEvent({
+              type: "retrieval_candidates",
+              queryText: event.queryText,
+              candidateSymbolIds: event.candidateSymbolIds,
+              focusedCandidates: event.focusedCandidates,
+              recallCandidates: event.recallCandidates,
+            });
+          }
+          if (event.type === "context_pack_compiled" && options?.onContextPack) {
+            await options.onContextPack(event.contextPackText);
+          }
+          if (event.type === "compaction_candidates") {
+            await this.recordLifecycleEvent({
+              type: "compaction_candidates",
+              pressureRatio: event.pressureRatio,
+              pressureState: event.pressureState,
+              compactionTriggered: event.compactionTriggered,
+              compactionReason: event.compactionReason,
+              scheduleResult: event.scheduleResult,
+              candidateEntries: event.candidateEntries,
+            });
+          }
           if (event.type === "assistant_text_delta" && options?.onAssistantDelta) {
             await options.onAssistantDelta(event.delta);
           }
@@ -721,6 +832,8 @@ export class AgentCliRuntime {
     } finally {
       this.activeStages = null;
       this.activeTelemetry = null;
+      this.activeLifecycle = null;
+      this.activeLifecycleSink = null;
       this.activeAutoDecision = null;
       this.activeAgentMetadata = null;
       this.turnInFlight = false;

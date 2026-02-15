@@ -177,6 +177,7 @@ async function selectHydratedCandidates(options: {
   store: PassiveKernelOptions["store"];
   recallK: number;
 }): Promise<{
+  candidateSymbolIds: string[];
   focused: PassivePackHydratedRecord[];
   recall: PassivePackHydratedRecord[];
   lexicalCandidateCount: number;
@@ -239,12 +240,24 @@ async function selectHydratedCandidates(options: {
     }));
 
   return {
+    candidateSymbolIds: ids,
     focused,
     recall,
     lexicalCandidateCount,
     vectorCandidateCount,
     rerankedCandidateCount,
   };
+}
+
+function compactPreview(text: string, maxChars = 80): string {
+  const normalized = text.replace(/\s+/gu, " ").trim();
+  if (normalized.length <= maxChars) {
+    return normalized;
+  }
+  if (maxChars <= 3) {
+    return normalized.slice(0, maxChars);
+  }
+  return `${normalized.slice(0, maxChars - 3)}...`;
 }
 
 async function emitTelemetry(
@@ -321,13 +334,9 @@ export function createVirtualContextEnginePassive(
   async function runCompactionJob(
     threadId: string,
     queryText: string,
+    candidates: ReturnType<typeof tape.listUnsymbolizedCompactionCandidates>,
   ): Promise<"none" | "no_candidates" | "extractor_error"> {
     const state = getThreadState(threadId);
-    const candidates = tape.listUnsymbolizedCompactionCandidates(
-      threadId,
-      budget.recentLiteralPairCount,
-      6,
-    );
     if (candidates.length === 0) {
       return "no_candidates";
     }
@@ -396,6 +405,7 @@ export function createVirtualContextEnginePassive(
     threadId: string,
     queryText: string,
     shouldTrigger: boolean,
+    candidates: ReturnType<typeof tape.listUnsymbolizedCompactionCandidates>,
   ): "none" | "in_flight" | "low_pressure" | "no_candidates" | "extractor_error" {
     const state = getThreadState(threadId);
     if (!shouldTrigger) {
@@ -406,11 +416,6 @@ export function createVirtualContextEnginePassive(
       return "in_flight";
     }
 
-    const candidates = tape.listUnsymbolizedCompactionCandidates(
-      threadId,
-      budget.recentLiteralPairCount,
-      6,
-    );
     if (candidates.length === 0) {
       state.lastCompactionOutcome = "no_candidates";
       return "no_candidates";
@@ -420,7 +425,11 @@ export function createVirtualContextEnginePassive(
     state.compactionJobsTriggered += 1;
     const compactionJob = (async () => {
       try {
-        state.lastCompactionOutcome = await runCompactionJob(threadId, queryText);
+        state.lastCompactionOutcome = await runCompactionJob(
+          threadId,
+          queryText,
+          candidates,
+        );
       } catch {
         state.lastCompactionOutcome = "extractor_error";
       } finally {
@@ -585,6 +594,29 @@ export function createVirtualContextEnginePassive(
       },
       executeOptions?.streamEvents,
     );
+    if (executeOptions?.streamEvents) {
+      await executeOptions.streamEvents({
+        type: "retrieval_candidates",
+        threadId,
+        queryText: query.queryText,
+        candidateSymbolIds: hydrated.candidateSymbolIds,
+        focusedCandidates: hydrated.focused.map((record) => ({
+          symbolId: record.symbolId,
+          score: record.score,
+        })),
+        recallCandidates: hydrated.recall.map((record) => ({
+          symbolId: record.symbolId,
+          score: record.score,
+        })),
+      });
+    }
+    if (executeOptions?.streamEvents) {
+      await executeOptions.streamEvents({
+        type: "context_pack_compiled",
+        threadId,
+        contextPackText: compiled.text,
+      });
+    }
 
     let generationCallCount = 0;
     await markStage("InvokeAssistant", threadId, executeOptions?.streamEvents);
@@ -672,11 +704,34 @@ export function createVirtualContextEnginePassive(
     tape.append(threadId, "user", lastUserText);
     tape.append(threadId, "assistant", sanitized.content);
 
+    const compactionCandidates = tape.listUnsymbolizedCompactionCandidates(
+      threadId,
+      budget.recentLiteralPairCount,
+      6,
+    );
     const scheduledCompactionReason = scheduleCompaction(
       threadId,
       query.queryText,
       compiled.compactionTriggered,
+      compactionCandidates,
     );
+    if (executeOptions?.streamEvents) {
+      await executeOptions.streamEvents({
+        type: "compaction_candidates",
+        threadId,
+        pressureRatio: compiled.pressureRatio,
+        pressureState: compiled.pressureState,
+        compactionTriggered: compiled.compactionTriggered,
+        compactionReason: compiled.compactionReason,
+        scheduleResult: scheduledCompactionReason,
+        candidateEntries: compactionCandidates.map((entry) => ({
+          entryId: entry.entryId,
+          role: entry.role,
+          chars: entry.content.length,
+          preview: compactPreview(entry.content),
+        })),
+      });
+    }
 
     const passiveDiagnostics: PassiveTurnDiagnostics = {
       pressureRatio: compiled.pressureRatio,

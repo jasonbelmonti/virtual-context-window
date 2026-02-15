@@ -7,27 +7,20 @@ export type TraceRenderOptions = {
   color?: boolean;
 };
 
-function getTelemetryByType(
+const MAX_SYMBOL_ROWS = 8;
+
+function getPreTelemetry(
   telemetry: TelemetryEvent[],
-): {
-  pre?: Extract<TelemetryEvent, { type: "pre_model" }>;
-  post?: Extract<TelemetryEvent, { type: "post_model" }>;
-} {
+): Extract<TelemetryEvent, { type: "pre_model" }> | undefined {
   let pre: Extract<TelemetryEvent, { type: "pre_model" }> | undefined;
-  let post: Extract<TelemetryEvent, { type: "post_model" }> | undefined;
 
   for (const event of telemetry) {
     if (event.type === "pre_model") {
       pre = event;
-      continue;
-    }
-
-    if (event.type === "post_model") {
-      post = event;
     }
   }
 
-  return { pre, post };
+  return pre;
 }
 
 function createKeyValueTable(
@@ -90,61 +83,24 @@ function renderAssistantTable(trace: ChatTurnTrace): string {
   return table.toString();
 }
 
-function renderAutoSymbolTable(trace: ChatTurnTrace): string {
+function renderRetrievalSnapshot(trace: ChatTurnTrace): string {
+  const pre = getPreTelemetry(trace.telemetry);
+  if (!pre) {
+    return "(no telemetry events)";
+  }
+
   const table = createKeyValueTable([
-    ["autoMode", trace.autoSymbol.mode],
-    ["triggered", trace.autoSymbol.triggered],
-    ["confidence", trace.autoSymbol.confidence.toFixed(2)],
-    ["reason", trace.autoSymbol.reason],
-    ["eventCount", trace.autoSymbol.eventCount],
-    ["suppressed", trace.autoSymbol.suppressed],
-    ["writeApplied", trace.autoSymbol.writeApplied],
-    ["scorerVersion", trace.autoSymbol.scorerVersion],
-    ["score", trace.autoSymbol.score.toFixed(2)],
-    ["scoreBand", trace.autoSymbol.scoreBand],
-    ["overrideApplied", trace.autoSymbol.overrideApplied],
-    [
-      "topFeatures",
-      trace.autoSymbol.topFeatures.length > 0
-        ? trace.autoSymbol.topFeatures.join(", ")
-        : "(none)",
-    ],
+    ["historyTurnsUsed", pre.historyTurnsUsed],
+    ["retrievalQueryChars", pre.retrievalQueryChars],
+    ["contextPackChars", pre.contextPackChars],
+    ["focusedInjected", pre.focusedInjectedCount],
+    ["recallInjected", pre.recallInjectedCount],
+    ["lexicalCandidates", pre.lexicalCandidateCount],
+    ["vectorCandidates", pre.vectorCandidateCount],
+    ["rerankedCandidates", pre.rerankedCandidateCount],
+    ["trustedRefIdsUsed", pre.trustedRefIdsUsed],
   ]);
-
   return table.toString();
-}
-
-function renderTelemetryTables(trace: ChatTurnTrace): string[] {
-  const { pre, post } = getTelemetryByType(trace.telemetry);
-  const tables: string[] = [];
-
-  if (pre) {
-    const preTable = createKeyValueTable([
-      ["trustedRefsUsed", pre.trustedRefIdsUsed],
-      ["contextPackChars", pre.contextPackChars],
-      ["focusedInjected", pre.focusedInjectedCount],
-      ["recallInjected", pre.recallInjectedCount],
-      ["lexicalCandidates", pre.lexicalCandidateCount],
-      ["vectorCandidates", pre.vectorCandidateCount],
-      ["reranked", pre.rerankedCandidateCount],
-    ]);
-    tables.push(preTable.toString());
-  }
-
-  if (post) {
-    const postTable = createKeyValueTable([
-      ["parseOutcome", post.parseOutcome],
-      ["parsedEventCount", post.parsedEventCount],
-      ["accepted", post.eventsAccepted],
-      ["rejected", post.eventsRejected],
-      ["writeFailures", post.writeFailures],
-      ["scrubbedControlLeaks", post.scrubbedControlLeakCount],
-      ["scrubbedSymbolEchoes", post.scrubbedSymbolEchoCount],
-    ]);
-    tables.push(postTable.toString());
-  }
-
-  return tables;
 }
 
 function renderSymbolTable(trace: ChatTurnTrace): string {
@@ -163,13 +119,19 @@ function renderSymbolTable(trace: ChatTurnTrace): string {
     wordWrap: true,
   });
 
-  for (const record of trace.symbolTable) {
+  const visibleRecords = trace.symbolTable.slice(0, MAX_SYMBOL_ROWS);
+  for (const record of visibleRecords) {
     table.push([
       record.symbolId,
       record.kind,
       record.summary,
       record.meta ? JSON.stringify(record.meta) : "",
     ]);
+  }
+
+  if (trace.symbolTable.length > MAX_SYMBOL_ROWS) {
+    const remaining = trace.symbolTable.length - MAX_SYMBOL_ROWS;
+    return `${table.toString()}\n... (${remaining} more symbols hidden; use /symbols to inspect all)`;
   }
 
   return table.toString();
@@ -207,7 +169,6 @@ export function renderTurnTrace(
 ): string {
   const colorEnabled = options.color ?? detectColorEnabled();
   const theme = createCliTheme(colorEnabled);
-  const telemetryTables = renderTelemetryTables(trace);
 
   const lines: string[] = [];
   lines.push(theme.title("--- Turn Trace ---"));
@@ -217,15 +178,8 @@ export function renderTurnTrace(
   lines.push(renderDiagnosticsTable(trace));
   lines.push(theme.section("Assistant"));
   lines.push(renderAssistantTable(trace));
-  lines.push(theme.section("Auto Symbol Recognition"));
-  lines.push(renderAutoSymbolTable(trace));
-  lines.push(theme.section("Telemetry"));
-
-  if (telemetryTables.length === 0) {
-    lines.push(theme.subtle("(no telemetry events)"));
-  } else {
-    lines.push(...telemetryTables);
-  }
+  lines.push(theme.section("Retrieval Snapshot"));
+  lines.push(renderRetrievalSnapshot(trace));
 
   lines.push(theme.section("Passive Sliding"));
   lines.push(renderPassiveSliding(trace));
