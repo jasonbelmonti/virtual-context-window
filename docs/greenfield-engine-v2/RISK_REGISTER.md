@@ -19,6 +19,7 @@
 | R-010 | Validation artifacts inconsistent | metrics.json diverges from recompute | Gate can be gamed | P1 | Low | report-consistency precondition in gate | Validation owner | `reportConsistencyPassed=false` |
 | R-011 | Stability gate bypass on insufficient runs | misleading PASS with low sample count | False confidence | P1 | Low | enforce non-zero exit on insufficient runs | Validation owner | `validate:stability` returning zero with <2 production runs |
 | R-012 | Doc/runbook drift | Ops executes legacy parser-era commands | Incorrect release decisions | P2 | Medium | Update runbooks, command docs, and TEST_MATRIX together | Program owner | command/docs mismatch found in certification review |
+| R-013 | Live-path overconfidence | Treating quick-live as full orchestration evidence | Premature release confidence | P2 | Medium | Document lightweight scope; keep production deterministic gate as primary release signal until orchestration follow-up | Validation owner | Release decision based on quick-live alone |
 
 ## Monitoring Rules
 1. P0 risks require same-day triage.

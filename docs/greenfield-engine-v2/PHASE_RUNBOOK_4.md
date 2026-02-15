@@ -12,6 +12,7 @@ Ship passive-sliding validation (`P01..P14`) with interpretable gates that prove
 - Passive middleware engine path active.
 - `TEST_MATRIX.md` and `OPERATIONS_SLO.md` updated to passive semantics.
 - Deterministic and live provider paths available for validation.
+- Live validation scope understood: lightweight provider prompt path today; full agent/tool orchestration is a follow-up.
 
 ## Task Sequence
 1. Implement passive scenario catalog (`P01..P14`) with explicit evaluators.

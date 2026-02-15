@@ -92,6 +92,10 @@ bun run validate:stability
 bun run validate:baseline-v2  # compatibility alias with deprecation warning
 ```
 
+## Live Path Scope (Current)
+- `quick_live` scenarios run through a lightweight provider prompt path intended for fast signal checks.
+- Full agent/tool orchestration in live validation is intentionally deferred to a follow-up hardening pass.
+
 ## Artifacts
 Every run writes:
 - `reports/<run_id>/summary.md`

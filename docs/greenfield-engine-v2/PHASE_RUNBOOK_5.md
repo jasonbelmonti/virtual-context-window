@@ -12,6 +12,7 @@ Stabilize passive validation quality and operations workflow using paired produc
 - Phase 4 passive validation system complete.
 - Updated `RISK_REGISTER.md` and `OPERATIONS_SLO.md`.
 - Provider/model config fixed for paired production runs.
+- Team aligned that quick-live is a lightweight signal check, not full agent/tool orchestration evidence.
 
 ## Task Sequence
 1. Execute production run A (`validate:production`).
@@ -54,6 +55,7 @@ bun run validate:baseline-v2
 - Gate passes with all preconditions satisfied.
 - Stability command confirms sufficient runs and no drift regression.
 - No unresolved P0/P1 risks without approved mitigation.
+- Release decision is grounded in production deterministic + gate evidence, not quick-live alone.
 
 ### Fail
 - Gate precondition or dimension failure (`memory/mechanism/latency`).

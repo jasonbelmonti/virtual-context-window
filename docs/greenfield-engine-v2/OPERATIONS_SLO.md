@@ -96,3 +96,7 @@ bun run validate:stability
 ```
 
 `validate:baseline-v2` remains an alias during transition and emits a deprecation warning.
+
+## Known Limitation
+- Live validation currently runs a lightweight provider prompt path and is not yet full agent/tool orchestration.
+- Use production deterministic runs and passive gate outcomes as the release-critical signal until live orchestration coverage lands.

@@ -46,6 +46,9 @@ Success looks like:
 - defaults target long-chat pressure (`history limit 5`, `distractor turns 20`)
 
 ## Validation (passive sliding)
+Known limitation: `validate:quick:live` currently uses a lightweight provider prompt path for signal checks.
+Full agent/tool orchestration coverage is planned as a follow-up.
+
 Quick deterministic check:
 
 ```bash
