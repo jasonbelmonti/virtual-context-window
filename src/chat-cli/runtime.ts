@@ -335,7 +335,6 @@ export class ChatCliRuntime {
       packBudget: {
         totalChars: parsePositiveInt(env.VCW_PASSIVE_PACK_TOTAL_CHARS, 420),
         recentLiteralPairCount: 2,
-        recentLiteralItemMaxChars: 180,
       },
       maxEventTapeEntriesPerThread: parsePositiveInt(
         env.VCW_PASSIVE_MAX_EVENT_TAPE_ENTRIES,
@@ -601,11 +600,14 @@ export class ChatCliRuntime {
                 pressureRatio: number;
                 pressurePeak: number;
                 pressureState: "normal" | "compact";
+                compactionTriggerSource: "none" | "pressure" | "age_backfill";
                 compactionDrainAttempted: boolean;
                 compactionDrainWaitMs: number;
                 compactionDrainTimedOut: boolean;
                 compactionTriggered: boolean;
                 compactionReason: "high_watermark" | "below_threshold" | "none";
+                ageBackfillEligibleCount: number;
+                ageBackfillCooldownTurns: number;
                 compactionJobsTriggered: number;
                 compactionSkippedReason:
                   | "none"
@@ -617,6 +619,7 @@ export class ChatCliRuntime {
                 proposalsCount: number;
                 committedSymbolsCount: number;
                 hydratedSymbolsCount: number;
+                fallbackCommitUsed: boolean;
                 ignoredModelEventCount: number;
               };
             };

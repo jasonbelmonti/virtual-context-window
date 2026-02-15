@@ -70,11 +70,14 @@ export type ChatTurnTrace = {
       pressureRatio: number;
       pressurePeak: number;
       pressureState: "normal" | "compact";
+      compactionTriggerSource: "none" | "pressure" | "age_backfill";
       compactionDrainAttempted: boolean;
       compactionDrainWaitMs: number;
       compactionDrainTimedOut: boolean;
       compactionTriggered: boolean;
       compactionReason: "high_watermark" | "below_threshold" | "none";
+      ageBackfillEligibleCount: number;
+      ageBackfillCooldownTurns: number;
       compactionJobsTriggered: number;
       compactionSkippedReason:
         | "none"
@@ -86,6 +89,7 @@ export type ChatTurnTrace = {
       proposalsCount: number;
       committedSymbolsCount: number;
       hydratedSymbolsCount: number;
+      fallbackCommitUsed: boolean;
       ignoredModelEventCount: number;
     };
   };

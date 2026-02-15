@@ -433,7 +433,6 @@ export class AgentCliRuntime {
       packBudget: {
         totalChars: parsePositiveInt(env.VCW_PASSIVE_PACK_TOTAL_CHARS, 420),
         recentLiteralPairCount: 2,
-        recentLiteralItemMaxChars: 180,
       },
       maxEventTapeEntriesPerThread: parsePositiveInt(
         env.VCW_PASSIVE_MAX_EVENT_TAPE_ENTRIES,
@@ -751,11 +750,14 @@ export class AgentCliRuntime {
                 pressureRatio: number;
                 pressurePeak: number;
                 pressureState: "normal" | "compact";
+                compactionTriggerSource: "none" | "pressure" | "age_backfill";
                 compactionDrainAttempted: boolean;
                 compactionDrainWaitMs: number;
                 compactionDrainTimedOut: boolean;
                 compactionTriggered: boolean;
                 compactionReason: "high_watermark" | "below_threshold" | "none";
+                ageBackfillEligibleCount: number;
+                ageBackfillCooldownTurns: number;
                 compactionJobsTriggered: number;
                 compactionSkippedReason:
                   | "none"
@@ -767,6 +769,7 @@ export class AgentCliRuntime {
                 proposalsCount: number;
                 committedSymbolsCount: number;
                 hydratedSymbolsCount: number;
+                fallbackCommitUsed: boolean;
                 ignoredModelEventCount: number;
               };
             };
@@ -796,10 +799,13 @@ export class AgentCliRuntime {
           if (event.type === "compaction_candidates") {
             await this.recordLifecycleEvent({
               type: "compaction_candidates",
+              triggerSource: event.triggerSource,
               pressureRatio: event.pressureRatio,
               pressureState: event.pressureState,
               compactionTriggered: event.compactionTriggered,
               compactionReason: event.compactionReason,
+              ageBackfillEligibleCount: event.ageBackfillEligibleCount,
+              ageBackfillCooldownTurns: event.ageBackfillCooldownTurns,
               scheduleResult: event.scheduleResult,
               candidateEntries: event.candidateEntries,
             });
@@ -883,6 +889,8 @@ export class AgentCliRuntime {
               `compactMode=${snapshot.passive.compactMode}`,
               `compactionInFlight=${snapshot.passive.compactionInFlight}`,
               `lastCompactionOutcome=${snapshot.passive.lastCompactionOutcome}`,
+              `lastCompactionTriggerSource=${snapshot.passive.lastCompactionTriggerSource}`,
+              `lastFallbackCommitUsed=${snapshot.passive.lastFallbackCommitUsed}`,
               `jobsTriggered=${snapshot.passive.counters.compactionJobsTriggered}`,
               `extractorCalls=${snapshot.passive.counters.extractorCalls}`,
               `proposals=${snapshot.passive.counters.proposalsCount}`,

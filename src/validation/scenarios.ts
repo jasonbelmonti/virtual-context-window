@@ -224,7 +224,6 @@ async function runScenario(
     packBudget: {
       totalChars: 220,
       recentLiteralPairCount: 1,
-      recentLiteralItemMaxChars: 120,
     },
   });
 

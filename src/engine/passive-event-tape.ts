@@ -71,15 +71,6 @@ export class InMemoryEventTape {
     return entry;
   }
 
-  listRecentLiteralEntries(threadId: string, recentLiteralPairCount: number): EventTapeEntry[] {
-    const thread = this.getOrCreateThread(threadId);
-    const maxEntries = Math.max(0, recentLiteralPairCount * 2);
-    if (maxEntries === 0) {
-      return [];
-    }
-    return thread.entries.slice(-maxEntries);
-  }
-
   listUnsymbolizedCompactionCandidates(
     threadId: string,
     recentLiteralPairCount: number,

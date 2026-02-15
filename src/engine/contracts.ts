@@ -40,11 +40,14 @@ export type VirtualContextTurnResponse = {
       pressureRatio: number;
       pressurePeak: number;
       pressureState: "normal" | "compact";
+      compactionTriggerSource: "none" | "pressure" | "age_backfill";
       compactionDrainAttempted: boolean;
       compactionDrainWaitMs: number;
       compactionDrainTimedOut: boolean;
       compactionTriggered: boolean;
       compactionReason: "high_watermark" | "below_threshold" | "none";
+      ageBackfillEligibleCount: number;
+      ageBackfillCooldownTurns: number;
       compactionJobsTriggered: number;
       compactionSkippedReason:
         | "none"
@@ -56,6 +59,7 @@ export type VirtualContextTurnResponse = {
       proposalsCount: number;
       committedSymbolsCount: number;
       hydratedSymbolsCount: number;
+      fallbackCommitUsed: boolean;
       ignoredModelEventCount: number;
     };
   };
@@ -88,10 +92,13 @@ export type VirtualContextTurnStreamEvent =
   | {
       type: "compaction_candidates";
       threadId: string;
+      triggerSource: "none" | "pressure" | "age_backfill";
       pressureRatio: number;
       pressureState: "normal" | "compact";
       compactionTriggered: boolean;
       compactionReason: "high_watermark" | "below_threshold" | "none";
+      ageBackfillEligibleCount: number;
+      ageBackfillCooldownTurns: number;
       scheduleResult:
         | "none"
         | "in_flight"
@@ -145,6 +152,8 @@ export type VirtualContextThreadInspection = {
     compactMode: boolean;
     compactionInFlight: boolean;
     lastCompactionOutcome: "none" | "no_candidates" | "extractor_error";
+    lastCompactionTriggerSource: "none" | "pressure" | "age_backfill";
+    lastFallbackCommitUsed: boolean;
     counters: {
       compactionJobsTriggered: number;
       extractorCalls: number;

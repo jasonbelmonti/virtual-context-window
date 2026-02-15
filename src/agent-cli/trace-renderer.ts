@@ -120,17 +120,21 @@ function renderPassiveSliding(trace: AgentTurnTrace): string {
     ["pressureRatio", passive.pressureRatio.toFixed(3)],
     ["pressurePeak", passive.pressurePeak.toFixed(3)],
     ["pressureState", passive.pressureState],
+    ["compactionTriggerSource", passive.compactionTriggerSource],
     ["compactionDrainAttempted", passive.compactionDrainAttempted],
     ["compactionDrainWaitMs", passive.compactionDrainWaitMs.toFixed(2)],
     ["compactionDrainTimedOut", passive.compactionDrainTimedOut],
     ["compactionTriggered", passive.compactionTriggered],
     ["compactionReason", passive.compactionReason],
+    ["ageBackfillEligibleCount", passive.ageBackfillEligibleCount],
+    ["ageBackfillCooldownTurns", passive.ageBackfillCooldownTurns],
     ["compactionJobsTriggered", passive.compactionJobsTriggered],
     ["compactionSkippedReason", passive.compactionSkippedReason],
     ["extractorCalls", passive.extractorCalls],
     ["proposalsCount", passive.proposalsCount],
     ["committedSymbolsCount", passive.committedSymbolsCount],
     ["hydratedSymbolsCount", passive.hydratedSymbolsCount],
+    ["fallbackCommitUsed", passive.fallbackCommitUsed],
     ["ignoredModelEventCount", passive.ignoredModelEventCount],
   ]);
   return table.toString();
@@ -174,9 +178,9 @@ function renderLifecycle(trace: AgentTurnTrace): string {
       table.push([
         event.seq,
         "compaction_candidates",
-        `trigger=${event.compactionTriggered} reason=${event.compactionReason} schedule=${event.scheduleResult} pressure=${event.pressureRatio.toFixed(
+        `source=${event.triggerSource} trigger=${event.compactionTriggered} reason=${event.compactionReason} schedule=${event.scheduleResult} pressure=${event.pressureRatio.toFixed(
           3,
-        )} candidates=${event.candidateEntries
+        )} ageEligible=${event.ageBackfillEligibleCount} ageCooldownTurns=${event.ageBackfillCooldownTurns} candidates=${event.candidateEntries
           .map((entry) => entry.entryId)
           .join(",") || "(none)"} sample=${samples || "(none)"}`,
       ]);

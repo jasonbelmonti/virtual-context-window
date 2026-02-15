@@ -212,9 +212,11 @@ function renderLifecycleEvent(
     return `${theme.key(
       `[Lifecycle #${event.seq}]`,
     )} ${theme.value(
-      `compression trigger=${event.compactionTriggered} reason=${event.compactionReason} schedule=${event.scheduleResult} pressure=${event.pressureRatio.toFixed(
+      `compression source=${event.triggerSource} trigger=${event.compactionTriggered} reason=${event.compactionReason} schedule=${event.scheduleResult} pressure=${event.pressureRatio.toFixed(
         3,
-      )} candidates=${compactList(candidateIds)} sample=${sample || "(none)"}`,
+      )} ageEligible=${event.ageBackfillEligibleCount} ageCooldownTurns=${event.ageBackfillCooldownTurns} candidates=${compactList(
+        candidateIds,
+      )} sample=${sample || "(none)"}`,
     )}`;
   }
   if (event.type === "tool_call_started") {

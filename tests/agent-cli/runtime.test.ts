@@ -20,6 +20,10 @@ test("agent runtime ignores model-origin writes and still sanitizes output", asy
   expect(turn.content).not.toContain("<symbolic_control>");
   expect(turn.content).not.toContain("⟦S:");
   expect(turn.trace.symbolTable.length).toBe(0);
+  expect(turn.trace.diagnostics.passive?.compactionTriggerSource).toBe("none");
+  expect(turn.trace.diagnostics.passive?.ageBackfillEligibleCount).toBe(0);
+  expect(turn.trace.diagnostics.passive?.ageBackfillCooldownTurns).toBe(0);
+  expect(turn.trace.diagnostics.passive?.fallbackCommitUsed).toBe(false);
 
   const post = turn.trace.telemetry.find((event) => event.type === "post_model");
   expect(post?.type).toBe("post_model");

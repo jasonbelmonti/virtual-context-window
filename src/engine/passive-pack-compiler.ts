@@ -1,5 +1,4 @@
 import type {
-  EventTapeEntry,
   PassivePackBudget,
   PassivePackCompileResult,
   PassivePackHydratedRecord,
@@ -10,7 +9,6 @@ const TRUNCATION_MARKER = "...[truncated]";
 type CompileInput = {
   queryText: string;
   turnsUsed: number;
-  recentEntries: EventTapeEntry[];
   symbolIndex: Array<{
     symbolId: string;
     summary: string;
@@ -61,7 +59,6 @@ function appendLineWithBudget(
 }
 
 function renderPack(input: {
-  recentEntries: EventTapeEntry[];
   symbolIndex: Array<{
     symbolId: string;
     summary: string;
@@ -77,7 +74,7 @@ function renderPack(input: {
   let recallIncluded = 0;
 
   const appendSection = (
-    title: "SYMBOL INDEX" | "RELEVANT MEMORY" | "RECENT LITERALS",
+    title: "SYMBOL INDEX" | "RELEVANT MEMORY",
     items: string[],
     onIncluded?: () => void,
   ) => {
@@ -128,10 +125,6 @@ function renderPack(input: {
     const content = truncateDeterministic(item.content, input.budget.recallItemMaxChars);
     return `- [relevance:medium] ${item.symbolId}: ${content}\n`;
   });
-  const recentLines = input.recentEntries.map((entry) => {
-    const content = truncateDeterministic(entry.content, input.budget.recentLiteralItemMaxChars);
-    return `- [${entry.role}] ${entry.entryId}: ${content}\n`;
-  });
 
   const memoryLines = [
     ...focusedLines.map((line) => ({ line, source: "focused" as const })),
@@ -148,15 +141,12 @@ function renderPack(input: {
       }
       recallIncluded += 1;
     });
-  const appendRecent = () => appendSection("RECENT LITERALS", recentLines);
   const appendIndex = () => appendSection("SYMBOL INDEX", indexLines);
 
   if (input.prioritizeHydrated) {
     appendMemory();
-    appendRecent();
     appendIndex();
   } else {
-    appendRecent();
     appendIndex();
     appendMemory();
   }
@@ -177,7 +167,6 @@ export function compilePassiveContextPack(input: CompileInput):
   let compactMode = input.compactMode;
 
   let rendered = renderPack({
-    recentEntries: input.recentEntries,
     symbolIndex: input.symbolIndex,
     hydratedFocused,
     hydratedRecall,
@@ -197,7 +186,6 @@ export function compilePassiveContextPack(input: CompileInput):
     compactMode = true;
 
     rendered = renderPack({
-      recentEntries: input.recentEntries,
       symbolIndex: input.symbolIndex,
       hydratedFocused,
       hydratedRecall,
@@ -211,7 +199,6 @@ export function compilePassiveContextPack(input: CompileInput):
     while (pressureRatio > input.highWatermark && hydratedRecall.length > 0) {
       hydratedRecall.pop();
       rendered = renderPack({
-        recentEntries: input.recentEntries,
         symbolIndex: input.symbolIndex,
         hydratedFocused,
         hydratedRecall,
@@ -226,7 +213,6 @@ export function compilePassiveContextPack(input: CompileInput):
     while (pressureRatio > input.highWatermark && hydratedFocused.length > 1) {
       hydratedFocused.pop();
       rendered = renderPack({
-        recentEntries: input.recentEntries,
         symbolIndex: input.symbolIndex,
         hydratedFocused,
         hydratedRecall,
