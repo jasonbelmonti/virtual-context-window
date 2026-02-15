@@ -113,3 +113,45 @@ test("fallback is used when primary proposals are present but all rejected by co
   expect(snapshot?.passive.lastFallbackCommitUsed).toBe(true);
   expect(symbols.length).toBeGreaterThan(0);
 });
+
+test("fallbackCommitUsed is turn-scoped and not sticky on later turns", async () => {
+  const threadId = "thread-fallback-not-sticky";
+  const store = new InMemorySymbolStore();
+  const extractor: CompressionExtractor = {
+    async extract() {
+      return [];
+    },
+  };
+
+  const engine = createVirtualContextEnginePassive({
+    assistantGenerate: async () => "ack",
+    store,
+    extractor,
+    highWatermark: 0.99,
+    lowWatermark: 0.7,
+    ageBackfillCooldownTurns: 5,
+    packBudget: {
+      totalChars: 1_600,
+      recentLiteralPairCount: 1,
+      recallK: 3,
+    },
+  });
+
+  await engine.processTurn({
+    threadId,
+    messages: [{ role: "user", content: "turn one durable detail" }],
+  });
+  const second = await engine.processTurn({
+    threadId,
+    messages: [{ role: "user", content: "turn two distractor" }],
+  });
+  const third = await engine.processTurn({
+    threadId,
+    messages: [{ role: "user", content: "turn three distractor" }],
+  });
+
+  expect(second.diagnostics.passive?.compactionDrainAttempted).toBe(true);
+  expect(second.diagnostics.passive?.fallbackCommitUsed).toBe(true);
+  expect(third.diagnostics.passive?.compactionDrainAttempted).toBe(false);
+  expect(third.diagnostics.passive?.fallbackCommitUsed).toBe(false);
+});

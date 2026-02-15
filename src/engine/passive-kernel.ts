@@ -91,6 +91,10 @@ function resolveHistoryWindowTurns(
     return Math.floor(raw);
   }
   if (typeof raw === "string") {
+    const normalized = raw.trim().toLowerCase();
+    if (normalized === "off" || normalized === "unbounded") {
+      return Math.max(1, Math.ceil(request.messages.length / 2));
+    }
     const parsed = Number.parseInt(raw, 10);
     if (Number.isFinite(parsed) && parsed > 0) {
       return parsed;
@@ -574,6 +578,7 @@ export function createVirtualContextEnginePassive(
     attempted: boolean;
     waitMs: number;
     timedOut: boolean;
+    fallbackCommitUsed: boolean;
   }> {
     const state = getThreadState(threadId);
     if (!waitForCompactionDrain || !state.compactionInFlight || !state.compactionJob) {
@@ -581,6 +586,7 @@ export function createVirtualContextEnginePassive(
         attempted: false,
         waitMs: 0,
         timedOut: false,
+        fallbackCommitUsed: false,
       };
     }
 
@@ -597,10 +603,12 @@ export function createVirtualContextEnginePassive(
       }),
     ]);
     const waitMs = clock() - startedAt;
+    const fallbackCommitUsed = !timedOut ? state.lastFallbackCommitUsed : false;
     return {
       attempted: true,
       waitMs,
       timedOut,
+      fallbackCommitUsed,
     };
   }
 
@@ -652,7 +660,7 @@ export function createVirtualContextEnginePassive(
     const preModelStart = clock();
     await markStage("ResolveIdentity", threadId, executeOptions?.streamEvents);
     const compactionDrain = await waitForCompactionDrainIfNeeded(threadId);
-    const fallbackCommitUsedThisTurn = state.lastFallbackCommitUsed;
+    const fallbackCommitUsedThisTurn = compactionDrain.fallbackCommitUsed;
 
     await markStage("BuildTurnQuery", threadId, executeOptions?.streamEvents);
     const query = await queryBuilder({

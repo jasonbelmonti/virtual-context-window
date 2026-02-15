@@ -783,6 +783,8 @@ export class AgentCliRuntime {
     }
     if (this.historyTurnLimit && this.historyTurnLimit > 0) {
       metadata.vcwHistoryTurnLimit = this.historyTurnLimit;
+    } else {
+      metadata.vcwHistoryTurnLimit = "off";
     }
     const requestMetadata = Object.keys(metadata).length > 0 ? metadata : undefined;
 

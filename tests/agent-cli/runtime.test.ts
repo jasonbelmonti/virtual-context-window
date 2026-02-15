@@ -128,6 +128,11 @@ test("history limit constrains model context to last N turns while preserving sy
     action: "off",
   });
   expect(off.output).toContain("historyTurnLimit=off");
+
+  const afterOff = await runtime.processUserMessage("turn four");
+  expect(seenMessageCounts).toEqual([1, 3, 3, 7]);
+  expect(afterOff.trace.diagnostics.passive?.historyWindowTurns).toBe(4);
+  expect(afterOff.trace.diagnostics.passive?.effectiveHotWindowPairs).toBe(3);
 });
 
 test("history window can be set via environment variable", async () => {
