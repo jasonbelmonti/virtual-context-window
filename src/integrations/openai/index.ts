@@ -1,4 +1,4 @@
 export * from "./contracts";
-export * from "./assistant";
-export * from "./agent-assistant";
+export * from "./chat";
+export * from "./agent";
 export * from "./embedding-provider";

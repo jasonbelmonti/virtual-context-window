@@ -1,6 +1,8 @@
 import { createInterface } from "node:readline/promises";
 import type { ReadStream, WriteStream } from "node:tty";
-import type { VirtualContextMessage } from "../engine";
+import { parsePositiveIntArg, parseProviderArg, parseTrustArg } from "../cli/shared/arg-parse";
+import { renderConversationHistory } from "../cli/shared/history-render";
+import { createStreamAccumulator, renderAssistantFromStream } from "../cli/shared/stream-loop";
 import { isSlashCommand, parseSlashCommand } from "./commands";
 import type { ChatCliLaunchOptions } from "./contracts";
 import { ChatCliRuntime } from "./runtime";
@@ -24,14 +26,6 @@ export type ParsedChatCliArgs = {
 
 function writeLine(write: (text: string) => void, text: string): void {
   write(text);
-}
-
-function parsePositiveIntArg(value: string | undefined, label: string): number {
-  const parsed = Number.parseInt(value ?? "", 10);
-  if (!Number.isFinite(parsed) || parsed <= 0) {
-    throw new Error(`invalid_${label}:${value ?? ""}`);
-  }
-  return parsed;
 }
 
 export function parseChatCliArgs(argv: string[]): ParsedChatCliArgs {
@@ -63,12 +57,7 @@ export function parseChatCliArgs(argv: string[]): ParsedChatCliArgs {
     }
 
     if (token === "--provider") {
-      const value = (argv[index + 1] ?? "").toLowerCase();
-      if (value === "ollama") {
-        parsed.provider = "ollama";
-      } else if (value === "openai" || value === "openai_responses") {
-        parsed.provider = "openai_responses";
-      }
+      parsed.provider = parseProviderArg(argv[index + 1]);
       index += 1;
       continue;
     }
@@ -122,12 +111,7 @@ export function parseChatCliArgs(argv: string[]): ParsedChatCliArgs {
     }
 
     if (token === "--trust") {
-      const value = (argv[index + 1] ?? "").toLowerCase();
-      if (value === "on" || value === "true") {
-        parsed.trustedSymbolRefs = true;
-      } else if (value === "off" || value === "false") {
-        parsed.trustedSymbolRefs = false;
-      }
+      parsed.trustedSymbolRefs = parseTrustArg(argv[index + 1]);
       index += 1;
       continue;
     }
@@ -155,31 +139,6 @@ function toPrintableMessage(error: unknown): string {
   }
 
   return String(error);
-}
-
-function compactSingleLine(text: string, maxChars = 160): string {
-  const normalized = text.replace(/\s+/gu, " ").trim();
-  if (normalized.length <= maxChars) {
-    return normalized;
-  }
-  if (maxChars <= 3) {
-    return normalized.slice(0, maxChars);
-  }
-  return `${normalized.slice(0, maxChars - 3)}...`;
-}
-
-function renderConversationHistory(
-  messages: VirtualContextMessage[],
-  theme: ReturnType<typeof createCliTheme>,
-): string {
-  const lines = messages.map((message) =>
-    `${theme.success("●")} ${theme.success("IN_WINDOW")} ${theme.value(`[${message.role}]`)} ${compactSingleLine(message.content || "(empty)")}`
-  );
-  return [
-    theme.section("CONVERSATION HISTORY"),
-    theme.subtle("window=off (unbounded)"),
-    theme.value(lines.join("\n") || "(empty)"),
-  ].join("\n");
 }
 
 export async function runInteractiveChatCli(
@@ -217,25 +176,24 @@ export async function runInteractiveChatCli(
 
   if (typeof options.once === "string") {
     try {
-      let streamedText = "";
-      const streamToStdout = options.print === undefined;
+      const streamAccumulator = createStreamAccumulator({
+        streamEnabled: runtime.getStreamEnabled(),
+        printProvided: options.print !== undefined,
+        theme,
+      });
       const turn = await runtime.processUserMessage(options.once, {
           onAssistantDelta: runtime.getStreamEnabled()
-          ? (delta: string) => {
-              streamedText += delta;
-              if (streamToStdout) {
-                process.stdout.write(theme.assistant(delta));
-              }
-            }
+          ? streamAccumulator.onDelta
           : undefined,
       });
-      if (!runtime.getStreamEnabled() || streamedText.length === 0) {
-        writeLine(print, theme.assistant(turn.content));
-      } else if (!streamToStdout) {
-        writeLine(print, theme.assistant(streamedText));
-      } else {
-        process.stdout.write("\n");
-      }
+      renderAssistantFromStream({
+        streamEnabled: runtime.getStreamEnabled(),
+        streamedText: streamAccumulator.getText(),
+        finalContent: turn.content,
+        streamToStdout: streamAccumulator.streamToStdout,
+        theme,
+        writeLine: (text) => writeLine(print, text),
+      });
       if (runtime.getTraceEnabled()) {
         writeLine(print, renderTurnTrace(turn.trace, { color: colorEnabled }));
       }
@@ -336,25 +294,24 @@ export async function runInteractiveChatCli(
       }
 
       try {
-        let streamedText = "";
-        const streamToStdout = options.print === undefined;
-        const result = await runtime.processUserMessage(trimmed, {
-          onAssistantDelta: runtime.getStreamEnabled()
-            ? (delta: string) => {
-                streamedText += delta;
-                if (streamToStdout) {
-                  process.stdout.write(theme.assistant(delta));
-                }
-              }
-            : undefined,
+        const streamAccumulator = createStreamAccumulator({
+          streamEnabled: runtime.getStreamEnabled(),
+          printProvided: options.print !== undefined,
+          theme,
         });
-        if (!runtime.getStreamEnabled() || streamedText.length === 0) {
-          writeLine(print, theme.assistant(result.content));
-        } else if (!streamToStdout) {
-          writeLine(print, theme.assistant(streamedText));
-        } else {
-          process.stdout.write("\n");
-        }
+        const result = await runtime.processUserMessage(trimmed, {
+            onAssistantDelta: runtime.getStreamEnabled()
+              ? streamAccumulator.onDelta
+              : undefined,
+        });
+        renderAssistantFromStream({
+          streamEnabled: runtime.getStreamEnabled(),
+          streamedText: streamAccumulator.getText(),
+          finalContent: result.content,
+          streamToStdout: streamAccumulator.streamToStdout,
+          theme,
+          writeLine: (text) => writeLine(print, text),
+        });
         if (runtime.getTraceEnabled()) {
           writeLine(print, renderTurnTrace(result.trace, { color: colorEnabled }));
         }

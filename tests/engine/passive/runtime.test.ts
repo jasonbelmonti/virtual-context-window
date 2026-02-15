@@ -5,7 +5,7 @@ import {
   InMemorySymbolStore,
   type AssistantGenerateFn,
   type CompressionExtractor,
-} from "../../src/engine";
+} from "../../../src/engine";
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));

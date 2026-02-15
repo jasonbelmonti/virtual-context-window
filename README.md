@@ -77,3 +77,17 @@ VCW_PASSIVE_MAX_EVENT_TAPE_ENTRIES=2000
 VCW_PASSIVE_WAIT_FOR_COMPACTION_DRAIN=true
 VCW_PASSIVE_COMPACTION_DRAIN_TIMEOUT_MS=1200
 ```
+
+## Codebase layout
+
+```text
+src/engine/core        # canonical pipeline contracts, hooks, kernel plumbing
+src/engine/passive     # passive sliding pack/compaction/event-tape logic
+src/engine/symbols     # symbol store and embedding cache
+src/cli/shared         # shared arg/history/stream/passive-config helpers
+src/validation/core    # gates/metrics/contracts/runners
+src/validation/scenarios
+src/validation/pipelines
+```
+
+Compatibility barrels keep top-level imports stable (`src/engine/index.ts`, provider `index.ts`, `src/validation/index.ts`).

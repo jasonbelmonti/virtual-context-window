@@ -1,10 +1,10 @@
 import { expect, test } from "bun:test";
-import { InMemorySymbolStore } from "../../src/engine";
+import { InMemorySymbolStore } from "../../../src/engine";
 import {
   applyPassiveCommitPolicy,
   createDeterministicFallbackExtractor,
   type CompressionProposal,
-} from "../../src/engine";
+} from "../../../src/engine";
 
 function makeProposal(overrides?: Partial<CompressionProposal>): CompressionProposal {
   return {

@@ -3,7 +3,7 @@ import {
   createVirtualContextEnginePassive,
   InMemorySymbolStore,
   type CompressionExtractor,
-} from "../../src/engine";
+} from "../../../src/engine";
 
 test("fallback commit path is used when extractor yields no proposals", async () => {
   const threadId = "thread-fallback-commit-used";

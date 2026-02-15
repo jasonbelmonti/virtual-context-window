@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { InMemoryEventTape } from "../../src/engine";
+import { InMemoryEventTape } from "../../../src/engine";
 
 test("event tape enforces a per-thread entry cap", () => {
   const tape = new InMemoryEventTape({

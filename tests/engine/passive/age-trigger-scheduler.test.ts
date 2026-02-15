@@ -3,7 +3,7 @@ import {
   createVirtualContextEnginePassive,
   InMemorySymbolStore,
   type CompressionExtractor,
-} from "../../src/engine";
+} from "../../../src/engine";
 
 test("age backfill schedules compaction under low pressure and respects cooldown", async () => {
   const threadId = "thread-age-backfill-cooldown";

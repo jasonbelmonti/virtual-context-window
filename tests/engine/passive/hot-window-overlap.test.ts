@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { createVirtualContextEnginePassive, InMemorySymbolStore } from "../../src/engine";
+import { createVirtualContextEnginePassive, InMemorySymbolStore } from "../../../src/engine";
 
 test("hot window overlap aligns candidacy to history window metadata", async () => {
   const engine = createVirtualContextEnginePassive({

@@ -33,6 +33,12 @@ import {
   type RecognitionDecision,
   type RecognizerConfig,
 } from "../recognition";
+import {
+  parseBoolean,
+  parseOptionalPositiveInt,
+  parsePositiveFloat,
+  parsePositiveInt,
+} from "../cli/shared/passive-config";
 import type {
   AgentLifecycleEvent,
   AgentCliCommand,
@@ -94,57 +100,6 @@ function summarizeDeterministically(text: string, maxChars = 80): string {
     return normalized.slice(0, maxChars);
   }
   return `${normalized.slice(0, maxChars - 3)}...`;
-}
-
-function parsePositiveInt(value: string | undefined, fallback: number): number {
-  if (!value) {
-    return fallback;
-  }
-  const parsed = Number.parseInt(value, 10);
-  if (!Number.isFinite(parsed) || parsed <= 0) {
-    return fallback;
-  }
-  return parsed;
-}
-
-function parsePositiveFloat(value: string | undefined, fallback: number): number {
-  if (!value) {
-    return fallback;
-  }
-  const parsed = Number.parseFloat(value);
-  if (!Number.isFinite(parsed) || parsed <= 0) {
-    return fallback;
-  }
-  if (parsed > 1) {
-    return 1;
-  }
-  return parsed;
-}
-
-function parseOptionalPositiveInt(value: string | undefined): number | null {
-  if (!value) {
-    return null;
-  }
-  const parsed = Number.parseInt(value, 10);
-  if (!Number.isFinite(parsed) || parsed <= 0) {
-    return null;
-  }
-  return parsed;
-}
-
-function parseBoolean(value: string | undefined, fallback: boolean): boolean {
-  if (!value) {
-    return fallback;
-  }
-
-  const normalized = value.trim().toLowerCase();
-  if (normalized === "true" || normalized === "1" || normalized === "yes" || normalized === "on") {
-    return true;
-  }
-  if (normalized === "false" || normalized === "0" || normalized === "no" || normalized === "off") {
-    return false;
-  }
-  return fallback;
 }
 
 function classifyRuntimeError(error: unknown): string {

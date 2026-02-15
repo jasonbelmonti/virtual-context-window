@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { compilePassiveContextPack } from "../../src/engine";
+import { compilePassiveContextPack } from "../../../src/engine";
 
 test("pack compiler renders hydrated relevance and symbol index within budget", () => {
   const budget = {

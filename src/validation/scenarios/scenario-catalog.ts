@@ -1,0 +1,125 @@
+import type { ValidationScenarioDefinition } from "../core/contracts";
+
+export const SCENARIO_CATALOG: ValidationScenarioDefinition[] = [
+  {
+    id: "S01",
+    name: "Passive pressure trigger",
+    family: "mechanism",
+    supportedModes: ["deterministic", "live"],
+    requiredMetricKeys: ["opaque_memory_reuse_rate"],
+    failureClassification: "retrieval_miss",
+  },
+  {
+    id: "S02",
+    name: "Passive recall fidelity",
+    family: "task",
+    supportedModes: ["deterministic", "live"],
+    requiredMetricKeys: ["explicit_answer_fidelity_rate"],
+    failureClassification: "retrieval_miss",
+  },
+  {
+    id: "S03",
+    name: "Hydration exact recall",
+    family: "task",
+    supportedModes: ["deterministic", "live"],
+    requiredMetricKeys: ["semantic_hit_at_4_exact", "semantic_answer_fidelity_exact_rate"],
+    failureClassification: "retrieval_miss",
+  },
+  {
+    id: "S04",
+    name: "Hydration paraphrase recall",
+    family: "task",
+    supportedModes: ["deterministic", "live"],
+    requiredMetricKeys: [
+      "semantic_hit_at_4_paraphrase",
+      "semantic_answer_fidelity_paraphrase_rate",
+    ],
+    failureClassification: "retrieval_miss",
+  },
+  {
+    id: "S05",
+    name: "Trusted-ref gate enforcement",
+    family: "mechanism",
+    supportedModes: ["deterministic", "live"],
+    requiredMetricKeys: ["untrusted_token_injection_resistance_rate"],
+    failureClassification: "policy_rejection",
+  },
+  {
+    id: "S06",
+    name: "Model-write ignore + sanitize",
+    family: "mechanism",
+    supportedModes: ["deterministic", "live"],
+    requiredMetricKeys: [
+      "control_strip_correctness_rate",
+      "output_control_channel_leak_absence_rate",
+      "output_symbol_echo_absence_rate",
+      "wrapped_canary_pass_rate",
+      "canary_expected_valid_pass_rate",
+    ],
+    failureClassification: "hygiene_leak",
+  },
+  {
+    id: "S07",
+    name: "Ignored model event accounting",
+    family: "mechanism",
+    supportedModes: ["deterministic", "live"],
+    requiredMetricKeys: ["invalid_event_rejection_rate"],
+    failureClassification: "policy_rejection",
+  },
+  {
+    id: "S08",
+    name: "Passive thread isolation",
+    family: "mechanism",
+    supportedModes: ["deterministic", "live"],
+    requiredMetricKeys: [
+      "thread_isolation_violation_count",
+      "thread_isolation_answer_leak_rate",
+    ],
+    failureClassification: "isolation_leak",
+  },
+  {
+    id: "S09",
+    name: "Compaction hysteresis stability",
+    family: "parser_robustness",
+    supportedModes: ["deterministic"],
+    requiredMetricKeys: ["wrapped_canary_pass_rate", "canary_expected_invalid_pass_rate"],
+    failureClassification: "parser_violation",
+  },
+  {
+    id: "S10",
+    name: "Malformed control fail-open",
+    family: "parser_robustness",
+    supportedModes: ["deterministic"],
+    requiredMetricKeys: ["canary_expected_invalid_pass_rate"],
+    failureClassification: "parser_violation",
+  },
+  {
+    id: "S11",
+    name: "Pack budget stability",
+    family: "mechanism",
+    supportedModes: ["deterministic"],
+    requiredMetricKeys: ["step_timeout_rate"],
+    failureClassification: "contract_violation",
+  },
+  {
+    id: "S12",
+    name: "Provider failure containment",
+    family: "robustness",
+    supportedModes: ["deterministic", "live"],
+    liveOptional: true,
+    requiredMetricKeys: ["step_timeout_rate"],
+    failureClassification: "provider_failure",
+  },
+  {
+    id: "S13",
+    name: "One-call invariant",
+    family: "core_contract",
+    supportedModes: ["deterministic", "live"],
+    requiredMetricKeys: ["step_timeout_rate"],
+    failureClassification: "contract_violation",
+  },
+];
+
+export function getScenarioById(id: string): ValidationScenarioDefinition | undefined {
+  return SCENARIO_CATALOG.find((scenario) => scenario.id === id);
+}
