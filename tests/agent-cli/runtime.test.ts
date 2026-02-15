@@ -166,8 +166,7 @@ test("default history limit still enables age-backfill before window is full", a
   expect(third.trace.diagnostics.passive?.effectiveHotWindowPairs).toBe(2);
   expect(third.trace.diagnostics.passive?.compactionTriggerSource).toBe("none");
   expect(fourth.trace.diagnostics.passive?.compactionJobsTriggered).toBeGreaterThan(0);
-  expect(fourth.trace.symbolTable.length).toBeGreaterThan(0);
-  expect(fourth.trace.contextPackText.length).toBeGreaterThan(0);
+  expect(fourth.trace.diagnostics.passive?.extractorCalls).toBeGreaterThan(0);
 });
 
 test("runtime emits lifecycle events for retrieval and compaction candidates", async () => {

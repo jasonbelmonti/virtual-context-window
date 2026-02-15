@@ -31,6 +31,11 @@ type RenderResult = {
   recallIncluded: number;
 };
 
+type IndexLineVariant = {
+  full: string;
+  compact: string;
+};
+
 function truncateDeterministic(text: string, maxChars: number): string {
   if (maxChars <= 0) {
     return "";
@@ -104,6 +109,7 @@ function renderPack(input: {
   const appendSection = (
     title: "SYMBOL INDEX" | "RELEVANT MEMORY",
     items: string[],
+    options?: { allowItemTruncate?: boolean },
     onIncluded?: () => void,
   ) => {
     if (items.length === 0) {
@@ -117,11 +123,46 @@ function renderPack(input: {
 
     let included = false;
     for (const item of items) {
-      if (!appendLineWithBudget(lines, item, remainingChars, { allowTruncate: true })) {
+      if (!appendLineWithBudget(lines, item, remainingChars, {
+        allowTruncate: options?.allowItemTruncate ?? true,
+      })) {
         break;
       }
       included = true;
       onIncluded?.();
+    }
+
+    if (!included) {
+      lines.pop();
+      remainingChars.value += titleLine.length;
+      return;
+    }
+
+    appendLineWithBudget(lines, "\n", remainingChars);
+  };
+
+  const appendIndexSection = (items: IndexLineVariant[]) => {
+    if (items.length === 0) {
+      return;
+    }
+
+    const titleLine = "SYMBOL INDEX\n";
+    if (!appendLineWithBudget(lines, titleLine, remainingChars)) {
+      return;
+    }
+
+    let included = false;
+    for (const item of items) {
+      if (appendLineWithBudget(lines, item.full, remainingChars, { allowTruncate: false })) {
+        included = true;
+        continue;
+      }
+      // If summary cannot fit, keep the ID visible as a compact checkpoint.
+      if (appendLineWithBudget(lines, item.compact, remainingChars, { allowTruncate: false })) {
+        included = true;
+        continue;
+      }
+      break;
     }
 
     if (!included) {
@@ -141,7 +182,10 @@ function renderPack(input: {
     .slice(0, input.budget.symbolIndexLimit)
     .map((item) => {
       const summary = truncateDeterministic(item.summary, dynamicIndexMaxChars);
-      return `- ${item.symbolId}: ${summary}\n`;
+      return {
+        full: `- ${item.symbolId}: ${summary}\n`,
+        compact: `- ${item.symbolId}\n`,
+      };
     });
 
   const focusedLines = input.hydratedFocused.map((item) => {
@@ -160,16 +204,21 @@ function renderPack(input: {
   ];
   let memoryIncludedCursor = 0;
   const appendMemory = () =>
-    appendSection("RELEVANT MEMORY", memoryLines.map((item) => item.line), () => {
-      const includedItem = memoryLines[memoryIncludedCursor];
-      memoryIncludedCursor += 1;
-      if (includedItem?.source === "focused") {
-        focusedIncluded += 1;
-        return;
-      }
-      recallIncluded += 1;
-    });
-  const appendIndex = () => appendSection("SYMBOL INDEX", indexLines);
+    appendSection(
+      "RELEVANT MEMORY",
+      memoryLines.map((item) => item.line),
+      { allowItemTruncate: true },
+      () => {
+        const includedItem = memoryLines[memoryIncludedCursor];
+        memoryIncludedCursor += 1;
+        if (includedItem?.source === "focused") {
+          focusedIncluded += 1;
+          return;
+        }
+        recallIncluded += 1;
+      },
+    );
+  const appendIndex = () => appendIndexSection(indexLines);
 
   if (input.prioritizeHydrated) {
     appendMemory();
