@@ -11,19 +11,27 @@ import { writeValidationRunArtifacts, buildRunId } from "./reports";
 import { SCENARIO_CATALOG } from "../scenarios/scenario-catalog";
 import { executeScenario } from "../scenarios/scenarios";
 import {
-  DEFAULT_THRESHOLD_RULES,
+  PASSIVE_THRESHOLD_RULES,
   evaluateThresholdSet,
   hasFailingRequiredThreshold,
   hasWarningThreshold,
+  sampleFloorForProfile,
 } from "../scenarios/thresholds";
 import { resolveLiveAssistantProvider } from "../pipelines/live-provider";
 
 const DEFAULT_TIMEOUT_MS = 12_000;
 const DEFAULT_CONCURRENCY = 1;
 
+const DEFAULT_RUNS_PER_SCENARIO: Record<ValidationProfile, number> = {
+  quick: 1,
+  quick_live: 3,
+  production: 8,
+};
+
 type ScenarioPlanItem = {
   scenario: ValidationScenarioDefinition;
   mode: ValidationMode;
+  sampleIndex: number;
 };
 
 function parsePositiveInt(input: string | undefined, fallback: number): number {
@@ -34,39 +42,57 @@ function parsePositiveInt(input: string | undefined, fallback: number): number {
   return parsed;
 }
 
-function buildScenarioPlan(profile: ValidationProfile): ScenarioPlanItem[] {
-  if (profile === "quick") {
-    return SCENARIO_CATALOG.filter((scenario) =>
-      scenario.supportedModes.includes("deterministic"),
-    ).map((scenario) => ({
-      scenario,
-      mode: "deterministic" as const,
-    }));
-  }
+function resolveRunsPerScenario(profile: ValidationProfile): number {
+  return parsePositiveInt(
+    process.env.VCW_VALIDATE_RUNS_PER_SCENARIO,
+    DEFAULT_RUNS_PER_SCENARIO[profile],
+  );
+}
 
-  if (profile === "quick_live") {
-    const plan: ScenarioPlanItem[] = [];
-    for (const scenario of SCENARIO_CATALOG) {
+function buildScenarioPlan(
+  profile: ValidationProfile,
+  runsPerScenario: number,
+): ScenarioPlanItem[] {
+  const plan: ScenarioPlanItem[] = [];
+
+  for (const scenario of SCENARIO_CATALOG) {
+    if (!scenario.supportedProfiles.includes(profile)) {
+      continue;
+    }
+
+    const modes: ValidationMode[] = [];
+
+    if (profile === "quick") {
+      if (scenario.supportedModes.includes("deterministic")) {
+        modes.push("deterministic");
+      }
+    } else if (profile === "quick_live") {
       if (scenario.supportedModes.includes("live")) {
-        plan.push({ scenario, mode: "live" });
-      } else {
-        plan.push({ scenario, mode: "deterministic" });
+        modes.push("live");
+      } else if (scenario.supportedModes.includes("deterministic")) {
+        modes.push("deterministic");
+      }
+    } else {
+      if (scenario.supportedModes.includes("deterministic")) {
+        modes.push("deterministic");
+      }
+      if (scenario.supportedModes.includes("live")) {
+        modes.push("live");
       }
     }
-    return plan;
+
+    for (const mode of modes) {
+      for (let sampleIndex = 0; sampleIndex < runsPerScenario; sampleIndex += 1) {
+        plan.push({
+          scenario,
+          mode,
+          sampleIndex,
+        });
+      }
+    }
   }
 
-  // production profile includes deterministic and live executions where supported.
-  const productionPlan: ScenarioPlanItem[] = [];
-  for (const scenario of SCENARIO_CATALOG) {
-    if (scenario.supportedModes.includes("deterministic")) {
-      productionPlan.push({ scenario, mode: "deterministic" });
-    }
-    if (scenario.supportedModes.includes("live")) {
-      productionPlan.push({ scenario, mode: "live" });
-    }
-  }
-  return productionPlan;
+  return plan;
 }
 
 function modeLabelForPlan(plan: ScenarioPlanItem[]): ValidationRunMode {
@@ -81,10 +107,6 @@ function modeLabelForPlan(plan: ScenarioPlanItem[]): ValidationRunMode {
   return "mixed";
 }
 
-function rateWeightForProfile(profile: ValidationProfile): number {
-  return profile === "production" ? 8 : 1;
-}
-
 export async function runValidationProfile(
   profile: ValidationProfile,
   options?: { runId?: string },
@@ -95,14 +117,19 @@ export async function runValidationProfile(
     process.env.VCW_VALIDATE_CONCURRENCY,
     DEFAULT_CONCURRENCY,
   );
+  const runsPerScenario = resolveRunsPerScenario(profile);
+  const sampleFloorApplied = sampleFloorForProfile(profile);
   const startedAtDate = new Date();
   const warningFlags: string[] = [];
 
-  const needsLiveProvider = profile === "quick_live" || profile === "production";
+  const plan = buildScenarioPlan(profile, runsPerScenario);
+  const needsLiveProvider = plan.some((item) => item.mode === "live");
+
   let liveProvider:
     | Awaited<ReturnType<typeof resolveLiveAssistantProvider>>["provider"]
     | undefined;
   let providerName = "deterministic";
+  let embeddingProviderAvailable = false;
 
   if (needsLiveProvider) {
     const providerResolution = await resolveLiveAssistantProvider({
@@ -112,15 +139,13 @@ export async function runValidationProfile(
     liveProvider = providerResolution.provider;
     providerName = providerResolution.provider.name;
     warningFlags.push(...providerResolution.warningFlags);
+    embeddingProviderAvailable = providerResolution.liveProviderAvailable;
   }
-
-  const plan = buildScenarioPlan(profile);
-  const rateWeight = rateWeightForProfile(profile);
 
   const scenarioResults: ValidationRunResult["scenarioResults"] = new Array(plan.length);
   let cursor = 0;
 
-  const workerCount = Math.max(1, Math.min(concurrency, plan.length));
+  const workerCount = Math.max(1, Math.min(concurrency, Math.max(1, plan.length)));
   if (workerCount > 1) {
     warningFlags.push(`concurrency_${workerCount}`);
   }
@@ -142,8 +167,10 @@ export async function runValidationProfile(
         runId,
         mode: planItem.mode,
         profile,
-        rateWeight,
         timeoutMs,
+        sampleIndex: planItem.sampleIndex,
+        sampleCount: runsPerScenario,
+        runSeed: `${runId}-${planItem.scenario.id}-${planItem.mode}-${planItem.sampleIndex + 1}`,
         liveProvider,
       };
 
@@ -154,10 +181,14 @@ export async function runValidationProfile(
   await Promise.all(Array.from({ length: workerCount }, () => worker()));
 
   const metrics = aggregateMetrics(scenarioResults);
-  const thresholdEvaluations = evaluateThresholdSet(metrics, DEFAULT_THRESHOLD_RULES);
+  const thresholdEvaluations = evaluateThresholdSet(metrics, {
+    profile,
+    embeddingProviderAvailable,
+    rules: PASSIVE_THRESHOLD_RULES,
+  });
   const requiredThresholdFail = hasFailingRequiredThreshold(
     thresholdEvaluations,
-    DEFAULT_THRESHOLD_RULES,
+    PASSIVE_THRESHOLD_RULES,
   );
   if (requiredThresholdFail) {
     warningFlags.push("required_threshold_failure");
@@ -179,18 +210,34 @@ export async function runValidationProfile(
     failCount: scenarioResults.filter((result) => !result.passed).length,
     warningFlags,
     provider: providerName,
+    runsPerScenario,
+    sampleFloorApplied,
   };
 
+  const passiveWinRate = metrics.passive_vs_history_win_rate?.rate ?? 0;
+
   const artifacts = await writeValidationRunArtifacts({
+    schemaVersion: "passive_validation_v1",
     runId,
     summary,
+    aggregate: {
+      runsPerScenario,
+      sampleFloorApplied,
+      passiveWinRate,
+    },
     metrics,
     thresholdEvaluations,
     scenarioResults,
   });
 
   return {
+    schemaVersion: "passive_validation_v1",
     summary,
+    aggregate: {
+      runsPerScenario,
+      sampleFloorApplied,
+      passiveWinRate,
+    },
     scenarioResults,
     metrics,
     thresholdEvaluations,

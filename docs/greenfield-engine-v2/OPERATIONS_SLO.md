@@ -1,142 +1,98 @@
-# Operations and SLO: Greenfield Engine V2
+# Operations and SLO: Passive Sliding Middleware
 
-## 1) Service Scope
-Engine V2 provides middleware-centric turn processing with durable memory and bounded context injection.
+## Service Scope
+Validation and operations policy for passive sliding middleware: compaction, hydration, age backfill, and retrieval under context pressure.
 
-## 2) SLO Definitions
-### 2.1 Reliability SLOs
-1. `processTurn` success rate (non-user-error): >= 99.5% (rolling 7d)
-2. `thread_isolation_violation_count`: 0 per release gate run
-3. `output_control_channel_leak_absence_rate`: 100% at gate
+## SLO Definitions
+### Reliability
+1. `processTurn` non-user-error success rate: `>=99.5%` (rolling 7d)
+2. `thread_isolation_violation_count`: `0` for release-gate runs
+3. `one_call_invariant_rate`: `==1.0` for release-gate runs
+4. `stream_final_equivalence_rate`: `==1.0` for release-gate runs
 
-### 2.2 Latency SLOs
-1. `pre_model_middleware_ms_p95`: non-regressing across two-run gate; track target <= 120ms (single-node baseline)
-2. `post_model_middleware_ms_p95`: non-regressing across two-run gate; track target <= 90ms (single-node baseline)
-3. `end_to_end_turn_ms_p95`: profile-specific target set per deployment environment
-4. `step_timeout_rate`: <= 1% PASS, <= 5% WARN
+### Memory quality (gate-critical)
+1. `latest_fact_accuracy_rate`: PASS `>=0.90`
+2. `passive_vs_history_win_rate`: PASS `>=0.60`
+3. `stale_fact_mismatch_rate`: PASS `<=0.20`
 
-### 2.3 Quality SLOs (release gate)
-Use parity+ thresholds from `TEST_MATRIX.md` for mechanism and task-quality metrics.
+### Mechanism quality (gate-critical)
+1. `hysteresis_transition_correctness_rate`: PASS `>=0.95`
+2. `age_backfill_cadence_violation_count`: PASS `==0`
+3. `fallback_commit_success_rate`: PASS `>=0.90`
+4. `hydration_precision_at_k`: PASS `>=0.75`
+5. `hydration_false_positive_rate`: PASS `<=0.20`
 
-## 3) Error Budget Policy
-- Reliability budget: 0.5% for non-user-error turn failures over rolling 7 days.
-- Exceeding budget triggers release freeze and mandatory incident review.
+### Latency and timeout
+1. `pre_model_middleware_ms_p95`: target `<=120ms`
+2. `post_model_middleware_ms_p95`: target `<=90ms`
+3. `end_to_end_turn_ms_p95`: tracked per environment
+4. `step_timeout_rate`: PASS `<=0.01`, WARN `<=0.05`
 
-## 4) Telemetry Schema
-### Pre-model event
-```json
-{
-  "type": "pre_model",
-  "threadId": "string",
-  "timestamp": 0,
-  "durationMs": 0,
-  "userTextChars": 0,
-  "contextPackChars": 0,
-  "retrievalStrategy": "lexical_v1|hybrid_v2",
-  "historyTurnsUsed": 0,
-  "retrievalQueryChars": 0,
-  "lexicalCandidateCount": 0,
-  "vectorCandidateCount": 0,
-  "rerankedCandidateCount": 0,
-  "focusedInjectedCount": 0,
-  "recallInjectedCount": 0,
-  "trustedSymbolRefsEnabled": false,
-  "trustedRefIdsUsed": 0,
-  "retrievalDegraded": false
-}
-```
+## Error Budget Policy
+- Reliability budget: `0.5%` non-user-error turn failures over rolling 7d.
+- Breach triggers release freeze and incident review.
 
-### Post-model event
-```json
-{
-  "type": "post_model",
-  "threadId": "string",
-  "timestamp": 0,
-  "durationMs": 0,
-  "assistantTextChars": 0,
-  "controlChannelDetected": false,
-  "parsedEventCount": 0,
-  "parseAttempted": false,
-  "parseSucceeded": false,
-  "schemaValid": false,
-  "parseOutcome": "no_control_block|control_wrapper_not_trailing|control_json_parse_error|control_schema_invalid|control_channel_valid",
-  "eventsAccepted": 0,
-  "eventsRejected": 0,
-  "writeFailures": 0,
-  "scrubbedControlLeakCount": 0,
-  "scrubbedSymbolEchoCount": 0
-}
-```
+## Passive Telemetry Contract
+### Pre-model event fields (required)
+- `historyTurnsUsed`, `retrievalQueryChars`
+- `lexicalCandidateCount`, `vectorCandidateCount`, `rerankedCandidateCount`
+- `focusedInjectedCount`, `recallInjectedCount`
+- `retrievalDegraded`
 
-## 5) Alert Policy
-### P0 alerts
+### Post-model diagnostics fields (passive)
+- `pressureRatio`, `pressurePeak`, `compactionState`
+- `compactionTriggered`, `compactionJobsTriggered`
+- `compactionDrainAttempted`, `compactionDrainTimedOut`, `compactionDrainWaitMs`
+- `fallbackCommitUsed`
+- `embedding` activation/degraded signals
+
+## Alert Policy
+### P0
 - Any thread isolation violation
-- Any control-channel leak in user-visible output
-- One-call invariant violation
+- One-call invariant failure
+- Streaming/non-stream final mismatch in release gate
 
-### P1 alerts
-- Step timeout rate above WARN
-- Repeated embedding provider failures causing degraded retrieval
-- Rapid degradation in paraphrase semantic metrics
+### P1
+- Timeout rate above WARN threshold
+- Persistent fallback-commit failure trend
+- Hydration false-positive rate above WARN threshold
+- Embedding retrieval activation collapse when provider is healthy
 
-## 6) Oncall Triage Flow
-1. Identify alert class (`P0/P1/P2`).
-2. Pull latest two validation reports and telemetry slices.
-3. Classify incident source:
-   - Contract breach
-   - Retrieval degradation
-   - Parser/write hygiene issue
-   - Provider/runtime issue
-4. Apply runbook mitigation.
-5. Decide rollback vs forward-fix:
-   - Immediate rollback for P0 contract/security leaks.
-6. Create incident note with:
-   - Blast radius
-   - Trigger metric
-   - Time to detect/mitigate
-   - Permanent corrective action
+## Triage Flow
+1. Identify gate dimension impact (`memory`, `mechanism`, `latency`).
+2. Pull latest gate artifact and two run artifacts.
+3. Confirm whether failure is scenario-local or systemic.
+4. Apply mitigation (config rollback, provider fallback, feature disable).
+5. Document trigger metric, blast radius, and corrective action.
 
-## 7) Rollback Playbook
-Rollback is mandatory when:
+## Rollback Triggers
+Rollback is mandatory when any of:
 1. `thread_isolation_violation_count > 0`
-2. `output_control_channel_leak_absence_rate < 100%`
-3. One-call invariant fails in deterministic or live production-signal run
+2. `one_call_invariant_rate < 1.0`
+3. `stream_final_equivalence_rate < 1.0`
+4. `embedding_fail_open_success_rate < 1.0`
 
-Rollback steps:
-1. Disable current release artifact.
-2. Re-enable previous known-good artifact.
-3. Run `validate:quick` and `validate:quick:live` smoke checks.
-4. Open incident and block releases until P0 root cause is addressed.
+## Trigger String Compatibility
+Compatibility strings retained for certification automation and legacy checks:
+- `latest_fact_accuracy_rate < 90%`
+- `one_call_invariant_rate < 100%`
+- `output_control_channel_leak_absence_rate < 100%`
+- `One-call invariant fails`
 
-## 8) Capacity and Scaling Notes (MVP)
-- Single-node profile is authoritative for MVP.
-- Concurrency defaults should stay conservative to avoid model/provider queue saturation.
-- Scale-out design is out of MVP scope but must preserve all invariants.
+## Certification Protocol
+For `validate:phase5` certification runs:
+- `VCW_VALIDATE_TIMEOUT_MS=60000`
+- `VCW_VALIDATE_CONCURRENCY=1`
+- fixed provider/model for paired production runs
+- gate evaluated via `validate:gate` semantics
 
-## 9) Release Checklist (Ops)
-1. Gate passed twice consecutively (parity+).
-2. No open P0/P1 risks without approved mitigation.
-3. Telemetry schema validated in staging.
-4. Rollback playbook dry-run completed.
-5. Incident contact rotation updated.
+## Operational Commands
+```bash
+bun run validate:quick
+bun run validate:quick:live
+bun run validate:production
+bun run validate:gate
+bun run validate:stability
+```
 
-## 10) Phase 5 Certification Profile
-Phase 5 certification uses a locked execution protocol to reduce variance while preserving gate policy:
-1. Provider target remains `ollama` with explicit `VCW_OLLAMA_MODEL`.
-2. Runtime controls for certification runs:
-   - `VCW_VALIDATE_TIMEOUT_MS=60000`
-   - `VCW_VALIDATE_CONCURRENCY=1`
-3. Two Ollama warmup calls execute before production run A.
-4. Two production-signal runs are executed back-to-back under identical provider settings.
-5. Baseline-v2 and stability checks are evaluated against the same certification pair.
-6. This section defines execution protocol only; it does not alter drift/threshold comparator policy.
-
-## 11) Chat CLI Observability Mode (Non-Gating)
-Phase 6 introduces an interactive chat CLI intended for operator visibility and debugging:
-1. Default output mode is concise assistant text.
-2. `/trace on` enables human-readable internals:
-   - deterministic stage timeline
-   - pre/post telemetry summaries
-   - parse/apply/scrub outcome counters
-3. CLI trace output is diagnostic-only and does not alter release-gate policy.
-4. `--mock` mode is permitted for local smoke checks when live provider access is unavailable.
+`validate:baseline-v2` remains an alias during transition and emits a deprecation warning.

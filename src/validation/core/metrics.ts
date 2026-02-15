@@ -10,18 +10,21 @@ type MutableRateAggregate = {
   kind: "rate";
   numerator: number;
   denominator: number;
+  sampleCount: number;
 };
 
 type MutableCountAggregate = {
   key: string;
   kind: "count";
   value: number;
+  sampleCount: number;
 };
 
 type MutableLatencyAggregate = {
   key: string;
   kind: "latency_p95";
   samples: number[];
+  sampleCount: number;
 };
 
 type MutableAggregate =
@@ -51,6 +54,7 @@ function mergeSample(
         kind: "rate",
         numerator: sample.numerator,
         denominator: sample.denominator,
+        sampleCount: 1,
       };
     }
 
@@ -60,6 +64,7 @@ function mergeSample(
 
     aggregate.numerator += sample.numerator;
     aggregate.denominator += sample.denominator;
+    aggregate.sampleCount += 1;
     return aggregate;
   }
 
@@ -69,6 +74,7 @@ function mergeSample(
         key: sample.key,
         kind: "count",
         value: sample.value,
+        sampleCount: 1,
       };
     }
 
@@ -77,6 +83,7 @@ function mergeSample(
     }
 
     aggregate.value += sample.value;
+    aggregate.sampleCount += 1;
     return aggregate;
   }
 
@@ -85,6 +92,7 @@ function mergeSample(
       key: sample.key,
       kind: "latency_p95",
       samples: [...sample.samples],
+      sampleCount: 1,
     };
   }
 
@@ -93,6 +101,7 @@ function mergeSample(
   }
 
   aggregate.samples.push(...sample.samples);
+  aggregate.sampleCount += 1;
   return aggregate;
 }
 
@@ -107,6 +116,7 @@ function finalizeAggregate(aggregate: MutableAggregate): MetricAggregate {
       numerator: aggregate.numerator,
       denominator: aggregate.denominator,
       rate,
+      sampleCount: aggregate.sampleCount,
       ci95: computeWilsonCi95(aggregate.numerator, aggregate.denominator),
     };
   }
@@ -116,6 +126,7 @@ function finalizeAggregate(aggregate: MutableAggregate): MetricAggregate {
       key: aggregate.key,
       kind: "count",
       value: aggregate.value,
+      sampleCount: aggregate.sampleCount,
     };
   }
 
@@ -124,6 +135,7 @@ function finalizeAggregate(aggregate: MutableAggregate): MetricAggregate {
     kind: "latency_p95",
     p95: percentile95(aggregate.samples),
     value: aggregate.samples.length,
+    sampleCount: aggregate.sampleCount,
   };
 }
 
@@ -185,6 +197,9 @@ export function metricsEquivalent(
       if (!numbersClose(left.denominator, right.denominator)) {
         return false;
       }
+      if (!numbersClose(left.sampleCount, right.sampleCount)) {
+        return false;
+      }
       if (!numbersClose(left.rate, right.rate)) {
         return false;
       }
@@ -208,6 +223,9 @@ export function metricsEquivalent(
       if (!numbersClose(left.value, right.value)) {
         return false;
       }
+      if (!numbersClose(left.sampleCount, right.sampleCount)) {
+        return false;
+      }
       continue;
     }
 
@@ -216,6 +234,9 @@ export function metricsEquivalent(
         return false;
       }
       if (!numbersClose(left.value, right.value)) {
+        return false;
+      }
+      if (!numbersClose(left.sampleCount, right.sampleCount)) {
         return false;
       }
       continue;

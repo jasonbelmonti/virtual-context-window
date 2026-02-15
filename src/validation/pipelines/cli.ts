@@ -4,9 +4,9 @@ import {
   listProductionRunIds,
   loadRunArtifacts,
   resolveBaselinePair,
-  writeBaselineGateArtifacts,
+  writePassiveGateArtifacts,
 } from "../core/reports";
-import { evaluateBaselineV2Gate } from "../core/gate";
+import { evaluatePassiveSlidingGate } from "../core/gate";
 import { evaluateDriftChecks } from "../core/drift";
 import type { GateVerdict } from "../core/contracts";
 
@@ -47,19 +47,19 @@ function printRunSummary(result: Awaited<ReturnType<typeof runValidationProfile>
 export async function runValidateQuick(): Promise<number> {
   const result = await runValidationProfile("quick");
   printRunSummary(result);
-  return 0;
+  return result.summary.failCount === 0 ? 0 : 1;
 }
 
 export async function runValidateQuickLive(): Promise<number> {
   const result = await runValidationProfile("quick_live");
   printRunSummary(result);
-  return 0;
+  return result.summary.failCount === 0 ? 0 : 1;
 }
 
 export async function runValidateProduction(): Promise<number> {
   const result = await runValidationProfile("production");
   printRunSummary(result);
-  return 0;
+  return result.summary.failCount === 0 ? 0 : 1;
 }
 
 export async function runValidateStability(): Promise<number> {
@@ -67,6 +67,7 @@ export async function runValidateStability(): Promise<number> {
 
   if (productionRunIds.length < 2) {
     const warningVerdict: GateVerdict = {
+      schemaVersion: "passive_gate_v1",
       status: "FAIL",
       generatedAt: new Date().toISOString(),
       runAId: "n/a",
@@ -78,6 +79,18 @@ export async function runValidateStability(): Promise<number> {
           detail: "insufficient production run count",
         },
       ],
+      memoryGate: {
+        status: "FAIL",
+        reasons: ["insufficient_production_runs"],
+      },
+      mechanismGate: {
+        status: "FAIL",
+        reasons: ["insufficient_production_runs"],
+      },
+      latencyGate: {
+        status: "FAIL",
+        reasons: ["insufficient_production_runs"],
+      },
       metricStatuses: {},
       driftChecks: [],
       reportConsistencyPassed: true,
@@ -85,13 +98,14 @@ export async function runValidateStability(): Promise<number> {
       warnings: ["insufficient_production_runs"],
     };
 
-    const paths = await writeBaselineGateArtifacts({
+    const paths = await writePassiveGateArtifacts({
       verdict: warningVerdict,
     });
 
-    console.log(`[validate:stability] warning=insufficient_production_runs`);
+    console.log(`[validate:stability] status=FAIL`);
+    console.log(`[validate:stability] reason=insufficient_production_runs`);
     console.log(`[validate:stability] gate=${paths.markdownPath}`);
-    return 0;
+    return 1;
   }
 
   const runAId = productionRunIds[productionRunIds.length - 2] ?? "";
@@ -103,6 +117,7 @@ export async function runValidateStability(): Promise<number> {
   const failedDrifts = driftChecks.filter((check) => !check.passed);
 
   const verdict: GateVerdict = {
+    schemaVersion: "passive_gate_v1",
     status: failedDrifts.length === 0 ? "PASS" : "FAIL",
     generatedAt: new Date().toISOString(),
     runAId,
@@ -114,6 +129,18 @@ export async function runValidateStability(): Promise<number> {
         detail: `${runAId}, ${runBId}`,
       },
     ],
+    memoryGate: {
+      status: "PASS",
+      reasons: [],
+    },
+    mechanismGate: {
+      status: "PASS",
+      reasons: [],
+    },
+    latencyGate: {
+      status: failedDrifts.length === 0 ? "PASS" : "FAIL",
+      reasons: failedDrifts.length === 0 ? [] : ["drift_regression_failure"],
+    },
     metricStatuses: {},
     driftChecks,
     reportConsistencyPassed: true,
@@ -121,12 +148,13 @@ export async function runValidateStability(): Promise<number> {
     warnings: [],
   };
 
-  const paths = await writeBaselineGateArtifacts({ verdict });
+  const paths = await writePassiveGateArtifacts({ verdict });
+  console.log(`[validate:stability] status=${verdict.status}`);
   console.log(`[validate:stability] gate=${paths.markdownPath}`);
   return failedDrifts.length === 0 ? 0 : 1;
 }
 
-export async function runValidateBaselineV2(argv: string[]): Promise<number> {
+export async function runValidateGate(argv: string[]): Promise<number> {
   const args = parseArgs(argv);
 
   const pair = await resolveBaselinePair({
@@ -142,23 +170,29 @@ export async function runValidateBaselineV2(argv: string[]): Promise<number> {
   const reportConsistencyPassed =
     metricsEquivalent(recomputeA, runA.metrics) && metricsEquivalent(recomputeB, runB.metrics);
 
-  const verdict = evaluateBaselineV2Gate({
+  const verdict = evaluatePassiveSlidingGate({
     runAId: pair.runAId,
     runBId: pair.runBId,
     runAIsProduction: runA.summary.profile === "production",
     runBIsProduction: runB.summary.profile === "production",
     metricsA: runA.metrics,
     metricsB: runB.metrics,
+    profile: "production",
     reportConsistencyPassed,
   });
 
-  const paths = await writeBaselineGateArtifacts({ verdict });
+  const paths = await writePassiveGateArtifacts({ verdict });
   verdict.gatePathMarkdown = paths.markdownPath;
   verdict.gatePathJson = paths.jsonPath;
 
-  console.log(`[validate:baseline-v2] run_a=${pair.runAId} run_b=${pair.runBId}`);
-  console.log(`[validate:baseline-v2] status=${verdict.status}`);
-  console.log(`[validate:baseline-v2] gate=${paths.markdownPath}`);
+  console.log(`[validate:gate] run_a=${pair.runAId} run_b=${pair.runBId}`);
+  console.log(`[validate:gate] status=${verdict.status}`);
+  console.log(`[validate:gate] gate=${paths.markdownPath}`);
 
   return verdict.status === "PASS" ? 0 : 1;
+}
+
+export async function runValidateBaselineV2(argv: string[]): Promise<number> {
+  console.warn("[validate:baseline-v2] deprecated: use `bun run validate:gate` (alias remains during transition)");
+  return runValidateGate(argv);
 }

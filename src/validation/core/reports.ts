@@ -19,7 +19,9 @@ function resolveReportsRoot(): string {
 }
 
 type MetricsFileShape = {
+  schemaVersion: "passive_validation_v1";
   summary: ValidationRunResult["summary"];
+  aggregate: ValidationRunResult["aggregate"];
   metrics: Record<string, MetricAggregate>;
   thresholdEvaluations: Record<string, ThresholdEvaluation>;
 };
@@ -34,12 +36,14 @@ export function buildRunId(profile: string, now = new Date()): string {
 
 function buildSummaryMarkdown(input: {
   summary: ValidationRunResult["summary"];
+  aggregate: ValidationRunResult["aggregate"];
   metrics: Record<string, MetricAggregate>;
   thresholdEvaluations: Record<string, ThresholdEvaluation>;
 }): string {
   const lines: string[] = [
     `# Validation Summary: ${input.summary.runId}`,
     "",
+    `- Schema: passive_validation_v1`,
     `- Profile: ${input.summary.profile}`,
     `- Mode: ${input.summary.mode}`,
     `- Provider: ${input.summary.provider}`,
@@ -49,6 +53,9 @@ function buildSummaryMarkdown(input: {
     `- Scenarios: ${input.summary.scenarioCount}`,
     `- Pass: ${input.summary.passCount}`,
     `- Fail: ${input.summary.failCount}`,
+    `- Runs per scenario: ${input.summary.runsPerScenario}`,
+    `- Sample floor: ${input.summary.sampleFloorApplied}`,
+    `- Passive win rate: ${(input.aggregate.passiveWinRate * 100).toFixed(2)}%`,
   ];
 
   if (input.summary.warningFlags.length > 0) {
@@ -81,8 +88,10 @@ function buildSummaryMarkdown(input: {
 }
 
 export async function writeValidationRunArtifacts(input: {
+  schemaVersion: "passive_validation_v1";
   runId: string;
   summary: ValidationRunResult["summary"];
+  aggregate: ValidationRunResult["aggregate"];
   metrics: Record<string, MetricAggregate>;
   thresholdEvaluations: Record<string, ThresholdEvaluation>;
   scenarioResults: ScenarioCaseResult[];
@@ -98,6 +107,7 @@ export async function writeValidationRunArtifacts(input: {
     summaryPath,
     buildSummaryMarkdown({
       summary: input.summary,
+      aggregate: input.aggregate,
       metrics: input.metrics,
       thresholdEvaluations: input.thresholdEvaluations,
     }),
@@ -105,7 +115,9 @@ export async function writeValidationRunArtifacts(input: {
   );
 
   const metricsFile: MetricsFileShape = {
+    schemaVersion: input.schemaVersion,
     summary: input.summary,
+    aggregate: input.aggregate,
     metrics: input.metrics,
     thresholdEvaluations: input.thresholdEvaluations,
   };
@@ -127,6 +139,7 @@ export async function writeValidationRunArtifacts(input: {
 
 export async function loadRunArtifacts(runId: string): Promise<{
   summary: ValidationRunResult["summary"];
+  aggregate: ValidationRunResult["aggregate"];
   metrics: Record<string, MetricAggregate>;
   thresholdEvaluations: Record<string, ThresholdEvaluation>;
   scenarioResults: ScenarioCaseResult[];
@@ -136,7 +149,13 @@ export async function loadRunArtifacts(runId: string): Promise<{
   const scenarioResultsPath = path.join(runDir, "scenario_results.jsonl");
 
   const metricsPayloadRaw = await readFile(metricsPath, "utf8");
-  const metricsPayload = JSON.parse(metricsPayloadRaw) as MetricsFileShape;
+  const metricsPayload = JSON.parse(metricsPayloadRaw) as
+    | MetricsFileShape
+    | {
+        summary: ValidationRunResult["summary"];
+        metrics: Record<string, MetricAggregate>;
+        thresholdEvaluations: Record<string, ThresholdEvaluation>;
+      };
 
   const scenarioRaw = await readFile(scenarioResultsPath, "utf8");
   const scenarioResults = scenarioRaw
@@ -144,8 +163,18 @@ export async function loadRunArtifacts(runId: string): Promise<{
     .filter((line) => line.trim().length > 0)
     .map((line) => JSON.parse(line) as ScenarioCaseResult);
 
+  const aggregate =
+    "aggregate" in metricsPayload && metricsPayload.aggregate
+      ? metricsPayload.aggregate
+      : {
+          runsPerScenario: 1,
+          sampleFloorApplied: 1,
+          passiveWinRate: metricsPayload.metrics.passive_vs_history_win_rate?.rate ?? 0,
+        };
+
   return {
     summary: metricsPayload.summary,
+    aggregate,
     metrics: metricsPayload.metrics,
     thresholdEvaluations: metricsPayload.thresholdEvaluations,
     scenarioResults,
@@ -206,23 +235,27 @@ export async function resolveBaselinePair(options?: {
   };
 }
 
-export async function writeBaselineGateArtifacts(input: {
+export async function writePassiveGateArtifacts(input: {
   verdict: GateVerdict;
 }): Promise<{ markdownPath: string; jsonPath: string }> {
   const timestamp = ensureIsoTimestampSafe(new Date().toISOString());
-  const gateDir = path.join(resolveReportsRoot(), "baseline-v2", timestamp);
+  const gateDir = path.join(resolveReportsRoot(), "gates", timestamp);
   await mkdir(gateDir, { recursive: true });
 
   const markdownPath = path.join(gateDir, "gate.md");
   const jsonPath = path.join(gateDir, "gate.json");
 
   const markdownLines = [
-    "# Baseline-v2 Gate Verdict",
+    "# Passive Sliding Gate Verdict",
     "",
+    `- Schema: ${input.verdict.schemaVersion}`,
     `- Status: ${input.verdict.status}`,
     `- Generated: ${input.verdict.generatedAt}`,
     `- Run A: ${input.verdict.runAId}`,
     `- Run B: ${input.verdict.runBId}`,
+    `- Memory gate: ${input.verdict.memoryGate.status}`,
+    `- Mechanism gate: ${input.verdict.mechanismGate.status}`,
+    `- Latency gate: ${input.verdict.latencyGate.status}`,
     "",
     "## Preconditions",
     "",
@@ -262,6 +295,13 @@ export async function writeBaselineGateArtifacts(input: {
     markdownPath,
     jsonPath,
   };
+}
+
+// Compatibility alias for one transition cycle.
+export async function writeBaselineGateArtifacts(input: {
+  verdict: GateVerdict;
+}): Promise<{ markdownPath: string; jsonPath: string }> {
+  return writePassiveGateArtifacts(input);
 }
 
 export function getReportsRoot(): string {

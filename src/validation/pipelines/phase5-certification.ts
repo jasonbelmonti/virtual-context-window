@@ -2,9 +2,9 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import type { GateStatus, GateVerdict, ValidationProfile, ValidationRunResult } from "../core/contracts";
 import { evaluateDriftChecks } from "../core/drift";
-import { evaluateBaselineV2Gate } from "../core/gate";
+import { evaluatePassiveSlidingGate } from "../core/gate";
 import { aggregateMetrics, metricsEquivalent } from "../core/metrics";
-import { getReportsRoot, writeBaselineGateArtifacts } from "../core/reports";
+import { getReportsRoot, writePassiveGateArtifacts } from "../core/reports";
 import { runValidationProfile } from "../core/runners";
 
 const PHASE5_TIMEOUT_MS = 60_000;
@@ -309,13 +309,13 @@ async function verifyRollbackTriggerCoverage(): Promise<{
       content: opsContent,
     },
     {
-      label: "ops:output_control_channel_leak_absence_rate < 100%",
-      pattern: "output_control_channel_leak_absence_rate < 100%",
+      label: "ops:latest_fact_accuracy_rate < 90%",
+      pattern: "latest_fact_accuracy_rate < 90%",
       content: opsContent,
     },
     {
-      label: "ops:One-call invariant fails",
-      pattern: "One-call invariant fails",
+      label: "ops:one_call_invariant_rate < 100%",
+      pattern: "one_call_invariant_rate < 100%",
       content: opsContent,
     },
     {
@@ -489,17 +489,18 @@ export async function runPhase5Certification(
           metricsEquivalent(recomputeA, productionAResult.metrics) &&
           metricsEquivalent(recomputeB, productionBResult.metrics);
 
-        const baselineVerdict = evaluateBaselineV2Gate({
+        const baselineVerdict = evaluatePassiveSlidingGate({
           runAId: productionAResult.summary.runId,
           runBId: productionBResult.summary.runId,
           runAIsProduction: productionAResult.summary.profile === "production",
           runBIsProduction: productionBResult.summary.profile === "production",
           metricsA: productionAResult.metrics,
           metricsB: productionBResult.metrics,
+          profile: "production",
           reportConsistencyPassed,
         });
 
-        const baselinePaths = await writeBaselineGateArtifacts({
+        const baselinePaths = await writePassiveGateArtifacts({
           verdict: baselineVerdict,
         });
 
@@ -507,8 +508,8 @@ export async function runPhase5Certification(
           passed: baselineVerdict.status === "PASS",
           detail:
             baselineVerdict.status === "PASS"
-              ? "baseline_pass"
-              : `baseline_fail:${baselineVerdict.reasons.join(",")}`,
+              ? "passive_gate_pass"
+              : `passive_gate_fail:${baselineVerdict.reasons.join(",")}`,
           status: baselineVerdict.status,
           runAId: productionAResult.summary.runId,
           runBId: productionBResult.summary.runId,
@@ -534,6 +535,7 @@ export async function runPhase5Certification(
         }
 
         const stabilityVerdict: GateVerdict = {
+          schemaVersion: "passive_gate_v1",
           status: reasons.length === 0 ? "PASS" : "FAIL",
           generatedAt: new Date().toISOString(),
           runAId: productionAResult.summary.runId,
@@ -547,6 +549,18 @@ export async function runPhase5Certification(
                 : "non-production run in stability pair",
             },
           ],
+          memoryGate: {
+            status: "PASS",
+            reasons: [],
+          },
+          mechanismGate: {
+            status: "PASS",
+            reasons: [],
+          },
+          latencyGate: {
+            status: reasons.length === 0 ? "PASS" : "FAIL",
+            reasons: reasons.length === 0 ? [] : [...reasons],
+          },
           metricStatuses: {},
           driftChecks,
           reportConsistencyPassed: true,
@@ -554,7 +568,7 @@ export async function runPhase5Certification(
           warnings: [],
         };
 
-        const stabilityPaths = await writeBaselineGateArtifacts({
+        const stabilityPaths = await writePassiveGateArtifacts({
           verdict: stabilityVerdict,
         });
 

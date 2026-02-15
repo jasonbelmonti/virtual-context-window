@@ -2,6 +2,7 @@ import type {
   MetricAggregate,
   ThresholdEvaluation,
   ThresholdStatus,
+  ValidationProfile,
 } from "../core/contracts";
 
 export type Comparator = ">=" | "<=" | "==";
@@ -11,7 +12,14 @@ export type ThresholdRule = {
   required: boolean;
   pass: { comparator: Comparator; value: number };
   warn?: { comparator: Comparator; value: number };
-  denominatorFloor?: number;
+  denominatorFloorByProfile?: Partial<Record<ValidationProfile, number>>;
+  naIsFail?: boolean;
+  conditionalOnEmbeddingProvider?: boolean;
+};
+
+type ThresholdContext = {
+  profile: ValidationProfile;
+  embeddingProviderAvailable: boolean;
 };
 
 function compare(value: number, comparator: Comparator, threshold: number): boolean {
@@ -37,120 +45,133 @@ function chooseComparableValue(metric: MetricAggregate): number | null {
   return null;
 }
 
-export const DEFAULT_THRESHOLD_RULES: Record<string, ThresholdRule> = {
-  opaque_memory_reuse_rate: {
-    metricKey: "opaque_memory_reuse_rate",
-    required: true,
-    pass: { comparator: ">=", value: 0.99 },
-    warn: { comparator: ">=", value: 0.95 },
-    denominatorFloor: 8,
-  },
-  untrusted_token_injection_resistance_rate: {
-    metricKey: "untrusted_token_injection_resistance_rate",
-    required: true,
-    pass: { comparator: "==", value: 1 },
-    denominatorFloor: 8,
-  },
-  semantic_hit_at_4_exact: {
-    metricKey: "semantic_hit_at_4_exact",
+const RATE_FLOOR_BY_PROFILE: Record<ValidationProfile, number> = {
+  quick: 1,
+  quick_live: 3,
+  production: 8,
+};
+
+export const PASSIVE_THRESHOLD_RULES: Record<string, ThresholdRule> = {
+  latest_fact_accuracy_rate: {
+    metricKey: "latest_fact_accuracy_rate",
     required: true,
     pass: { comparator: ">=", value: 0.9 },
     warn: { comparator: ">=", value: 0.8 },
-    denominatorFloor: 8,
+    denominatorFloorByProfile: RATE_FLOOR_BY_PROFILE,
   },
-  semantic_hit_at_4_paraphrase: {
-    metricKey: "semantic_hit_at_4_paraphrase",
+  required_fact_field_completeness_rate: {
+    metricKey: "required_fact_field_completeness_rate",
+    required: true,
+    pass: { comparator: ">=", value: 0.9 },
+    warn: { comparator: ">=", value: 0.8 },
+    denominatorFloorByProfile: RATE_FLOOR_BY_PROFILE,
+  },
+  stale_fact_mismatch_rate: {
+    metricKey: "stale_fact_mismatch_rate",
+    required: true,
+    pass: { comparator: "<=", value: 0.2 },
+    warn: { comparator: "<=", value: 0.35 },
+    denominatorFloorByProfile: RATE_FLOOR_BY_PROFILE,
+  },
+  passive_vs_history_win_rate: {
+    metricKey: "passive_vs_history_win_rate",
+    required: true,
+    pass: { comparator: ">=", value: 0.6 },
+    warn: { comparator: ">=", value: 0.5 },
+    denominatorFloorByProfile: RATE_FLOOR_BY_PROFILE,
+  },
+  compaction_trigger_correctness_rate: {
+    metricKey: "compaction_trigger_correctness_rate",
+    required: true,
+    pass: { comparator: ">=", value: 0.9 },
+    warn: { comparator: ">=", value: 0.8 },
+    denominatorFloorByProfile: RATE_FLOOR_BY_PROFILE,
+  },
+  hysteresis_transition_correctness_rate: {
+    metricKey: "hysteresis_transition_correctness_rate",
+    required: true,
+    pass: { comparator: ">=", value: 0.95 },
+    warn: { comparator: ">=", value: 0.9 },
+    denominatorFloorByProfile: RATE_FLOOR_BY_PROFILE,
+  },
+  age_backfill_cadence_violation_count: {
+    metricKey: "age_backfill_cadence_violation_count",
+    required: true,
+    pass: { comparator: "==", value: 0 },
+  },
+  compaction_drain_wait_applied_rate: {
+    metricKey: "compaction_drain_wait_applied_rate",
+    required: true,
+    pass: { comparator: ">=", value: 0.9 },
+    warn: { comparator: ">=", value: 0.8 },
+    denominatorFloorByProfile: RATE_FLOOR_BY_PROFILE,
+  },
+  compaction_drain_timeout_recovery_rate: {
+    metricKey: "compaction_drain_timeout_recovery_rate",
+    required: true,
+    pass: { comparator: ">=", value: 0.9 },
+    warn: { comparator: ">=", value: 0.8 },
+    denominatorFloorByProfile: RATE_FLOOR_BY_PROFILE,
+  },
+  fallback_commit_success_rate: {
+    metricKey: "fallback_commit_success_rate",
+    required: true,
+    pass: { comparator: ">=", value: 0.9 },
+    warn: { comparator: ">=", value: 0.8 },
+    denominatorFloorByProfile: RATE_FLOOR_BY_PROFILE,
+  },
+  hydration_precision_at_k: {
+    metricKey: "hydration_precision_at_k",
     required: true,
     pass: { comparator: ">=", value: 0.75 },
     warn: { comparator: ">=", value: 0.65 },
-    denominatorFloor: 8,
+    denominatorFloorByProfile: RATE_FLOOR_BY_PROFILE,
   },
-  control_strip_correctness_rate: {
-    metricKey: "control_strip_correctness_rate",
+  hydration_false_positive_rate: {
+    metricKey: "hydration_false_positive_rate",
     required: true,
-    pass: { comparator: ">=", value: 0.99 },
-    warn: { comparator: ">=", value: 0.95 },
-    denominatorFloor: 8,
+    pass: { comparator: "<=", value: 0.2 },
+    warn: { comparator: "<=", value: 0.3 },
+    denominatorFloorByProfile: RATE_FLOOR_BY_PROFILE,
   },
-  invalid_event_rejection_rate: {
-    metricKey: "invalid_event_rejection_rate",
+  embedding_query_activation_rate: {
+    metricKey: "embedding_query_activation_rate",
+    required: true,
+    pass: { comparator: ">=", value: 0.8 },
+    warn: { comparator: ">=", value: 0.6 },
+    denominatorFloorByProfile: RATE_FLOOR_BY_PROFILE,
+    naIsFail: false,
+    conditionalOnEmbeddingProvider: true,
+  },
+  embedding_fail_open_success_rate: {
+    metricKey: "embedding_fail_open_success_rate",
     required: true,
     pass: { comparator: "==", value: 1 },
-    denominatorFloor: 8,
+    denominatorFloorByProfile: RATE_FLOOR_BY_PROFILE,
   },
   thread_isolation_violation_count: {
     metricKey: "thread_isolation_violation_count",
     required: true,
     pass: { comparator: "==", value: 0 },
   },
-  explicit_answer_fidelity_rate: {
-    metricKey: "explicit_answer_fidelity_rate",
-    required: true,
-    pass: { comparator: ">=", value: 0.95 },
-    warn: { comparator: ">=", value: 0.85 },
-    denominatorFloor: 8,
-  },
-  semantic_answer_fidelity_exact_rate: {
-    metricKey: "semantic_answer_fidelity_exact_rate",
-    required: true,
-    pass: { comparator: ">=", value: 0.9 },
-    warn: { comparator: ">=", value: 0.8 },
-    denominatorFloor: 8,
-  },
-  semantic_answer_fidelity_paraphrase_rate: {
-    metricKey: "semantic_answer_fidelity_paraphrase_rate",
-    required: true,
-    pass: { comparator: ">=", value: 0.8 },
-    warn: { comparator: ">=", value: 0.7 },
-    denominatorFloor: 8,
-  },
-  output_symbol_echo_absence_rate: {
-    metricKey: "output_symbol_echo_absence_rate",
-    required: true,
-    pass: { comparator: ">=", value: 0.99 },
-    warn: { comparator: ">=", value: 0.95 },
-    denominatorFloor: 8,
-  },
-  output_control_channel_leak_absence_rate: {
-    metricKey: "output_control_channel_leak_absence_rate",
+  one_call_invariant_rate: {
+    metricKey: "one_call_invariant_rate",
     required: true,
     pass: { comparator: "==", value: 1 },
-    denominatorFloor: 8,
+    denominatorFloorByProfile: RATE_FLOOR_BY_PROFILE,
   },
-  thread_isolation_answer_leak_rate: {
-    metricKey: "thread_isolation_answer_leak_rate",
+  stream_final_equivalence_rate: {
+    metricKey: "stream_final_equivalence_rate",
     required: true,
-    pass: { comparator: "<=", value: 0.01 },
-    warn: { comparator: "<=", value: 0.05 },
-    denominatorFloor: 8,
-  },
-  wrapped_canary_pass_rate: {
-    metricKey: "wrapped_canary_pass_rate",
-    required: true,
-    pass: { comparator: ">=", value: 0.95 },
-    warn: { comparator: ">=", value: 0.9 },
-    denominatorFloor: 8,
-  },
-  canary_expected_valid_pass_rate: {
-    metricKey: "canary_expected_valid_pass_rate",
-    required: true,
-    pass: { comparator: ">=", value: 0.95 },
-    warn: { comparator: ">=", value: 0.9 },
-    denominatorFloor: 8,
-  },
-  canary_expected_invalid_pass_rate: {
-    metricKey: "canary_expected_invalid_pass_rate",
-    required: true,
-    pass: { comparator: ">=", value: 0.95 },
-    warn: { comparator: ">=", value: 0.9 },
-    denominatorFloor: 8,
+    pass: { comparator: "==", value: 1 },
+    denominatorFloorByProfile: RATE_FLOOR_BY_PROFILE,
   },
   step_timeout_rate: {
     metricKey: "step_timeout_rate",
     required: true,
     pass: { comparator: "<=", value: 0.01 },
     warn: { comparator: "<=", value: 0.05 },
-    denominatorFloor: 8,
+    denominatorFloorByProfile: RATE_FLOOR_BY_PROFILE,
   },
   pre_model_middleware_ms_p95: {
     metricKey: "pre_model_middleware_ms_p95",
@@ -166,10 +187,22 @@ export const DEFAULT_THRESHOLD_RULES: Record<string, ThresholdRule> = {
   },
 };
 
+// Compatibility alias retained during migration.
+export const DEFAULT_THRESHOLD_RULES = PASSIVE_THRESHOLD_RULES;
+
 export function evaluateThreshold(
   rule: ThresholdRule,
   metric: MetricAggregate | undefined,
+  context: ThresholdContext,
 ): ThresholdEvaluation {
+  if (rule.conditionalOnEmbeddingProvider && !context.embeddingProviderAvailable) {
+    return {
+      metricKey: rule.metricKey,
+      status: "N/A",
+      reason: "embedding_provider_unavailable",
+    };
+  }
+
   if (!metric) {
     return {
       metricKey: rule.metricKey,
@@ -178,16 +211,15 @@ export function evaluateThreshold(
     };
   }
 
-  if (
-    metric.kind === "rate" &&
-    typeof rule.denominatorFloor === "number" &&
-    (metric.denominator ?? 0) < rule.denominatorFloor
-  ) {
-    return {
-      metricKey: rule.metricKey,
-      status: "N/A",
-      reason: "denominator_floor_not_met",
-    };
+  if (metric.kind === "rate") {
+    const floor = rule.denominatorFloorByProfile?.[context.profile];
+    if (typeof floor === "number" && (metric.denominator ?? 0) < floor) {
+      return {
+        metricKey: rule.metricKey,
+        status: "N/A",
+        reason: "denominator_floor_not_met",
+      };
+    }
   }
 
   const comparable = chooseComparableValue(metric);
@@ -221,12 +253,20 @@ export function evaluateThreshold(
 
 export function evaluateThresholdSet(
   metrics: Record<string, MetricAggregate>,
-  rules: Record<string, ThresholdRule> = DEFAULT_THRESHOLD_RULES,
+  options: {
+    profile: ValidationProfile;
+    embeddingProviderAvailable: boolean;
+    rules?: Record<string, ThresholdRule>;
+  },
 ): Record<string, ThresholdEvaluation> {
+  const rules = options.rules ?? PASSIVE_THRESHOLD_RULES;
   const output: Record<string, ThresholdEvaluation> = {};
 
   for (const [metricKey, rule] of Object.entries(rules)) {
-    output[metricKey] = evaluateThreshold(rule, metrics[metricKey]);
+    output[metricKey] = evaluateThreshold(rule, metrics[metricKey], {
+      profile: options.profile,
+      embeddingProviderAvailable: options.embeddingProviderAvailable,
+    });
   }
 
   return output;
@@ -234,14 +274,17 @@ export function evaluateThresholdSet(
 
 export function hasFailingRequiredThreshold(
   evaluations: Record<string, ThresholdEvaluation>,
-  rules: Record<string, ThresholdRule> = DEFAULT_THRESHOLD_RULES,
+  rules: Record<string, ThresholdRule> = PASSIVE_THRESHOLD_RULES,
 ): boolean {
   for (const [metricKey, rule] of Object.entries(rules)) {
     if (!rule.required) {
       continue;
     }
     const status = evaluations[metricKey]?.status;
-    if (status === "FAIL" || status === "N/A" || status === undefined) {
+    if (status === "FAIL" || status === undefined) {
+      return true;
+    }
+    if (status === "N/A" && rule.naIsFail !== false) {
       return true;
     }
   }
@@ -270,4 +313,8 @@ export function metricStatusCounts(
   }
 
   return counts;
+}
+
+export function sampleFloorForProfile(profile: ValidationProfile): number {
+  return RATE_FLOOR_BY_PROFILE[profile];
 }

@@ -2,45 +2,98 @@ import type {
   GateVerdict,
   MetricAggregate,
   ThresholdEvaluation,
+  ValidationProfile,
 } from "./contracts";
 import { evaluateDriftChecks } from "./drift";
 import {
-  DEFAULT_THRESHOLD_RULES,
+  PASSIVE_THRESHOLD_RULES,
   evaluateThresholdSet,
   hasWarningThreshold,
 } from "../scenarios/thresholds";
 
-const PARSER_CANARY_KEYS = [
-  "wrapped_canary_pass_rate",
-  "canary_expected_valid_pass_rate",
-  "canary_expected_invalid_pass_rate",
-] as const;
-
-const ZERO_TOLERANCE_KEYS = [
-  "invalid_event_rejection_rate",
-  "output_control_channel_leak_absence_rate",
-  "thread_isolation_violation_count",
-] as const;
-
-type BaselineGateInput = {
+export type PassiveGateInput = {
   runAId: string;
   runBId: string;
   runAIsProduction: boolean;
   runBIsProduction: boolean;
   metricsA: Record<string, MetricAggregate>;
   metricsB: Record<string, MetricAggregate>;
+  profile: ValidationProfile;
   reportConsistencyPassed: boolean;
+  embeddingProviderAvailable?: boolean;
 };
+
+const MEMORY_KEYS = [
+  "latest_fact_accuracy_rate",
+  "required_fact_field_completeness_rate",
+  "stale_fact_mismatch_rate",
+  "passive_vs_history_win_rate",
+] as const;
+
+const MECHANISM_KEYS = [
+  "compaction_trigger_correctness_rate",
+  "hysteresis_transition_correctness_rate",
+  "age_backfill_cadence_violation_count",
+  "compaction_drain_wait_applied_rate",
+  "compaction_drain_timeout_recovery_rate",
+  "fallback_commit_success_rate",
+  "hydration_precision_at_k",
+  "hydration_false_positive_rate",
+  "embedding_query_activation_rate",
+  "embedding_fail_open_success_rate",
+  "thread_isolation_violation_count",
+  "one_call_invariant_rate",
+  "stream_final_equivalence_rate",
+] as const;
+
+const LATENCY_KEYS = [
+  "step_timeout_rate",
+  "pre_model_middleware_ms_p95",
+  "post_model_middleware_ms_p95",
+] as const;
+
+function mergeMetricStatuses(prefix: "runA" | "runB", evaluations: Record<string, ThresholdEvaluation>): Record<string, ThresholdEvaluation> {
+  const output: Record<string, ThresholdEvaluation> = {};
+  for (const [key, value] of Object.entries(evaluations)) {
+    output[`${prefix}.${key}`] = value;
+  }
+  return output;
+}
+
+function statusesPass(
+  keys: readonly string[],
+  evaluations: Record<string, ThresholdEvaluation>,
+): { passed: boolean; reasons: string[] } {
+  const reasons: string[] = [];
+
+  for (const key of keys) {
+    const status = evaluations[key]?.status;
+    if (status === "FAIL" || status === undefined) {
+      reasons.push(`${key}_failed`);
+      continue;
+    }
+
+    // N/A is only allowed for explicitly optional threshold rules.
+    if (status === "N/A" && PASSIVE_THRESHOLD_RULES[key]?.naIsFail !== false) {
+      reasons.push(`${key}_na`);
+    }
+  }
+
+  return {
+    passed: reasons.length === 0,
+    reasons,
+  };
+}
 
 function preconditionDenominatorFloorPassed(
   evaluations: Record<string, ThresholdEvaluation>,
 ): boolean {
-  for (const [metricKey, rule] of Object.entries(DEFAULT_THRESHOLD_RULES)) {
-    if (typeof rule.denominatorFloor !== "number") {
+  for (const [metricKey, rule] of Object.entries(PASSIVE_THRESHOLD_RULES)) {
+    if (!rule.denominatorFloorByProfile) {
       continue;
     }
 
-    if (evaluations[metricKey]?.status === "N/A") {
+    if (evaluations[metricKey]?.status === "N/A" && rule.naIsFail !== false) {
       return false;
     }
   }
@@ -48,71 +101,51 @@ function preconditionDenominatorFloorPassed(
   return true;
 }
 
-function parserCanarySplitPresent(
-  metrics: Record<string, MetricAggregate>,
-): boolean {
-  for (const key of PARSER_CANARY_KEYS) {
-    const metric = metrics[key];
-    if (!metric || metric.kind !== "rate") {
-      return false;
-    }
-
-    if ((metric.denominator ?? 0) <= 0) {
-      return false;
-    }
-  }
-
-  return true;
-}
-
-function requiredThresholdsPassed(
-  evaluations: Record<string, ThresholdEvaluation>,
-): boolean {
-  for (const [metricKey, rule] of Object.entries(DEFAULT_THRESHOLD_RULES)) {
-    if (!rule.required) {
-      continue;
-    }
-
-    const status = evaluations[metricKey]?.status;
-    if (status === "FAIL" || status === "N/A" || status === undefined) {
-      return false;
-    }
-  }
-
-  return true;
-}
-
-function zeroTolerancePassed(
-  evaluations: Record<string, ThresholdEvaluation>,
-): boolean {
-  for (const key of ZERO_TOLERANCE_KEYS) {
-    const status = evaluations[key]?.status;
-    if (status !== "PASS") {
-      return false;
-    }
-  }
-
-  return true;
-}
-
-export function evaluateBaselineV2Gate(input: BaselineGateInput): GateVerdict {
-  const thresholdA = evaluateThresholdSet(input.metricsA);
-  const thresholdB = evaluateThresholdSet(input.metricsB);
+export function evaluatePassiveSlidingGate(input: PassiveGateInput): GateVerdict {
+  const embeddingProviderAvailable = input.embeddingProviderAvailable ?? true;
+  const thresholdA = evaluateThresholdSet(input.metricsA, {
+    profile: input.profile,
+    embeddingProviderAvailable,
+  });
+  const thresholdB = evaluateThresholdSet(input.metricsB, {
+    profile: input.profile,
+    embeddingProviderAvailable,
+  });
 
   const denominatorPrecondition =
     preconditionDenominatorFloorPassed(thresholdA) &&
     preconditionDenominatorFloorPassed(thresholdB);
 
-  const parserPrecondition =
-    parserCanarySplitPresent(input.metricsA) && parserCanarySplitPresent(input.metricsB);
-
   const driftChecks = evaluateDriftChecks(input.metricsA, input.metricsB);
   const driftPassed = driftChecks.every((check) => check.passed);
 
-  const runAThresholdPass = requiredThresholdsPassed(thresholdA);
-  const runBThresholdPass = requiredThresholdsPassed(thresholdB);
-  const zeroTolerancePass = zeroTolerancePassed(thresholdA) && zeroTolerancePassed(thresholdB);
+  const memoryA = statusesPass(MEMORY_KEYS, thresholdA);
+  const memoryB = statusesPass(MEMORY_KEYS, thresholdB);
+  const mechanismA = statusesPass(MECHANISM_KEYS, thresholdA);
+  const mechanismB = statusesPass(MECHANISM_KEYS, thresholdB);
+  const latencyA = statusesPass(LATENCY_KEYS, thresholdA);
+  const latencyB = statusesPass(LATENCY_KEYS, thresholdB);
+
   const twoProductionRunsPrecondition = input.runAIsProduction && input.runBIsProduction;
+
+  const memoryGate = {
+    status: memoryA.passed && memoryB.passed ? "PASS" : "FAIL",
+    reasons: [...memoryA.reasons.map((reason) => `runA.${reason}`), ...memoryB.reasons.map((reason) => `runB.${reason}`)],
+  } as const;
+
+  const mechanismGate = {
+    status: mechanismA.passed && mechanismB.passed ? "PASS" : "FAIL",
+    reasons: [...mechanismA.reasons.map((reason) => `runA.${reason}`), ...mechanismB.reasons.map((reason) => `runB.${reason}`)],
+  } as const;
+
+  const latencyGate = {
+    status: latencyA.passed && latencyB.passed && driftPassed ? "PASS" : "FAIL",
+    reasons: [
+      ...latencyA.reasons.map((reason) => `runA.${reason}`),
+      ...latencyB.reasons.map((reason) => `runB.${reason}`),
+      ...(driftPassed ? [] : ["drift_regression_failure"]),
+    ],
+  } as const;
 
   const preconditions = [
     {
@@ -126,15 +159,8 @@ export function evaluateBaselineV2Gate(input: BaselineGateInput): GateVerdict {
       name: "denominator_floor",
       passed: denominatorPrecondition,
       detail: denominatorPrecondition
-        ? "all denominator floors satisfied"
-        : "at least one rate metric failed denominator floor",
-    },
-    {
-      name: "parser_canary_split",
-      passed: parserPrecondition,
-      detail: parserPrecondition
-        ? "canary metrics present and scored"
-        : "canary metrics missing or unscored",
+        ? "profile sample floors satisfied"
+        : "at least one required metric is below sample floor",
     },
     {
       name: "report_consistency",
@@ -152,20 +178,17 @@ export function evaluateBaselineV2Gate(input: BaselineGateInput): GateVerdict {
   if (!denominatorPrecondition) {
     reasons.push("denominator_floor_failed");
   }
-  if (!parserPrecondition) {
-    reasons.push("parser_canary_split_missing");
-  }
   if (!input.reportConsistencyPassed) {
     reasons.push("report_inconsistency");
   }
-  if (!zeroTolerancePass) {
-    reasons.push("zero_tolerance_metric_failure");
+  if (memoryGate.status === "FAIL") {
+    reasons.push("memory_gate_failed");
   }
-  if (!runAThresholdPass || !runBThresholdPass) {
-    reasons.push("required_threshold_failure");
+  if (mechanismGate.status === "FAIL") {
+    reasons.push("mechanism_gate_failed");
   }
-  if (!driftPassed) {
-    reasons.push("drift_regression_failure");
+  if (latencyGate.status === "FAIL") {
+    reasons.push("latency_gate_failed");
   }
 
   const warnings: string[] = [];
@@ -173,24 +196,44 @@ export function evaluateBaselineV2Gate(input: BaselineGateInput): GateVerdict {
     warnings.push("threshold_warn_present");
   }
 
-  const metricStatuses: Record<string, ThresholdEvaluation> = {};
-  for (const [key, value] of Object.entries(thresholdA)) {
-    metricStatuses[`runA.${key}`] = value;
-  }
-  for (const [key, value] of Object.entries(thresholdB)) {
-    metricStatuses[`runB.${key}`] = value;
-  }
+  const metricStatuses = {
+    ...mergeMetricStatuses("runA", thresholdA),
+    ...mergeMetricStatuses("runB", thresholdB),
+  };
 
   return {
+    schemaVersion: "passive_gate_v1",
     status: reasons.length === 0 ? "PASS" : "FAIL",
     generatedAt: new Date().toISOString(),
     runAId: input.runAId,
     runBId: input.runBId,
     preconditions,
+    memoryGate,
+    mechanismGate,
+    latencyGate,
     metricStatuses,
     driftChecks,
     reportConsistencyPassed: input.reportConsistencyPassed,
     reasons,
     warnings,
   };
+}
+
+export function evaluateBaselineV2Gate(input: {
+  runAId: string;
+  runBId: string;
+  runAIsProduction: boolean;
+  runBIsProduction: boolean;
+  metricsA: Record<string, MetricAggregate>;
+  metricsB: Record<string, MetricAggregate>;
+  reportConsistencyPassed: boolean;
+}): GateVerdict {
+  const verdict = evaluatePassiveSlidingGate({
+    ...input,
+    profile: "production",
+    embeddingProviderAvailable: true,
+  });
+
+  verdict.warnings = [...verdict.warnings, "deprecated_baseline_v2_adapter"];
+  return verdict;
 }
