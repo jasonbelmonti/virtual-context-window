@@ -778,23 +778,48 @@ async function validateProvider(options: {
       content: "Fact key: Provider probe token. Fact value: VCW-PROBE-TOOLCHECK. Store this as durable memory and keep the value exact.",
     });
 
-    const probe = await runtime.processUserMessage([
-      "Provider tool capability check.",
-      `Call each required tool exactly once before your final answer: ${normalizedRequiredTools.join(", ")}.`,
-      "After tool calls complete, reply with exactly vcw_tool_health_ok.",
-    ].join("\n"));
+    const usedTools = new Set<string>();
+    const probeAttemptsPerTool = 2;
 
-    const usedTools = new Set(
-      (probe.trace.agent?.agentToolNames ?? [])
-        .map((name) => name.trim().toLowerCase())
-        .filter((name) => name.length > 0),
-    );
-    const missingTools = normalizedRequiredTools.filter(
-      (name) => !usedTools.has(name),
-    );
+    for (const requiredTool of normalizedRequiredTools) {
+      let satisfied = false;
+      let lastProbeError = "";
 
-    if (missingTools.length > 0) {
-      throw new Error(`missing_required_tools:${missingTools.join(",")}`);
+      for (let attempt = 1; attempt <= probeAttemptsPerTool; attempt += 1) {
+        emitProgress(options.progressReporter, {
+          kind: "phase",
+          message: "tool capability probe attempt",
+          detail: `${requiredTool} attempt=${attempt}/${probeAttemptsPerTool}`,
+        });
+
+        try {
+          const probe = await runtime.processUserMessage([
+            "Provider tool capability check.",
+            `Call ${requiredTool} exactly once before your final answer.`,
+            "Do not call any other VCW tools in this probe turn.",
+            "After tool call completes, reply with exactly vcw_tool_health_ok.",
+          ].join("\n"));
+
+          const turnTools = new Set(
+            (probe.trace.agent?.agentToolNames ?? [])
+              .map((name) => name.trim().toLowerCase())
+              .filter((name) => name.length > 0),
+          );
+          if (turnTools.has(requiredTool)) {
+            satisfied = true;
+            usedTools.add(requiredTool);
+            break;
+          }
+
+          lastProbeError = `missing_required_tools:${requiredTool}`;
+        } catch (error) {
+          lastProbeError = toErrorMessage(error);
+        }
+      }
+
+      if (!satisfied) {
+        throw new Error(lastProbeError || `missing_required_tools:${requiredTool}`);
+      }
     }
 
     emitProgress(options.progressReporter, {
@@ -868,6 +893,10 @@ export async function runShowdown(
     ...options.env,
     VCW_HISTORY_MAX_TURNS: String(options.historyLimit),
     VCW_AUTO_SYMBOL_MODE: "off",
+    VCW_AGENT_RECURSION_LIMIT:
+      options.env?.VCW_AGENT_RECURSION_LIMIT ??
+      process.env.VCW_AGENT_RECURSION_LIMIT ??
+      "48",
   };
 
   const runStartedAt = performance.now();
