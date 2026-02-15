@@ -150,8 +150,8 @@ test("fallbackCommitUsed is turn-scoped and not sticky on later turns", async ()
     messages: [{ role: "user", content: "turn three distractor" }],
   });
 
-  expect(second.diagnostics.passive?.compactionDrainAttempted).toBe(true);
-  expect(second.diagnostics.passive?.fallbackCommitUsed).toBe(true);
-  expect(third.diagnostics.passive?.compactionDrainAttempted).toBe(false);
-  expect(third.diagnostics.passive?.fallbackCommitUsed).toBe(false);
+  expect(second.diagnostics.passive?.compactionDrainAttempted).toBe(false);
+  expect(second.diagnostics.passive?.fallbackCommitUsed).toBe(false);
+  expect(third.diagnostics.passive?.compactionDrainAttempted).toBe(true);
+  expect(third.diagnostics.passive?.fallbackCommitUsed).toBe(true);
 });

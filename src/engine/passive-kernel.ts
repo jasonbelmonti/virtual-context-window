@@ -643,9 +643,17 @@ export function createVirtualContextEnginePassive(
       request,
       budget.recentLiteralPairCount,
     );
+    const turnCounter = tape.getTurn(threadId);
+    const activeHistoryTurns = Math.max(
+      1,
+      Math.max(
+        request.messages.filter((message) => message.role === "user").length,
+        turnCounter,
+      ),
+    );
     const effectiveHotWindowPairs = Math.max(
       0,
-      historyWindowTurns - hotWindowOverlapTurns,
+      Math.min(historyWindowTurns, activeHistoryTurns) - hotWindowOverlapTurns,
     );
     state.lastHistoryWindowTurns = historyWindowTurns;
     state.lastEffectiveHotWindowPairs = effectiveHotWindowPairs;
@@ -859,7 +867,9 @@ export function createVirtualContextEnginePassive(
     const ageBackfillCooldownTurns = Number.isFinite(turnsSinceLastAgeBackfill)
       ? Math.max(0, ageBackfillCooldownTurnsConfigured - turnsSinceLastAgeBackfill)
       : 0;
-    const ageBackfillReady = ageBackfillEligibleCount > 0 && ageBackfillCooldownTurns === 0;
+    const ageBackfillReady = ageBackfillEligibleCount > 0 &&
+      ageBackfillCooldownTurns === 0 &&
+      activeHistoryTurns > hotWindowOverlapTurns;
     const compactionTriggerSource: "none" | "pressure" | "age_backfill" = compiled.compactionTriggered
       ? "pressure"
       : ageBackfillReady

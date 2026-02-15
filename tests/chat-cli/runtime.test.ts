@@ -22,7 +22,7 @@ test("processUserMessage captures parse/sanitize telemetry and ignores model-ori
   expect(turn.trace.autoSymbol.mode).toBe("shadow");
   expect(turn.trace.symbolTable.length).toBe(0);
   expect(turn.trace.diagnostics.passive?.compactionTriggerSource).toBe("none");
-  expect(turn.trace.diagnostics.passive?.ageBackfillEligibleCount).toBe(0);
+  expect(turn.trace.diagnostics.passive?.ageBackfillEligibleCount).toBeGreaterThan(0);
   expect(turn.trace.diagnostics.passive?.ageBackfillCooldownTurns).toBe(0);
   expect(turn.trace.diagnostics.passive?.fallbackCommitUsed).toBe(false);
 
