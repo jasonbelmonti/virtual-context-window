@@ -9,6 +9,8 @@ test("P06 validates compaction drain wait application", async () => {
 
   expect(result.scenarioId).toBe("P06");
   expect(result.passed).toBeTrue();
+  expect(result.classification).toBeUndefined();
+  expect(result.details).toContain("compaction_drain_wait");
 
   const metric = result.metricSamples.find(
     (sample) => sample.key === "compaction_drain_wait_applied_rate",
@@ -25,6 +27,8 @@ test("P07 validates compaction drain timeout fail-open recovery", async () => {
 
   expect(result.scenarioId).toBe("P07");
   expect(result.passed).toBeTrue();
+  expect(result.classification).toBeUndefined();
+  expect(result.details).toContain("drain_timeout");
 
   const metric = result.metricSamples.find(
     (sample) => sample.key === "compaction_drain_timeout_recovery_rate",

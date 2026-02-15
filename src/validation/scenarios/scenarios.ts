@@ -246,15 +246,21 @@ function sliceConversationWindow(conversation: VirtualContextMessage[], historyL
   return conversation.slice(-maxMessages);
 }
 
-function createDeterministicAssistant(): AssistantGenerateFn {
+function createDeterministicAssistant(
+  options?: {
+    includeContextPack?: boolean;
+  },
+): AssistantGenerateFn {
+  const includeContextPack = options?.includeContextPack ?? true;
   const compute = (input: Parameters<AssistantGenerateFn>[0]): string => {
     const userText = getLastUserMessage(input.request.messages);
-    const source = [
+    const sourceParts = [
       input.request.messages.map((message) => `${message.role}:${message.content}`).join("\n"),
-      input.contextPackText,
-    ]
-      .filter((part) => part.trim().length > 0)
-      .join("\n\n");
+    ];
+    if (includeContextPack) {
+      sourceParts.push(input.contextPackText);
+    }
+    const source = sourceParts.filter((part) => part.trim().length > 0).join("\n\n");
 
     if (!userText.includes("FINAL_MISSION")) {
       return "Acknowledged.";
@@ -302,23 +308,29 @@ function buildLiveAssistantGenerate(
   mode: ValidationMode,
   liveProvider: ScenarioExecutionContext["liveProvider"],
   fallback: AssistantGenerateFn,
+  options?: {
+    includeContextPack?: boolean;
+  },
 ): AssistantGenerateFn {
   if (mode !== "live" || !liveProvider) {
     return fallback;
   }
 
+  const includeContextPack = options?.includeContextPack ?? true;
+
   return async (input) => {
     const userText = getLastUserMessage(input.request.messages);
-    const prompt = [
+    const promptParts = [
       "You are an incident response assistant.",
       "Return concise output.",
       "If asked for FINAL_MISSION, include sections Situation, Timeline, Next 30m and exact fields:",
       "incidentId, service, owner_latest, unlockToken_latest.",
-      input.contextPackText,
       `User: ${userText}`,
-    ]
-      .filter((part) => part.trim().length > 0)
-      .join("\n\n");
+    ];
+    if (includeContextPack) {
+      promptParts.splice(4, 0, input.contextPackText);
+    }
+    const prompt = promptParts.filter((part) => part.trim().length > 0).join("\n\n");
 
     return liveProvider.generate(prompt);
   };
@@ -404,11 +416,17 @@ async function runLaneScript(input: {
   const threadId = `${input.runSeed}-${input.lane}`;
   const store = new InMemorySymbolStore({ now: () => Date.now() });
   const telemetryEvents: TelemetryEvent[] = [];
-  const deterministicAssistant = createDeterministicAssistant();
+  const includeContextPack = input.lane === LANE_PASSIVE;
+  const deterministicAssistant = createDeterministicAssistant({
+    includeContextPack,
+  });
   const assistantGenerate = buildLiveAssistantGenerate(
     input.mode,
     input.liveProvider,
     deterministicAssistant,
+    {
+      includeContextPack,
+    },
   );
 
   const compactionDisabled = input.lane === LANE_HISTORY_ONLY;

@@ -1,5 +1,9 @@
 import { expect, test } from "bun:test";
-import { runScenarioById } from "./scenario-test-helpers";
+import {
+  getHeadToHeadComparison,
+  runScenarioAcrossSeeds,
+  runScenarioById,
+} from "./scenario-test-helpers";
 
 test("P01 uses minimum-accuracy + not-worse semantics with explicit lane comparison", async () => {
   const result = await runScenarioById("P01", {
@@ -48,4 +52,59 @@ test("P03 uses durability semantics with strict head-to-head improvement", async
     (passive?.requiredFactsCorrect ?? 0) > (history?.requiredFactsCorrect ?? 0);
 
   expect(result.passed).toBe(passiveAccuracy >= 0.75 && passiveStrictWin);
+});
+
+test("P01 multi-seed reliability: passive is never worse and wins majority head-to-head", async () => {
+  const results = await runScenarioAcrossSeeds("P01", {
+    seedPrefix: "p01-reliability",
+    count: 10,
+    context: {
+      profile: "quick",
+    },
+  });
+
+  let passiveNotWorseCount = 0;
+  let passiveStrictWinCount = 0;
+
+  for (const result of results) {
+    const comparison = getHeadToHeadComparison(result.assertions);
+    const passiveScore = comparison.passive.requiredFactsCorrect;
+    const historyScore = comparison.historyOnly.requiredFactsCorrect;
+    if (passiveScore >= historyScore) {
+      passiveNotWorseCount += 1;
+    }
+    if (passiveScore > historyScore) {
+      passiveStrictWinCount += 1;
+    }
+  }
+
+  const passiveNotWorseRate = passiveNotWorseCount / results.length;
+  const passiveStrictWinRate = passiveStrictWinCount / results.length;
+
+  expect(passiveNotWorseRate).toBe(1);
+  expect(passiveStrictWinRate).toBeGreaterThanOrEqual(0.6);
+});
+
+test("P03 multi-seed reliability: passive average recall beats history average", async () => {
+  const results = await runScenarioAcrossSeeds("P03", {
+    seedPrefix: "p03-reliability",
+    count: 5,
+    context: {
+      profile: "production",
+    },
+  });
+
+  let passiveTotal = 0;
+  let historyTotal = 0;
+
+  for (const result of results) {
+    const comparison = getHeadToHeadComparison(result.assertions);
+    passiveTotal += comparison.passive.requiredFactsCorrect;
+    historyTotal += comparison.historyOnly.requiredFactsCorrect;
+  }
+
+  const passiveAverage = passiveTotal / results.length;
+  const historyAverage = historyTotal / results.length;
+
+  expect(passiveAverage).toBeGreaterThan(historyAverage);
 });

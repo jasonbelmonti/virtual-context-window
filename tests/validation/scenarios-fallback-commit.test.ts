@@ -9,6 +9,8 @@ test("P08 validates deterministic fallback commit path", async () => {
 
   expect(result.scenarioId).toBe("P08");
   expect(result.passed).toBeTrue();
+  expect(result.classification).toBeUndefined();
+  expect(result.details).toContain("fallback_commit");
 
   const metric = result.metricSamples.find(
     (sample) => sample.key === "fallback_commit_success_rate",

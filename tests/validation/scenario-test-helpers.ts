@@ -2,6 +2,7 @@ import {
   executeScenario,
   getScenarioById,
   type LiveAssistantProvider,
+  type ScenarioAssertion,
   type ScenarioCaseResult,
   type ScenarioExecutionContext,
   type ScenarioId,
@@ -41,4 +42,40 @@ export async function runScenarioById(
   }
 
   return executeScenario(scenario, buildScenarioContext(options));
+}
+
+export async function runScenarioAcrossSeeds(
+  scenarioId: ScenarioId,
+  options: {
+    seedPrefix: string;
+    count: number;
+    context?: Omit<Parameters<typeof buildScenarioContext>[0], "runSeed">;
+  },
+): Promise<ScenarioCaseResult[]> {
+  const results: ScenarioCaseResult[] = [];
+  for (let index = 0; index < options.count; index += 1) {
+    results.push(await runScenarioById(scenarioId, {
+      ...options.context,
+      runSeed: `${options.seedPrefix}-${index + 1}`,
+    }));
+  }
+  return results;
+}
+
+export function getHeadToHeadComparison(assertion: ScenarioAssertion | undefined): {
+  passive: {
+    requiredFactsTotal: number;
+    requiredFactsCorrect: number;
+    latestMismatchFields: string[];
+  };
+  historyOnly: {
+    requiredFactsTotal: number;
+    requiredFactsCorrect: number;
+    latestMismatchFields: string[];
+  };
+} {
+  if (!assertion?.comparison) {
+    throw new Error("scenario_assertion_missing_comparison");
+  }
+  return assertion.comparison;
 }
