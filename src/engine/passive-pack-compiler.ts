@@ -60,6 +60,30 @@ function appendLineWithBudget(
   return true;
 }
 
+function estimateHiddenRecentLiteralChars(input: {
+  recentEntries: EventTapeEntry[];
+  budget: PassivePackBudget;
+}): number {
+  if (input.recentEntries.length === 0) {
+    return 0;
+  }
+
+  const sectionTitleChars = "RECENT LITERALS\n".length;
+  const sectionBodyChars = input.recentEntries
+    .map((entry) => {
+      const content = truncateDeterministic(
+        entry.content,
+        input.budget.recentLiteralItemMaxChars,
+      );
+      return `- [${entry.role}] ${entry.entryId}: ${content}\n`.length;
+    })
+    .reduce((sum, length) => sum + length, 0);
+  const sectionSeparatorChars = "\n".length;
+  const estimated = sectionTitleChars + sectionBodyChars + sectionSeparatorChars;
+
+  return Math.min(estimated, Math.max(0, input.budget.totalChars));
+}
+
 function renderPack(input: {
   recentEntries: EventTapeEntry[];
   symbolIndex: Array<{
@@ -163,6 +187,10 @@ export function compilePassiveContextPack(input: CompileInput):
   let hydratedFocused = [...input.hydratedFocused].sort((a, b) => b.score - a.score);
   let hydratedRecall = [...input.hydratedRecall].sort((a, b) => b.score - a.score);
   let compactMode = input.compactMode;
+  const hiddenRecentLiteralChars = estimateHiddenRecentLiteralChars({
+    recentEntries: input.recentEntries,
+    budget: input.budget,
+  });
 
   let rendered = renderPack({
     recentEntries: input.recentEntries,
@@ -174,7 +202,7 @@ export function compilePassiveContextPack(input: CompileInput):
   });
 
   let pressureRatio = input.budget.totalChars > 0
-    ? rendered.usedChars / input.budget.totalChars
+    ? (rendered.usedChars + hiddenRecentLiteralChars) / input.budget.totalChars
     : 0;
   let compactionTriggered = false;
   let compactionReason: "high_watermark" | "below_threshold" | "none" = "none";
@@ -193,7 +221,7 @@ export function compilePassiveContextPack(input: CompileInput):
       prioritizeHydrated: true,
     });
     pressureRatio = input.budget.totalChars > 0
-      ? rendered.usedChars / input.budget.totalChars
+      ? (rendered.usedChars + hiddenRecentLiteralChars) / input.budget.totalChars
       : 0;
 
     while (pressureRatio > input.highWatermark && hydratedRecall.length > 0) {
@@ -207,7 +235,7 @@ export function compilePassiveContextPack(input: CompileInput):
         prioritizeHydrated: true,
       });
       pressureRatio = input.budget.totalChars > 0
-        ? rendered.usedChars / input.budget.totalChars
+        ? (rendered.usedChars + hiddenRecentLiteralChars) / input.budget.totalChars
         : 0;
     }
 
@@ -222,7 +250,7 @@ export function compilePassiveContextPack(input: CompileInput):
         prioritizeHydrated: true,
       });
       pressureRatio = input.budget.totalChars > 0
-        ? rendered.usedChars / input.budget.totalChars
+        ? (rendered.usedChars + hiddenRecentLiteralChars) / input.budget.totalChars
         : 0;
     }
   } else if (compactMode && pressureRatio < input.lowWatermark) {

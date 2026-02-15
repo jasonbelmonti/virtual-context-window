@@ -177,6 +177,49 @@ function extractToolCalls(response: unknown): OpenAIToolCall[] {
   return calls;
 }
 
+function isAsyncIterable(value: unknown): value is AsyncIterable<unknown> {
+  if (!value || (typeof value !== "object" && typeof value !== "function")) {
+    return false;
+  }
+  return typeof (value as Record<string, unknown>)[Symbol.asyncIterator] === "function";
+}
+
+async function consumeResponseStream(stream: AsyncIterable<unknown>): Promise<{
+  response: unknown;
+  deltas: string[];
+}> {
+  const deltas: string[] = [];
+  let completedResponse: unknown;
+
+  for await (const streamEvent of stream) {
+    const eventObject = asObject(streamEvent);
+    if (!eventObject) {
+      continue;
+    }
+
+    if (
+      eventObject.type === "response.output_text.delta" &&
+      typeof eventObject.delta === "string"
+    ) {
+      deltas.push(eventObject.delta);
+      continue;
+    }
+
+    if (eventObject.type === "response.completed") {
+      completedResponse = eventObject.response;
+    }
+  }
+
+  if (completedResponse === undefined) {
+    throw new Error("openai_agent_stream_missing_completion");
+  }
+
+  return {
+    response: completedResponse,
+    deltas,
+  };
+}
+
 function parseToolArguments(args: string): Record<string, unknown> {
   if (!args) {
     return {};
@@ -456,6 +499,7 @@ export function createOpenAIResponsesAgentAssistantGenerate(
   const runTurn = async (
     input: AssistantGenerateInput,
     streamMode: boolean,
+    onDelta?: (delta: string) => void | Promise<void>,
   ): Promise<string> => {
     const autoSymbolMetadata = resolveAutoSymbolMetadata(
       asObject(input.request.metadata),
@@ -491,7 +535,13 @@ export function createOpenAIResponsesAgentAssistantGenerate(
       let toolCallCount = 0;
       const toolNames = new Set<string>();
       let currentResponse: unknown;
-      let currentResponseId: string | undefined;
+      let previousResponseId: string | undefined;
+      let streamProvider: "none" | "sse" | "buffered" = streamMode
+        ? "buffered"
+        : "none";
+      let streamChunkCount = 0;
+      let streamedTextChars = 0;
+      let nextInput: unknown = prompt;
 
       while (true) {
         modelCallCount += 1;
@@ -499,65 +549,76 @@ export function createOpenAIResponsesAgentAssistantGenerate(
           throw new Error(`agent_model_call_limit_exceeded:${maxModelCalls}`);
         }
 
-        if (modelCallCount === 1) {
-          currentResponse = await client.responses.create({
-            model,
-            input: prompt,
-            temperature,
-            tools,
-            parallel_tool_calls: false,
-            stream: false,
-          });
+        const requestParams: Record<string, unknown> = {
+          model,
+          input: nextInput,
+          temperature,
+          tools,
+          parallel_tool_calls: false,
+          stream: streamMode,
+        };
+        if (previousResponseId) {
+          requestParams.previous_response_id = previousResponseId;
+        }
+        const responseResult = await client.responses.create(requestParams);
+
+        let streamDeltas: string[] = [];
+        if (streamMode && isAsyncIterable(responseResult)) {
+          streamProvider = "sse";
+          const streamed = await consumeResponseStream(responseResult);
+          currentResponse = streamed.response;
+          streamDeltas = streamed.deltas;
         } else {
-          if (!currentResponseId) {
-            throw new Error("openai_agent_previous_response_missing_id");
-          }
-
-          const toolCalls = extractToolCalls(currentResponse);
-          const outputs: Array<Record<string, unknown>> = [];
-          for (const call of toolCalls) {
-            if (toolCallCount >= maxToolCalls) {
-              throw new Error(`agent_tool_call_limit_exceeded:${maxToolCalls}`);
-            }
-            toolCallCount += 1;
-            toolNames.add(call.name);
-
-            const args = parseToolArguments(call.arguments);
-            const toolOutput = await executeVcwAgentToolCall(
-              toolContext,
-              call.name,
-              args,
-            );
-            outputs.push({
-              type: "function_call_output",
-              call_id: call.callId,
-              output: JSON.stringify(toolOutput),
-            });
-          }
-
-          if (outputs.length === 0) {
-            break;
-          }
-
-          currentResponse = await client.responses.create({
-            model,
-            previous_response_id: currentResponseId,
-            input: outputs,
-            temperature,
-            tools,
-            parallel_tool_calls: false,
-            stream: false,
-          });
+          currentResponse = responseResult;
         }
 
         const currentObject = asObject(currentResponse);
-        currentResponseId =
+        const currentResponseId =
           typeof currentObject?.id === "string" ? currentObject.id : undefined;
 
         const pendingToolCalls = extractToolCalls(currentResponse);
         if (pendingToolCalls.length === 0) {
+          for (const delta of streamDeltas) {
+            streamChunkCount += 1;
+            streamedTextChars += delta.length;
+            if (onDelta) {
+              await onDelta(delta);
+            }
+          }
           break;
         }
+
+        if (!currentResponseId) {
+          throw new Error("openai_agent_previous_response_missing_id");
+        }
+
+        const outputs: Array<Record<string, unknown>> = [];
+        for (const call of pendingToolCalls) {
+          if (toolCallCount >= maxToolCalls) {
+            throw new Error(`agent_tool_call_limit_exceeded:${maxToolCalls}`);
+          }
+          toolCallCount += 1;
+          toolNames.add(call.name);
+
+          const args = parseToolArguments(call.arguments);
+          const toolOutput = await executeVcwAgentToolCall(
+            toolContext,
+            call.name,
+            args,
+          );
+          outputs.push({
+            type: "function_call_output",
+            call_id: call.callId,
+            output: JSON.stringify(toolOutput),
+          });
+        }
+
+        if (outputs.length === 0) {
+          break;
+        }
+
+        previousResponseId = currentResponseId;
+        nextInput = outputs;
       }
 
       const visibleText = extractResponseText(currentResponse);
@@ -568,10 +629,10 @@ export function createOpenAIResponsesAgentAssistantGenerate(
         baseUrl,
         durationMs,
         streamEnabled: streamMode,
-        streamChunkCount: 0,
-        streamedTextChars: 0,
-        streamBuffered: streamMode,
-        streamProvider: streamMode ? "buffered" : "none",
+        streamChunkCount,
+        streamedTextChars,
+        streamBuffered: streamMode && streamProvider !== "sse",
+        streamProvider: streamMode ? streamProvider : "none",
         agentModelCallCount: modelCallCount,
         agentToolCallCount: toolCallCount,
         agentToolNames: [...toolNames],
@@ -611,10 +672,58 @@ export function createOpenAIResponsesAgentAssistantGenerate(
   }) as AssistantGenerateFn;
 
   generate.stream = async function* (input: AssistantGenerateInput) {
-    const output = await runTurn(input, true);
+    const queue: string[] = [];
+    let waitingResolver: (() => void) | null = null;
+    let outputText = "";
+    let runComplete = false;
+    let runError: unknown;
+
+    const flushWaitingResolver = () => {
+      const resolver = waitingResolver;
+      waitingResolver = null;
+      if (resolver) {
+        resolver();
+      }
+    };
+
+    const runPromise = (async () => {
+      try {
+        outputText = await runTurn(input, true, (delta) => {
+          queue.push(delta);
+          flushWaitingResolver();
+        });
+      } catch (error) {
+        runError = error;
+      } finally {
+        runComplete = true;
+        flushWaitingResolver();
+      }
+    })();
+
+    while (!runComplete || queue.length > 0) {
+      if (queue.length === 0) {
+        await new Promise<void>((resolve) => {
+          waitingResolver = resolve;
+        });
+        continue;
+      }
+      const delta = queue.shift();
+      if (delta) {
+        yield {
+          type: "text_delta" as const,
+          delta,
+        };
+      }
+    }
+
+    await runPromise;
+    if (runError) {
+      throw runError;
+    }
+
     yield {
       type: "final_text",
-      text: output,
+      text: outputText,
     };
   };
 

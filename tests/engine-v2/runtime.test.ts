@@ -281,7 +281,7 @@ test("v2 passive skip reason reflects the current scheduling decision, not stale
     },
   };
 
-  const engine = createVirtualContextEngineV2Passive({
+  const engine = createVirtualContextEnginePassive({
     assistantGenerate: async () => "ack",
     store,
     extractor,

@@ -358,6 +358,47 @@ function createDefaultAgentRuntime(
   };
 }
 
+function extractStreamDelta(event: unknown): string {
+  const eventObject = asObject(event);
+  if (!eventObject || eventObject.event !== "on_chat_model_stream") {
+    return "";
+  }
+
+  const data = asObject(eventObject.data);
+  const chunk = data?.chunk;
+  if (typeof chunk === "string") {
+    return chunk;
+  }
+
+  const chunkObject = asObject(chunk);
+  if (!chunkObject) {
+    return "";
+  }
+
+  if (typeof chunkObject.content === "string") {
+    return chunkObject.content;
+  }
+  if (typeof chunkObject.text === "string") {
+    return chunkObject.text;
+  }
+
+  return extractContentText(chunkObject.content);
+}
+
+function extractStreamResult(event: unknown): unknown {
+  const eventObject = asObject(event);
+  if (!eventObject || eventObject.event !== "on_chain_end") {
+    return undefined;
+  }
+
+  const data = asObject(eventObject.data);
+  if (!data) {
+    return undefined;
+  }
+
+  return data.output;
+}
+
 async function notifyResultMetadata(
   callback: VcwAgentAssistantOptions["onResultMetadata"],
   metadata: LangChainAgentMetadata,
@@ -399,7 +440,11 @@ export function createLangChainAgentAssistantGenerate(
     throw new Error("missing_env:VCW_OLLAMA_MODEL");
   }
 
-  const generate = (async (input) => {
+  const runTurn = async (
+    input: Parameters<AssistantGenerateFn>[0],
+    streamMode: boolean,
+    onDelta?: (delta: string) => void | Promise<void>,
+  ): Promise<string> => {
     const autoSymbolMetadata = resolveAutoSymbolMetadata(
       asObject(input.request.metadata),
     );
@@ -482,17 +527,59 @@ export function createLangChainAgentAssistantGenerate(
       tools,
     });
 
-    const result = await runtime.invoke(
-      {
-        messages: input.request.messages.map((message) => ({
-          role: toRole(message.role),
-          content: message.content,
-        })),
-      },
-      {
+    const invokeInput = {
+      messages: input.request.messages.map((message) => ({
+        role: toRole(message.role),
+        content: message.content,
+      })),
+    };
+
+    let result: unknown;
+    let streamChunkCount = 0;
+    let streamedTextChars = 0;
+    let streamProvider: "none" | "langchain_stream" | "buffered" = "none";
+
+    if (streamMode && runtime.streamEvents) {
+      const pendingDeltas: string[] = [];
+      let streamedResult: unknown;
+      for await (const streamEvent of runtime.streamEvents(invokeInput, {
         recursionLimit,
-      },
-    );
+      })) {
+        const delta = extractStreamDelta(streamEvent);
+        if (delta.length > 0) {
+          pendingDeltas.push(delta);
+        }
+
+        const maybeResult = extractStreamResult(streamEvent);
+        if (maybeResult !== undefined) {
+          streamedResult = maybeResult;
+        }
+      }
+
+      if (streamedResult !== undefined) {
+        const streamedText = extractFinalAssistantText(streamedResult);
+        if (streamedText !== "no_final_assistant_text") {
+          result = streamedResult;
+          streamProvider = "langchain_stream";
+          for (const delta of pendingDeltas) {
+            streamChunkCount += 1;
+            streamedTextChars += delta.length;
+            if (onDelta) {
+              await onDelta(delta);
+            }
+          }
+        }
+      }
+    }
+
+    if (!result) {
+      result = await runtime.invoke(invokeInput, {
+        recursionLimit,
+      });
+      if (streamMode) {
+        streamProvider = "buffered";
+      }
+    }
 
     const durationMs = now() - startedAtMs;
     const outputText = extractFinalAssistantText(result);
@@ -503,11 +590,11 @@ export function createLangChainAgentAssistantGenerate(
       model,
       baseUrl,
       durationMs,
-      streamEnabled: false,
-      streamChunkCount: 0,
-      streamedTextChars: 0,
-      streamBuffered: false,
-      streamProvider: "none",
+      streamEnabled: streamMode,
+      streamChunkCount,
+      streamedTextChars,
+      streamBuffered: streamMode && streamProvider !== "langchain_stream",
+      streamProvider: streamMode ? streamProvider : "none",
       agentModelCallCount: loopMetadata.agentModelCallCount,
       agentToolCallCount: loopMetadata.agentToolCallCount,
       agentToolNames: loopMetadata.agentToolNames,
@@ -527,13 +614,65 @@ export function createLangChainAgentAssistantGenerate(
     });
 
     return outputText;
+  };
+
+  const generate = (async (input) => {
+    return runTurn(input, false);
   }) as AssistantGenerateFn;
 
   generate.stream = async function* (input) {
-    const output = await generate(input);
+    const queue: string[] = [];
+    let waitingResolver: (() => void) | null = null;
+    let outputText = "";
+    let runComplete = false;
+    let runError: unknown;
+
+    const flushWaitingResolver = () => {
+      const resolver = waitingResolver;
+      waitingResolver = null;
+      if (resolver) {
+        resolver();
+      }
+    };
+
+    const runPromise = (async () => {
+      try {
+        outputText = await runTurn(input, true, (delta) => {
+          queue.push(delta);
+          flushWaitingResolver();
+        });
+      } catch (error) {
+        runError = error;
+      } finally {
+        runComplete = true;
+        flushWaitingResolver();
+      }
+    })();
+
+    while (!runComplete || queue.length > 0) {
+      if (queue.length === 0) {
+        await new Promise<void>((resolve) => {
+          waitingResolver = resolve;
+        });
+        continue;
+      }
+      const delta = queue.shift();
+      if (delta) {
+        yield {
+          type: "text_delta" as const,
+          delta,
+        };
+      }
+    }
+
+    await runPromise;
+    if (runError) {
+      throw runError;
+    }
+
     yield {
       type: "final_text",
-      text: output,
+      text: outputText,
     };
   };
 
