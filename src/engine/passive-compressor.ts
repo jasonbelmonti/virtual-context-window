@@ -16,6 +16,16 @@ type ExtractorConfig = {
 
 const SECRET_PATTERN =
   /(?:password|passcode|api[ _-]?key|private[ _-]?key|secret|token)\s*(?:is|=|:)/iu;
+const LOW_SIGNAL_CHATTER_PATTERNS = [
+  /^(?:thanks|thank you|got it|great|awesome|sounds (?:good|great)|understood|sure)\b/iu,
+  /\b(?:let me know|if you'd like|how can i help|anything else|happy to help)\b/iu,
+  /\b(?:nice to meet you|glad to help|feel free to ask)\b/iu,
+];
+const DURABLE_SIGNAL_PATTERNS = [
+  /\b[A-Z]{2,}-\d{2,}\b/u,
+  /\b(?:incident|owner|service|timeline|token|code|plan|runbook|escalation)\b/iu,
+  /\b(?:name is|works at|work at|my [a-z]+ is|our [a-z]+ is)\b/iu,
+];
 
 const DEFAULT_CONFIDENCE_THRESHOLD = 0.75;
 const DEFAULT_MAX_PROPOSALS = 4;
@@ -49,6 +59,60 @@ function truncateSummary(content: string, maxChars = 120): string {
     return normalized.slice(0, maxChars);
   }
   return `${normalized.slice(0, maxChars - 3)}...`;
+}
+
+function normalizeContent(value: string): string {
+  return value.replace(/\s+/gu, " ").trim();
+}
+
+function hasDurableSignal(content: string): boolean {
+  const normalized = normalizeContent(content);
+  if (normalized.length < 12) {
+    return false;
+  }
+  if (/\d/u.test(normalized) && normalized.length >= 18) {
+    return true;
+  }
+  return DURABLE_SIGNAL_PATTERNS.some((pattern) => pattern.test(normalized));
+}
+
+function isLikelyLowSignalChatter(content: string): boolean {
+  const normalized = normalizeContent(content);
+  if (!normalized) {
+    return true;
+  }
+  if (LOW_SIGNAL_CHATTER_PATTERNS.some((pattern) => pattern.test(normalized))) {
+    return true;
+  }
+  // Questions and social pleasantries are rarely durable checkpoints.
+  if (normalized.endsWith("?")) {
+    return true;
+  }
+  return false;
+}
+
+function fallbackEntryScore(entry: CompressionExtractorInput["entries"][number]): number {
+  const normalized = normalizeContent(entry.content);
+  if (normalized.length < 8) {
+    return Number.NEGATIVE_INFINITY;
+  }
+
+  let score = 0;
+  if (entry.role === "user") {
+    score += 3;
+  } else {
+    score -= 1;
+  }
+  if (hasDurableSignal(normalized)) {
+    score += 3;
+  }
+  if (normalized.length >= 24 && normalized.length <= 280) {
+    score += 1;
+  }
+  if (isLikelyLowSignalChatter(normalized)) {
+    score -= 4;
+  }
+  return score;
 }
 
 function validateEvidenceSpans(value: unknown): CompressionProposal["evidenceSpans"] {
@@ -325,17 +389,21 @@ export async function applyPassiveCommitPolicy(options: {
     entryId: string;
     offsetStart: number;
     offsetEnd: number;
+    role?: "user" | "assistant";
+    content?: string;
   }>;
 }): Promise<PassiveCommitPolicyResult> {
   const confidenceThreshold = options.confidenceThreshold ?? DEFAULT_CONFIDENCE_THRESHOLD;
   const maxProposals = options.maxProposals ?? DEFAULT_MAX_EVENTS;
   const maxContentChars = options.maxContentChars ?? DEFAULT_MAX_CONTENT_CHARS;
-  const candidateSpanBounds = new Map(
+  const candidateEntryMap = new Map(
     (options.candidateEntries ?? []).map((entry) => [
       entry.entryId,
       {
         start: entry.offsetStart,
         end: entry.offsetEnd,
+        role: entry.role,
+        content: entry.content,
       },
     ]),
   );
@@ -367,9 +435,9 @@ export async function applyPassiveCommitPolicy(options: {
       continue;
     }
 
-    if (candidateSpanBounds.size > 0) {
+    if (candidateEntryMap.size > 0) {
       const spansAreGrounded = proposal.evidenceSpans.every((span) => {
-        const bounds = candidateSpanBounds.get(span.entryId);
+        const bounds = candidateEntryMap.get(span.entryId);
         if (!bounds) {
           return false;
         }
@@ -387,6 +455,23 @@ export async function applyPassiveCommitPolicy(options: {
         rejectedCount += 1;
         continue;
       }
+    }
+
+    const evidenceEntries = proposal.evidenceSpans
+      .map((span) => candidateEntryMap.get(span.entryId))
+      .filter((entry): entry is NonNullable<typeof entry> => Boolean(entry));
+    const hasUserEvidence = evidenceEntries.some((entry) => entry.role === "user");
+    const hasAssistantEvidence = evidenceEntries.some((entry) => entry.role === "assistant");
+
+    if (isLikelyLowSignalChatter(proposal.content) && !hasDurableSignal(proposal.content)) {
+      rejectedCount += 1;
+      continue;
+    }
+
+    // Assistant-only evidence must still look durable; this removes most polite echo churn.
+    if (hasAssistantEvidence && !hasUserEvidence && !hasDurableSignal(proposal.content)) {
+      rejectedCount += 1;
+      continue;
     }
 
     if (proposal.content.length > maxContentChars || proposal.content.trim().length === 0) {
@@ -434,9 +519,22 @@ export function createDeterministicFallbackExtractor(): CompressionExtractor {
   return {
     async extract(input) {
       const proposals: CompressionProposal[] = [];
-      for (const entry of input.entries) {
-        const content = entry.content.replace(/\s+/gu, " ").trim();
-        if (content.length < 8) {
+      const max = Math.max(1, Math.min(DEFAULT_MAX_PROPOSALS, input.maxProposals));
+      const rankedEntries = input.entries
+        .map((entry) => ({
+          entry,
+          score: fallbackEntryScore(entry),
+        }))
+        .filter((item) => Number.isFinite(item.score) && item.score > 0)
+        .sort((left, right) =>
+          right.score - left.score ||
+          left.entry.offsetStart - right.entry.offsetStart
+        );
+
+      for (const item of rankedEntries) {
+        const entry = item.entry;
+        const content = normalizeContent(entry.content);
+        if (!content || isLikelyLowSignalChatter(content)) {
           continue;
         }
 
@@ -454,7 +552,38 @@ export function createDeterministicFallbackExtractor(): CompressionExtractor {
           ],
         });
 
-        if (proposals.length >= Math.max(1, Math.min(DEFAULT_MAX_PROPOSALS, input.maxProposals))) {
+        if (proposals.length >= max) {
+          break;
+        }
+      }
+
+      if (proposals.length > 0) {
+        return proposals;
+      }
+
+      // Last-resort: keep user-authored entries to avoid complete durability starvation.
+      for (const entry of input.entries) {
+        if (entry.role !== "user") {
+          continue;
+        }
+        const content = normalizeContent(entry.content);
+        if (content.length < 8 || isLikelyLowSignalChatter(content)) {
+          continue;
+        }
+        proposals.push({
+          summary: truncateSummary(content),
+          content,
+          kind: "note",
+          confidence: 0.8,
+          evidenceSpans: [
+            {
+              entryId: entry.entryId,
+              startOffset: entry.offsetStart,
+              endOffset: entry.offsetEnd,
+            },
+          ],
+        });
+        if (proposals.length >= max) {
           break;
         }
       }

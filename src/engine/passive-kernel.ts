@@ -470,6 +470,8 @@ export function createVirtualContextEnginePassive(
           entryId: entry.entryId,
           offsetStart: entry.offsetStart,
           offsetEnd: entry.offsetEnd,
+          role: entry.role,
+          content: entry.content,
         })),
       });
       state.committedSymbolsCount += commit.committedSymbolsCount;
