@@ -281,6 +281,7 @@ export function createVirtualContextEnginePassive(
   });
   const queryBuilder = options.queryBuilder ?? defaultQueryBuilder;
   const extractor = options.extractor ?? createDeterministicFallbackExtractor();
+  const fallbackExtractor = createDeterministicFallbackExtractor();
 
   const threadStates = new Map<string, ThreadState>();
 
@@ -332,27 +333,40 @@ export function createVirtualContextEnginePassive(
     }
 
     state.extractorCalls += 1;
+    const extractionInput = {
+      threadId,
+      queryText,
+      entries: candidates,
+      maxProposals: maxCompactionProposals,
+    } as const;
     const extraction = await runExtractorWithTimeout({
       extractor,
-      input: {
-        threadId,
-        queryText,
-        entries: candidates,
-        maxProposals: maxCompactionProposals,
-      },
+      input: extractionInput,
       timeoutMs,
     });
 
-    if (extraction.failed || extraction.timeout) {
-      return "extractor_error";
+    let proposals = extraction.proposals;
+    if (extraction.failed || extraction.timeout || proposals.length === 0) {
+      try {
+        const fallbackProposals = await fallbackExtractor.extract(extractionInput);
+        if (fallbackProposals.length > 0) {
+          proposals = fallbackProposals;
+        } else if (extraction.failed || extraction.timeout) {
+          return "extractor_error";
+        }
+      } catch {
+        if (extraction.failed || extraction.timeout) {
+          return "extractor_error";
+        }
+      }
     }
 
-    state.proposalsCount += extraction.proposals.length;
+    state.proposalsCount += proposals.length;
 
     const commit = await applyPassiveCommitPolicy({
       threadId,
       store: options.store,
-      proposals: extraction.proposals,
+      proposals,
       maxProposals: maxCompactionProposals,
       candidateEntries: candidates.map((entry) => ({
         entryId: entry.entryId,

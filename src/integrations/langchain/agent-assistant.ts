@@ -213,7 +213,24 @@ function extractFinalAssistantText(result: unknown): string {
     return fallback;
   }
 
-  throw new Error("langchain_agent_output_missing_text");
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = asObject(messages[index]);
+    if (!message) {
+      continue;
+    }
+
+    const messageContent = extractContentText(message.content);
+    if (messageContent.length > 0) {
+      return messageContent;
+    }
+
+    const textField = typeof message.text === "string" ? message.text.trim() : "";
+    if (textField.length > 0) {
+      return textField;
+    }
+  }
+
+  return "no_final_assistant_text";
 }
 
 function collectAgentLoopMetadata(result: unknown): {

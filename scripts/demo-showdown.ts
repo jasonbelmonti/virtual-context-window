@@ -93,6 +93,7 @@ export type ShowdownRunResult = {
   maxRetries: number;
   runDurationMs: number;
   strictGatePassed: boolean;
+  advantageConditionPassed: boolean;
   metrics: ShowdownLaneMetric[];
   timeline: ShowdownTimelineEvent[];
 };
@@ -346,6 +347,7 @@ function renderSummaryMarkdown(result: ShowdownRunResult): string {
   lines.push(`- Max retries: ${result.maxRetries}`);
   lines.push(`- Run duration (ms): ${result.runDurationMs.toFixed(2)}`);
   lines.push(`- Strict gate passed: ${result.strictGatePassed}`);
+  lines.push(`- Advantage condition passed: ${result.advantageConditionPassed}`);
   lines.push("");
   lines.push("## Scoreboard");
   lines.push("");
@@ -535,6 +537,25 @@ async function executeLane(options: {
     detail: `turns=${options.scenario.distractorPrompts.length}`,
   });
 
+  const historyCleared = await runtime.executeCommand({
+    type: "history",
+    action: "clear",
+  });
+  pushCommand("/history clear");
+  pushAssistant(historyCleared.output ?? "");
+  timelinePush(
+    options.timeline,
+    "history_branch",
+    "conversation history cleared before mission",
+    options.lane,
+  );
+  emitProgress(options.progressReporter, {
+    kind: "lane",
+    lane: options.lane,
+    message: "history cleared",
+    detail: "mission starts with fresh chat window",
+  });
+
   timelinePush(options.timeline, "lane_mode", "lane compaction mode active", options.lane, {
     mode: options.lane,
   });
@@ -544,6 +565,7 @@ async function executeLane(options: {
   let gateResult: ShowdownLaneGateResult | null = null;
   const missionToolNames = new Set<string>();
   let missionToolCallCount = 0;
+  let lastAttemptError = "";
 
   while (attempt < Math.max(1, options.maxRetries + 1)) {
     attempt += 1;
@@ -573,7 +595,42 @@ async function executeLane(options: {
       message: `mission attempt ${attempt}`,
       detail: compactPreview(prompt),
     });
-    const turn = await runtime.processUserMessage(prompt);
+    let turn: { content: string; trace: AgentTurnTrace };
+    try {
+      turn = await runtime.processUserMessage(prompt);
+    } catch (error) {
+      lastAttemptError = toErrorMessage(error);
+      pushAssistant(`ERROR> ${lastAttemptError}`);
+      gateResult = {
+        answerCorrect: false,
+        agentToolCallCount: missionToolCallCount,
+        agentToolNames: Array.from(missionToolNames),
+        missingToolNames: options.requiredToolNames,
+        requiredToolCallsSatisfied: false,
+        briefFormatSatisfied: false,
+        memoryEvidenceSatisfied: false,
+        webEvidenceSatisfied: false,
+        strictGatePassed: false,
+        failureReasons: [`runtime_error:${lastAttemptError}`],
+      };
+      timelinePush(
+        options.timeline,
+        "mission_attempt_error",
+        "mission turn runtime error",
+        options.lane,
+        {
+          attempt,
+          error: lastAttemptError,
+        },
+      );
+      emitProgress(options.progressReporter, {
+        kind: "lane",
+        lane: options.lane,
+        message: `attempt ${attempt} runtime error`,
+        detail: compactPreview(lastAttemptError, 120),
+      });
+      continue;
+    }
     pushAssistant(turn.content);
     const turnToolNames = (turn.trace.agent?.agentToolNames ?? [])
       .map((name) => name.trim().toLowerCase())
@@ -618,7 +675,23 @@ async function executeLane(options: {
   }
 
   if (!finalTurn || !gateResult) {
-    throw new Error(`lane_execution_missing_final_turn:${options.lane}`);
+    const suffix = lastAttemptError ? `:${lastAttemptError}` : "";
+    const message = `lane_execution_missing_final_turn:${options.lane}${suffix}`;
+    timelinePush(options.timeline, "lane_completed", "lane completed", options.lane, {
+      strictGatePassed: false,
+      failureReasons: [`runtime_error:${message}`],
+    });
+    emitProgress(options.progressReporter, {
+      kind: "lane",
+      lane: options.lane,
+      message: "lane completed",
+      detail: `strict=false tools=${Array.from(missionToolNames).join(",") || "none"} history=0 focus=0 recall=0`,
+    });
+    return buildLaneFailureResult({
+      lane: options.lane,
+      message,
+      attempt,
+    });
   }
 
   const pre = extractPreModel(finalTurn.trace);
@@ -1038,6 +1111,14 @@ export async function runShowdown(
 
   const metrics = [compactionOff.metric, compactionOn.metric];
   const strictGatePassed = metrics.every((metric) => metric.strictGatePassed);
+  const compactionOffMetric = metrics.find((metric) => metric.lane === "compaction_off");
+  const compactionOnMetric = metrics.find((metric) => metric.lane === "compaction_on");
+  const advantageConditionPassed = Boolean(
+    compactionOffMetric &&
+      compactionOnMetric &&
+      !compactionOffMetric.strictGatePassed &&
+      compactionOnMetric.strictGatePassed,
+  );
 
   const runDurationMs = performance.now() - runStartedAt;
   const result: ShowdownRunResult = {
@@ -1053,6 +1134,7 @@ export async function runShowdown(
     maxRetries,
     runDurationMs,
     strictGatePassed,
+    advantageConditionPassed,
     metrics,
     timeline,
   };
@@ -1090,6 +1172,7 @@ export async function runShowdown(
           maxRetries: result.maxRetries,
           runDurationMs: result.runDurationMs,
           strictGatePassed: result.strictGatePassed,
+          advantageConditionPassed: result.advantageConditionPassed,
           lanes: result.metrics,
         },
         null,
@@ -1169,8 +1252,8 @@ export async function runShowdownCli(argv: string[]): Promise<number> {
     console.log(renderPhase("rendering final scoreboard"));
     console.log(renderFinalScoreboard(toRenderSummary(result)));
 
-    if (!result.strictGatePassed) {
-      console.error("[demo-showdown] strict gate failed in one or more lanes.");
+    if (!result.advantageConditionPassed) {
+      console.error("[demo-showdown] win condition failed: expected compaction_on PASS and compaction_off FAIL.");
       return 1;
     }
 
