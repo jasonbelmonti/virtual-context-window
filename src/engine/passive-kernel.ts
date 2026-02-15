@@ -440,8 +440,7 @@ export function createVirtualContextEnginePassive(
     const shouldAttemptFallback =
       extraction.failed ||
       extraction.timeout ||
-      primaryProposals.length === 0 ||
-      committedSymbols === 0;
+      primaryProposals.length === 0;
 
     if (shouldAttemptFallback) {
       fallbackCommitUsed = true;
