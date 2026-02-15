@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import { runScenarioById } from "./scenario-test-helpers";
 
-test("P05 reports age-backfill cadence violations as a count metric", async () => {
+test("P05 reports diagnostics-driven cadence checks with trigger presence", async () => {
   const result = await runScenarioById("P05", {
     profile: "quick",
     runSeed: "age-cadence-seed",
@@ -15,6 +15,10 @@ test("P05 reports age-backfill cadence violations as a count metric", async () =
 
   expect(cadenceMetric?.kind).toBe("count");
   if (cadenceMetric?.kind === "count") {
-    expect(cadenceMetric.value).toBeGreaterThanOrEqual(0);
+    expect(cadenceMetric.value).toBe(0);
   }
+
+  expect(result.diagnosticsSnapshot?.ageBackfillTriggerCount).toBeGreaterThan(0);
+  expect(result.diagnosticsSnapshot?.ageBackfillViolationCount).toBe(0);
+  expect(result.passed).toBeTrue();
 });

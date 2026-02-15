@@ -89,6 +89,8 @@ export type ScenarioDiagnosticsSnapshot = {
   pressureFinal?: number;
   compactionTriggered?: boolean;
   compactionJobsTriggered?: number;
+  ageBackfillTriggerCount?: number;
+  ageBackfillViolationCount?: number;
   fallbackCommitUsed?: boolean;
   hydratedSymbolsCount?: number;
   retrievalDegraded?: boolean;

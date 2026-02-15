@@ -62,6 +62,13 @@ type LaneRunResult = {
   pressurePeak: number;
   pressureFinal: number;
   compactionJobsTriggered: number;
+  passiveTurnDiagnostics: Array<{
+    turnIndex: number;
+    compactionTriggerSource: "none" | "pressure" | "age_backfill";
+    ageBackfillEligibleCount: number;
+    ageBackfillCooldownTurns: number;
+    ageBackfillCooldownTurnsConfigured: number;
+  }>;
   oneCallInvariant: boolean;
   streamEquivalent?: boolean;
   contextPackText: string;
@@ -436,9 +443,11 @@ async function runLaneScript(input: {
   };
 
   let conversation: VirtualContextMessage[] = [];
-  let lastResponse: VirtualContextTurnResponse | null = null;
+  let turnIndex = 0;
+  const passiveTurnDiagnostics: LaneRunResult["passiveTurnDiagnostics"] = [];
 
   const runTurn = async (userText: string): Promise<VirtualContextTurnResponse> => {
+    turnIndex += 1;
     conversation.push({ role: "user", content: userText });
     const requestMessages = sliceConversationWindow(conversation, input.historyLimitTurns);
     const response = await engine.processTurn({
@@ -449,7 +458,16 @@ async function runLaneScript(input: {
       },
     });
     conversation.push({ role: "assistant", content: response.content });
-    lastResponse = response;
+    const passive = response.diagnostics.passive;
+    if (passive) {
+      passiveTurnDiagnostics.push({
+        turnIndex,
+        compactionTriggerSource: passive.compactionTriggerSource,
+        ageBackfillEligibleCount: passive.ageBackfillEligibleCount,
+        ageBackfillCooldownTurns: passive.ageBackfillCooldownTurns,
+        ageBackfillCooldownTurnsConfigured: passive.ageBackfillCooldownTurnsConfigured,
+      });
+    }
     return response;
   };
 
@@ -508,6 +526,7 @@ async function runLaneScript(input: {
     pressurePeak: passive?.pressurePeak ?? 0,
     pressureFinal: passive?.pressureRatio ?? 0,
     compactionJobsTriggered: passive?.compactionJobsTriggered ?? 0,
+    passiveTurnDiagnostics,
     oneCallInvariant: finalResponse.diagnostics.generationCallCount === 1,
     contextPackText: finalResponse.contextPackText,
   };
@@ -868,16 +887,48 @@ async function runScenarioP05(context: ScenarioExecutionContext): Promise<Scenar
     lowWatermark: 0.98,
   });
 
-  const expectedMaxJobs = 8;
-  const violationCount = Math.max(0, lane.compactionJobsTriggered - expectedMaxJobs);
-  const passed = violationCount === 0;
+  let ageBackfillTriggerCount = 0;
+  let violationCount = 0;
+  let previousAgeBackfillTurnIndex: number | null = null;
+
+  for (const diagnostics of lane.passiveTurnDiagnostics) {
+    if (diagnostics.compactionTriggerSource !== "age_backfill") {
+      continue;
+    }
+
+    ageBackfillTriggerCount += 1;
+
+    if (diagnostics.ageBackfillCooldownTurns > 0) {
+      violationCount += 1;
+    }
+    if (diagnostics.ageBackfillEligibleCount === 0) {
+      violationCount += 1;
+    }
+    if (
+      previousAgeBackfillTurnIndex !== null &&
+      diagnostics.turnIndex - previousAgeBackfillTurnIndex <
+        diagnostics.ageBackfillCooldownTurnsConfigured
+    ) {
+      violationCount += 1;
+    }
+
+    previousAgeBackfillTurnIndex = diagnostics.turnIndex;
+  }
+
+  const passed = ageBackfillTriggerCount > 0 && violationCount === 0;
 
   return {
     lane: LANE_PASSIVE,
     passed,
-    details: passed ? "age_cadence_stable" : `age_cadence_violations:${violationCount}`,
+    details: passed
+      ? "age_cadence_stable"
+      : `age_cadence_violations:${violationCount};triggers:${ageBackfillTriggerCount}`,
     assertions: toAssertion(lane),
-    diagnosticsSnapshot: toLaneDiagnosticsSnapshot(lane),
+    diagnosticsSnapshot: {
+      ...toLaneDiagnosticsSnapshot(lane),
+      ageBackfillTriggerCount,
+      ageBackfillViolationCount: violationCount,
+    },
     metricSamples: [
       ...baseTurnMetrics(lane),
       makeCountMetric("age_backfill_cadence_violation_count", violationCount),
@@ -1154,6 +1205,7 @@ async function runScenarioP13(context: ScenarioExecutionContext): Promise<Scenar
     pressurePeak: response.diagnostics.passive?.pressurePeak ?? 0,
     pressureFinal: response.diagnostics.passive?.pressureRatio ?? 0,
     compactionJobsTriggered: response.diagnostics.passive?.compactionJobsTriggered ?? 0,
+    passiveTurnDiagnostics: [],
     oneCallInvariant: response.diagnostics.generationCallCount === 1,
     contextPackText: response.contextPackText,
   };
@@ -1233,6 +1285,7 @@ async function runScenarioP14(context: ScenarioExecutionContext): Promise<Scenar
     pressurePeak: nonStream.diagnostics.passive?.pressurePeak ?? 0,
     pressureFinal: nonStream.diagnostics.passive?.pressureRatio ?? 0,
     compactionJobsTriggered: nonStream.diagnostics.passive?.compactionJobsTriggered ?? 0,
+    passiveTurnDiagnostics: [],
     oneCallInvariant,
     streamEquivalent,
     contextPackText: nonStream.contextPackText,
