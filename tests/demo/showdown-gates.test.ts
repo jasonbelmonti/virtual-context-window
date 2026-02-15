@@ -9,6 +9,7 @@ import {
 function makeTrace(toolNames: string[]): AgentTurnTrace {
   return {
     threadId: "thread-gate-test",
+    kernelMode: "v1",
     stages: [],
     telemetry: [],
     symbolTable: [],

@@ -12,3 +12,4 @@ export * from "./retrieval-planner";
 export * from "./symbol-event-policy";
 export * from "./symbol-store";
 export * from "./write-path-hooks";
+export * from "../engine-v2";

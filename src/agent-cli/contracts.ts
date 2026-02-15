@@ -13,12 +13,14 @@ import type {
 import type { AutoSymbolMode, RecognitionScoreBand } from "../recognition";
 
 export type TraceMode = "off" | "on";
+export type KernelMode = "v1" | "v2_passive";
 
 export type AgentCliLaunchOptions = {
   once?: string;
   trace?: boolean;
   mock?: boolean;
   provider?: "ollama" | "openai_responses";
+  kernelMode?: KernelMode;
   stream?: boolean;
   threadId?: string;
   env?: Record<string, string | undefined>;
@@ -55,6 +57,7 @@ export type AgentAssistantTraceMetadata = {
 
 export type AgentTurnTrace = {
   threadId: string;
+  kernelMode: KernelMode;
   stages: EngineStage[];
   telemetry: TelemetryEvent[];
   symbolTable: SymbolRecord[];
@@ -67,6 +70,25 @@ export type AgentTurnTrace = {
     postModelMs: number;
     retrievalStrategy: "lexical_v1" | "hybrid_v2";
     retrievalDegraded: boolean;
+    passive?: {
+      pressureRatio: number;
+      pressurePeak: number;
+      pressureState: "normal" | "compact";
+      compactionTriggered: boolean;
+      compactionReason: "high_watermark" | "below_threshold" | "none";
+      compactionJobsTriggered: number;
+      compactionSkippedReason:
+        | "none"
+        | "in_flight"
+        | "low_pressure"
+        | "no_candidates"
+        | "extractor_error";
+      extractorCalls: number;
+      proposalsCount: number;
+      committedSymbolsCount: number;
+      hydratedSymbolsCount: number;
+      ignoredModelEventCount: number;
+    };
   };
   autoSymbol: {
     mode: AutoSymbolMode;
@@ -94,6 +116,7 @@ export type AgentCliStateView = {
   threadId: string;
   traceMode: TraceMode;
   provider: "ollama" | "openai_responses";
+  kernelMode: KernelMode;
   streamEnabled: boolean;
   autoSymbolMode: AutoSymbolMode;
   historyTurnLimit: number | null;
