@@ -7,7 +7,7 @@ import type {
   VcwLangChainMiddleware,
   LangChainAssistantResultMetadata,
 } from "../langchain/contracts";
-import type { VcwAgentToolContext } from "../langchain/agent-contracts";
+import type { VcwAgentToolContext } from "../langchain/agent/agent-contracts";
 
 export type OpenAIStreamProvider = "none" | "sse" | "buffered";
 
