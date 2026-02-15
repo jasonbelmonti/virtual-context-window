@@ -70,6 +70,18 @@ export type ScenarioAssertion = {
   latestMismatchFields: string[];
   expectedValues: Record<string, string>;
   actualValues: Record<string, string>;
+  comparison?: {
+    passive: {
+      requiredFactsTotal: number;
+      requiredFactsCorrect: number;
+      latestMismatchFields: string[];
+    };
+    historyOnly: {
+      requiredFactsTotal: number;
+      requiredFactsCorrect: number;
+      latestMismatchFields: string[];
+    };
+  };
 };
 
 export type ScenarioDiagnosticsSnapshot = {

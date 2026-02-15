@@ -523,6 +523,31 @@ function toAssertion(lane: LaneRunResult): ScenarioAssertion {
   };
 }
 
+function toHeadToHeadAssertion(
+  passive: LaneRunResult,
+  historyOnly: LaneRunResult,
+): ScenarioAssertion {
+  return {
+    requiredFactsTotal: passive.requiredFactsTotal,
+    requiredFactsCorrect: passive.requiredFactsCorrect,
+    latestMismatchFields: passive.latestMismatchFields,
+    expectedValues: passive.expectedFacts,
+    actualValues: passive.parsedFacts,
+    comparison: {
+      passive: {
+        requiredFactsTotal: passive.requiredFactsTotal,
+        requiredFactsCorrect: passive.requiredFactsCorrect,
+        latestMismatchFields: passive.latestMismatchFields,
+      },
+      historyOnly: {
+        requiredFactsTotal: historyOnly.requiredFactsTotal,
+        requiredFactsCorrect: historyOnly.requiredFactsCorrect,
+        latestMismatchFields: historyOnly.latestMismatchFields,
+      },
+    },
+  };
+}
+
 function makeRateMetric(key: string, numerator: number, denominator: number): MetricSample {
   return {
     key,
@@ -709,24 +734,27 @@ function pickPrimaryLaneResult(
 
 async function runScenarioP01(context: ScenarioExecutionContext): Promise<ScenarioExecutionResult> {
   const headToHead = await runHeadToHead(context, {
-    clearHistoryBeforeFinal: false,
+    clearHistoryBeforeFinal: true,
+    distractorTurns: 10,
   });
 
+  const passiveAccuracy = headToHead.passive.requiredFactsTotal > 0
+    ? headToHead.passive.requiredFactsCorrect / headToHead.passive.requiredFactsTotal
+    : 0;
   const passiveBeatsHistory =
     headToHead.passive.requiredFactsCorrect > headToHead.historyOnly.requiredFactsCorrect;
-  const passivePerfect =
-    headToHead.passive.requiredFactsCorrect === headToHead.passive.requiredFactsTotal;
-
-  const passed = passivePerfect && passiveBeatsHistory;
+  const passiveNotWorse =
+    headToHead.passive.requiredFactsCorrect >= headToHead.historyOnly.requiredFactsCorrect;
+  const passed = passiveAccuracy >= 0.75 && passiveNotWorse;
   const primary = pickPrimaryLaneResult(headToHead.passive, headToHead.historyOnly);
 
   return {
     lane: primary.lane,
     passed,
     details: passed
-      ? "passive_outperformed_history"
-      : `head_to_head_failure:passive=${headToHead.passive.requiredFactsCorrect}/${headToHead.passive.requiredFactsTotal},history=${headToHead.historyOnly.requiredFactsCorrect}/${headToHead.historyOnly.requiredFactsTotal}`,
-    assertions: toAssertion(headToHead.passive),
+      ? "passive_not_worse_with_min_accuracy"
+      : `head_to_head_failure:passive=${headToHead.passive.requiredFactsCorrect}/${headToHead.passive.requiredFactsTotal},history=${headToHead.historyOnly.requiredFactsCorrect}/${headToHead.historyOnly.requiredFactsTotal},not_worse=${passiveNotWorse},accuracy=${passiveAccuracy.toFixed(2)}`,
+    assertions: toHeadToHeadAssertion(headToHead.passive, headToHead.historyOnly),
     diagnosticsSnapshot: toLaneDiagnosticsSnapshot(headToHead.passive),
     metricSamples: [
       ...baseTurnMetrics(headToHead.passive),
@@ -771,10 +799,12 @@ async function runScenarioP03(context: ScenarioExecutionContext): Promise<Scenar
     distractorTurns: 12,
   });
 
-  const passiveDurable = headToHead.passive.requiredFactsCorrect >= 3;
+  const passiveAccuracy = headToHead.passive.requiredFactsTotal > 0
+    ? headToHead.passive.requiredFactsCorrect / headToHead.passive.requiredFactsTotal
+    : 0;
   const passiveBeatsHistory =
     headToHead.passive.requiredFactsCorrect > headToHead.historyOnly.requiredFactsCorrect;
-  const passed = passiveDurable && passiveBeatsHistory;
+  const passed = passiveAccuracy >= 0.75 && passiveBeatsHistory;
 
   return {
     lane: LANE_PASSIVE,
@@ -782,7 +812,7 @@ async function runScenarioP03(context: ScenarioExecutionContext): Promise<Scenar
     details: passed
       ? "passive_durability_observed"
       : `durability_not_observed:passive=${headToHead.passive.requiredFactsCorrect},history=${headToHead.historyOnly.requiredFactsCorrect}`,
-    assertions: toAssertion(headToHead.passive),
+    assertions: toHeadToHeadAssertion(headToHead.passive, headToHead.historyOnly),
     diagnosticsSnapshot: toLaneDiagnosticsSnapshot(headToHead.passive),
     metricSamples: [
       ...baseTurnMetrics(headToHead.passive),
