@@ -1,6 +1,7 @@
 import {
   createProviderCompressionExtractor,
   createVirtualContextEngine,
+  type EmbeddingProvider,
   InMemorySymbolStore,
   type AssistantGenerateFn,
   type EngineStage,
@@ -15,8 +16,10 @@ import {
 } from "../integrations/langchain";
 import {
   createOpenAIResponsesAssistantGenerate,
+  createOpenAIEmbeddingProvider,
   type OpenAIResponsesAssistantResultMetadata,
 } from "../integrations/openai";
+import { createOllamaEmbeddingProvider } from "../integrations/ollama";
 import {
   normalizeForComparison,
   parseAutoSymbolMetadataEnvelope,
@@ -303,6 +306,25 @@ export class ChatCliRuntime {
     });
   }
 
+  private resolveEmbeddingProvider(): EmbeddingProvider | undefined {
+    if (this.options.mock) {
+      return undefined;
+    }
+
+    const env = this.options.env ?? process.env;
+    if (this.provider === "openai_responses") {
+      if (!env.VCW_OPENAI_EMBED_MODEL || !env.OPENAI_API_KEY) {
+        return undefined;
+      }
+      return createOpenAIEmbeddingProvider({ env });
+    }
+
+    if (!env.VCW_OLLAMA_EMBED_MODEL) {
+      return undefined;
+    }
+    return createOllamaEmbeddingProvider({ env });
+  }
+
   private createEngine(): VirtualContextEngine {
     const env = this.options.env ?? process.env;
     const passiveHighWatermark = parsePositiveFloat(
@@ -321,6 +343,7 @@ export class ChatCliRuntime {
     return createVirtualContextEngine({
       assistantGenerate: this.resolveAssistantGenerate(),
       store: this.store,
+      embeddingProvider: this.resolveEmbeddingProvider(),
       onStage: (stage) => {
         this.activeStages?.push(stage);
       },

@@ -1,4 +1,5 @@
 import type {
+  EmbeddingProvider,
   EngineStage,
   RetrievalStrategy,
   SymbolRecordKind,
@@ -129,6 +130,7 @@ export type PassiveTurnDiagnostics = {
 export type PassiveKernelOptions = {
   assistantGenerate: AssistantGenerateFn;
   store: SymbolStore;
+  embeddingProvider?: EmbeddingProvider;
   telemetry?: TelemetrySink;
   retrievalStrategy?: RetrievalStrategy;
   now?: () => number;

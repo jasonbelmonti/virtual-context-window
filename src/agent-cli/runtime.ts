@@ -3,6 +3,7 @@ import {
   InMemorySymbolStore,
   createVirtualContextEngine,
   type AssistantGenerateFn,
+  type EmbeddingProvider,
   type EngineStage,
   type PreModelTelemetry,
   type SymbolRecord,
@@ -17,8 +18,10 @@ import {
 } from "../integrations/langchain";
 import {
   createOpenAIResponsesAgentAssistantGenerate,
+  createOpenAIEmbeddingProvider,
   type OpenAIResponsesAgentResultMetadata,
 } from "../integrations/openai";
+import { createOllamaEmbeddingProvider } from "../integrations/ollama";
 import {
   normalizeForComparison,
   parseAutoSymbolMetadataEnvelope,
@@ -341,6 +344,25 @@ export class AgentCliRuntime {
     });
   }
 
+  private resolveEmbeddingProvider(): EmbeddingProvider | undefined {
+    if (this.options.mock) {
+      return undefined;
+    }
+
+    const env = this.options.env ?? process.env;
+    if (this.provider === "openai_responses") {
+      if (!env.VCW_OPENAI_EMBED_MODEL || !env.OPENAI_API_KEY) {
+        return undefined;
+      }
+      return createOpenAIEmbeddingProvider({ env });
+    }
+
+    if (!env.VCW_OLLAMA_EMBED_MODEL) {
+      return undefined;
+    }
+    return createOllamaEmbeddingProvider({ env });
+  }
+
   private async recordLifecycleEvent(
     event: Omit<AgentLifecycleEvent, "seq" | "timestampMs">,
     timestampMs?: number,
@@ -419,6 +441,7 @@ export class AgentCliRuntime {
     return createVirtualContextEngine({
       assistantGenerate: this.resolveAssistantGenerate(),
       store: this.store,
+      embeddingProvider: this.resolveEmbeddingProvider(),
       telemetry: {
         emit: (event) => {
           this.activeTelemetry?.push(event);

@@ -178,6 +178,7 @@ async function selectHydratedCandidates(options: {
   queryTokens: string[];
   retrievalStrategy: "lexical_v1" | "hybrid_v2";
   store: PassiveKernelOptions["store"];
+  embeddingProvider?: PassiveKernelOptions["embeddingProvider"];
   recallK: number;
 }): Promise<{
   candidateSymbolIds: string[];
@@ -186,6 +187,7 @@ async function selectHydratedCandidates(options: {
   lexicalCandidateCount: number;
   vectorCandidateCount: number;
   rerankedCandidateCount: number;
+  retrievalDegraded: boolean;
 }> {
   const candidateLimit = Math.max(4, options.recallK * 2);
 
@@ -193,21 +195,54 @@ async function selectHydratedCandidates(options: {
   let lexicalCandidateCount = 0;
   let vectorCandidateCount = 0;
   let rerankedCandidateCount = 0;
+  let retrievalDegraded =
+    options.retrievalStrategy === "hybrid_v2" && !options.embeddingProvider;
+  let queryEmbedding: number[] | undefined;
+
+  if (
+    options.retrievalStrategy === "hybrid_v2" &&
+    options.embeddingProvider &&
+    options.queryText.trim().length > 0
+  ) {
+    try {
+      const embedded = await options.embeddingProvider.embed({
+        model: "",
+        input: options.queryText,
+        traceId: options.threadId,
+      });
+      if (embedded.vector.length > 0) {
+        queryEmbedding = embedded.vector;
+      } else {
+        retrievalDegraded = true;
+      }
+    } catch {
+      retrievalDegraded = true;
+    }
+  }
 
   if (options.store.searchWithOptions) {
-    const searched = await options.store.searchWithOptions(
-      options.threadId,
-      options.queryText,
-      candidateLimit,
-      {
-        strategy: options.retrievalStrategy,
-        queryTokens: options.queryTokens,
-      },
-    );
-    ids = searched.ids;
-    lexicalCandidateCount = searched.diagnostics.lexicalCandidateCount;
-    vectorCandidateCount = searched.diagnostics.vectorCandidateCount;
-    rerankedCandidateCount = searched.diagnostics.rerankedCandidateCount;
+    try {
+      const searched = await options.store.searchWithOptions(
+        options.threadId,
+        options.queryText,
+        candidateLimit,
+        {
+          strategy: options.retrievalStrategy,
+          queryTokens: options.queryTokens,
+          queryEmbedding,
+        },
+      );
+      ids = searched.ids;
+      lexicalCandidateCount = searched.diagnostics.lexicalCandidateCount;
+      vectorCandidateCount = searched.diagnostics.vectorCandidateCount;
+      rerankedCandidateCount = searched.diagnostics.rerankedCandidateCount;
+    } catch {
+      retrievalDegraded = true;
+      ids = await options.store.search(options.threadId, options.queryText, candidateLimit);
+      lexicalCandidateCount = ids.length;
+      vectorCandidateCount = 0;
+      rerankedCandidateCount = ids.length;
+    }
   } else {
     ids = await options.store.search(options.threadId, options.queryText, candidateLimit);
     lexicalCandidateCount = ids.length;
@@ -249,6 +284,7 @@ async function selectHydratedCandidates(options: {
     lexicalCandidateCount,
     vectorCandidateCount,
     rerankedCandidateCount,
+    retrievalDegraded,
   };
 }
 
@@ -572,6 +608,7 @@ export function createVirtualContextEnginePassive(
       queryTokens: query.queryTokens,
       retrievalStrategy,
       store: options.store,
+      embeddingProvider: options.embeddingProvider,
       recallK: budget.recallK,
     });
 
@@ -626,7 +663,7 @@ export function createVirtualContextEnginePassive(
         recallInjectedCount: compiled.recallInjectedCount,
         trustedSymbolRefsEnabled,
         trustedRefIdsUsed: 0,
-        retrievalDegraded: false,
+        retrievalDegraded: hydrated.retrievalDegraded,
       },
       executeOptions?.streamEvents,
     );
@@ -848,7 +885,7 @@ export function createVirtualContextEnginePassive(
           preModelMs,
           postModelMs,
           retrievalStrategy,
-          retrievalDegraded: false,
+          retrievalDegraded: hydrated.retrievalDegraded,
           passive: passiveDiagnostics,
         },
       },

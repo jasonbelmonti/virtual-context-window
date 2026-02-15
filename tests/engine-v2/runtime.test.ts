@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import {
   createVirtualContextEnginePassive,
+  type EmbeddingProvider,
   InMemorySymbolStore,
   type AssistantGenerateFn,
   type CompressionExtractor,
@@ -9,6 +10,87 @@ import {
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
+
+test("v2 passive hybrid retrieval forwards query embeddings when provider is configured", async () => {
+  const store = new InMemorySymbolStore();
+  await store.upsert("thread-hybrid-embed", {
+    summary: "pager owner",
+    content: "on-call owner is Casey",
+    kind: "fact",
+  });
+
+  const originalSearchWithOptions = store.searchWithOptions?.bind(store);
+  let capturedQueryEmbedding: number[] | undefined;
+  store.searchWithOptions = async (threadId, queryText, k, options) => {
+    capturedQueryEmbedding = options.queryEmbedding;
+    return originalSearchWithOptions!(threadId, queryText, k, options);
+  };
+
+  const embeddingProvider: EmbeddingProvider = {
+    async embed() {
+      return {
+        vector: [0.15, -0.02, 0.88],
+        model: "mock-embed",
+        provider: "mock",
+        latencyMs: 1,
+      };
+    },
+  };
+
+  const engine = createVirtualContextEnginePassive({
+    assistantGenerate: async () => "ack",
+    store,
+    embeddingProvider,
+    retrievalStrategy: "hybrid_v2",
+    packBudget: {
+      totalChars: 420,
+      recentLiteralPairCount: 2,
+    },
+  });
+
+  const response = await engine.processTurn({
+    threadId: "thread-hybrid-embed",
+    messages: [{ role: "user", content: "who is on-call owner?" }],
+  });
+
+  expect(capturedQueryEmbedding).toEqual([0.15, -0.02, 0.88]);
+  expect(response.diagnostics.retrievalDegraded).toBe(false);
+});
+
+test("v2 passive hybrid retrieval fails open when query embedding generation fails", async () => {
+  const store = new InMemorySymbolStore();
+  await store.upsert("thread-hybrid-embed-fail", {
+    summary: "pager owner",
+    content: "on-call owner is Casey",
+    kind: "fact",
+  });
+
+  const embeddingProvider: EmbeddingProvider = {
+    async embed() {
+      throw new Error("embedding_backend_unavailable");
+    },
+  };
+
+  const engine = createVirtualContextEnginePassive({
+    assistantGenerate: async () => "ack",
+    store,
+    embeddingProvider,
+    retrievalStrategy: "hybrid_v2",
+    packBudget: {
+      totalChars: 420,
+      recentLiteralPairCount: 2,
+    },
+  });
+
+  const response = await engine.processTurn({
+    threadId: "thread-hybrid-embed-fail",
+    messages: [{ role: "user", content: "who is on-call owner?" }],
+  });
+
+  expect(response.content).toBe("ack");
+  expect(response.diagnostics.generationCallCount).toBe(1);
+  expect(response.diagnostics.retrievalDegraded).toBe(true);
+});
 
 test("v2 passive compaction is async, ignores model-origin writes, and keeps one-call invariant", async () => {
   const store = new InMemorySymbolStore();
