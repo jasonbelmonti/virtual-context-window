@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import type { ScenarioCaseResult } from "../../src/validation/core/contracts";
 import { aggregateMetrics } from "../../src/validation/core/metrics";
+import { runScenarioById } from "./scenario-test-helpers";
 
 function makeResult(timeoutNumerator: number): ScenarioCaseResult {
   return {
@@ -35,5 +36,31 @@ test("step_timeout_rate aggregation is single-count per scenario result", () => 
     expect(timeout.denominator).toBe(2);
     expect(timeout.rate).toBe(0.5);
     expect(timeout.sampleCount).toBe(2);
+  }
+});
+
+const MEMORY_KPI_KEYS = [
+  "latest_fact_accuracy_rate",
+  "required_fact_field_completeness_rate",
+  "stale_fact_mismatch_rate",
+  "passive_vs_history_win_rate",
+];
+
+test("non-memory scenarios do not emit memory KPI samples", async () => {
+  const isolation = await runScenarioById("P13", {
+    profile: "quick",
+    runSeed: "metrics-isolation-seed",
+  });
+  const streaming = await runScenarioById("P14", {
+    profile: "quick",
+    runSeed: "metrics-streaming-seed",
+  });
+
+  const isolationKeys = new Set(isolation.metricSamples.map((sample) => sample.key));
+  const streamingKeys = new Set(streaming.metricSamples.map((sample) => sample.key));
+
+  for (const key of MEMORY_KPI_KEYS) {
+    expect(isolationKeys.has(key)).toBeFalse();
+    expect(streamingKeys.has(key)).toBeFalse();
   }
 });

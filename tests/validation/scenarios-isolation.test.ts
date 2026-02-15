@@ -17,4 +17,14 @@ test("P13 validates thread isolation via zero-violation count", async () => {
   if (isolationMetric?.kind === "count") {
     expect(isolationMetric.value).toBe(0);
   }
+
+  const memoryKeys = new Set([
+    "latest_fact_accuracy_rate",
+    "required_fact_field_completeness_rate",
+    "stale_fact_mismatch_rate",
+    "passive_vs_history_win_rate",
+  ]);
+  for (const sample of result.metricSamples) {
+    expect(memoryKeys.has(sample.key)).toBeFalse();
+  }
 });

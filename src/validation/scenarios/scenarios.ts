@@ -599,9 +599,30 @@ async function withTimeout<T>(
   return result;
 }
 
-function defaultMetricsForLane(lane: LaneRunResult): MetricSample[] {
-  const completeness = lane.requiredFactsTotal > 0 ? lane.requiredFactsCorrect / lane.requiredFactsTotal : 0;
-  const staleRate = lane.requiredFactsTotal > 0 ? lane.staleMismatchFields.length / lane.requiredFactsTotal : 0;
+function baseTurnMetrics(
+  lane: LaneRunResult,
+  options?: {
+    includeOneCallInvariant?: boolean;
+  },
+): MetricSample[] {
+  const includeOneCallInvariant = options?.includeOneCallInvariant ?? true;
+  const metrics: MetricSample[] = [
+    ...makeLatencyMetrics(lane.finalResponse),
+    makeRateMetric("step_timeout_rate", 0, 1),
+  ];
+
+  if (includeOneCallInvariant) {
+    metrics.unshift(makeRateMetric("one_call_invariant_rate", lane.oneCallInvariant ? 1 : 0, 1));
+  }
+
+  return metrics;
+}
+
+function memoryOutcomeMetrics(lane: LaneRunResult): MetricSample[] {
+  const staleCount = lane.staleMismatchFields.length;
+  const completeness = lane.requiredFactsTotal > 0
+    ? lane.requiredFactsCorrect / lane.requiredFactsTotal
+    : 0;
 
   return [
     makeRateMetric("latest_fact_accuracy_rate", lane.requiredFactsCorrect, lane.requiredFactsTotal),
@@ -612,12 +633,9 @@ function defaultMetricsForLane(lane: LaneRunResult): MetricSample[] {
     ),
     makeRateMetric(
       "stale_fact_mismatch_rate",
-      staleRate * lane.requiredFactsTotal,
+      staleCount,
       lane.requiredFactsTotal,
     ),
-    makeRateMetric("one_call_invariant_rate", lane.oneCallInvariant ? 1 : 0, 1),
-    ...makeLatencyMetrics(lane.finalResponse),
-    makeRateMetric("step_timeout_rate", 0, 1),
     // Keep an informational metric in compatibility output; not thresholded by default.
     makeRateMetric("baseline_lane_completeness_rate", completeness, 1),
   ];
@@ -711,7 +729,8 @@ async function runScenarioP01(context: ScenarioExecutionContext): Promise<Scenar
     assertions: toAssertion(headToHead.passive),
     diagnosticsSnapshot: toLaneDiagnosticsSnapshot(headToHead.passive),
     metricSamples: [
-      ...defaultMetricsForLane(headToHead.passive),
+      ...baseTurnMetrics(headToHead.passive),
+      ...memoryOutcomeMetrics(headToHead.passive),
       makeRateMetric(
         "passive_vs_history_win_rate",
         passiveBeatsHistory ? 1 : 0,
@@ -733,7 +752,8 @@ async function runScenarioP02(context: ScenarioExecutionContext): Promise<Scenar
     assertions: toAssertion(headToHead.historyOnly),
     diagnosticsSnapshot: toLaneDiagnosticsSnapshot(headToHead.historyOnly),
     metricSamples: [
-      ...defaultMetricsForLane(headToHead.historyOnly),
+      ...baseTurnMetrics(headToHead.historyOnly),
+      ...memoryOutcomeMetrics(headToHead.historyOnly),
       makeRateMetric(
         "passive_vs_history_win_rate",
         headToHead.passive.requiredFactsCorrect > headToHead.historyOnly.requiredFactsCorrect
@@ -765,7 +785,8 @@ async function runScenarioP03(context: ScenarioExecutionContext): Promise<Scenar
     assertions: toAssertion(headToHead.passive),
     diagnosticsSnapshot: toLaneDiagnosticsSnapshot(headToHead.passive),
     metricSamples: [
-      ...defaultMetricsForLane(headToHead.passive),
+      ...baseTurnMetrics(headToHead.passive),
+      ...memoryOutcomeMetrics(headToHead.passive),
       makeRateMetric("passive_vs_history_win_rate", passiveBeatsHistory ? 1 : 0, 1),
     ],
   };
@@ -795,7 +816,7 @@ async function runScenarioP04(context: ScenarioExecutionContext): Promise<Scenar
     assertions: toAssertion(lane),
     diagnosticsSnapshot: toLaneDiagnosticsSnapshot(lane),
     metricSamples: [
-      ...defaultMetricsForLane(lane),
+      ...baseTurnMetrics(lane),
       makeRateMetric("hysteresis_transition_correctness_rate", passed ? 1 : 0, 1),
       makeRateMetric("compaction_trigger_correctness_rate", lane.compactionTriggered ? 1 : 0, 1),
     ],
@@ -828,7 +849,7 @@ async function runScenarioP05(context: ScenarioExecutionContext): Promise<Scenar
     assertions: toAssertion(lane),
     diagnosticsSnapshot: toLaneDiagnosticsSnapshot(lane),
     metricSamples: [
-      ...defaultMetricsForLane(lane),
+      ...baseTurnMetrics(lane),
       makeCountMetric("age_backfill_cadence_violation_count", violationCount),
     ],
   };
@@ -859,7 +880,7 @@ async function runScenarioP06(context: ScenarioExecutionContext): Promise<Scenar
     assertions: toAssertion(lane),
     diagnosticsSnapshot: toLaneDiagnosticsSnapshot(lane),
     metricSamples: [
-      ...defaultMetricsForLane(lane),
+      ...baseTurnMetrics(lane),
       makeRateMetric("compaction_drain_wait_applied_rate", drainApplied ? 1 : 0, 1),
     ],
   };
@@ -891,7 +912,7 @@ async function runScenarioP07(context: ScenarioExecutionContext): Promise<Scenar
     assertions: toAssertion(lane),
     diagnosticsSnapshot: toLaneDiagnosticsSnapshot(lane),
     metricSamples: [
-      ...defaultMetricsForLane(lane),
+      ...baseTurnMetrics(lane),
       makeRateMetric("compaction_drain_timeout_recovery_rate", timeoutRecovered ? 1 : 0, 1),
     ],
   };
@@ -919,7 +940,7 @@ async function runScenarioP08(context: ScenarioExecutionContext): Promise<Scenar
     assertions: toAssertion(lane),
     diagnosticsSnapshot: toLaneDiagnosticsSnapshot(lane),
     metricSamples: [
-      ...defaultMetricsForLane(lane),
+      ...baseTurnMetrics(lane),
       makeRateMetric("fallback_commit_success_rate", fallbackWorked ? 1 : 0, 1),
     ],
   };
@@ -959,7 +980,7 @@ async function runScenarioP09(context: ScenarioExecutionContext): Promise<Scenar
     assertions: toAssertion(lane),
     diagnosticsSnapshot: toLaneDiagnosticsSnapshot(lane),
     metricSamples: [
-      ...defaultMetricsForLane(lane),
+      ...baseTurnMetrics(lane),
       makeRateMetric("hydration_precision_at_k", relevant, total),
     ],
   };
@@ -990,7 +1011,7 @@ async function runScenarioP10(context: ScenarioExecutionContext): Promise<Scenar
     assertions: toAssertion(lane),
     diagnosticsSnapshot: toLaneDiagnosticsSnapshot(lane),
     metricSamples: [
-      ...defaultMetricsForLane(lane),
+      ...baseTurnMetrics(lane),
       makeRateMetric("hydration_false_positive_rate", falsePositives, total),
     ],
   };
@@ -1018,7 +1039,7 @@ async function runScenarioP11(context: ScenarioExecutionContext): Promise<Scenar
     assertions: toAssertion(lane),
     diagnosticsSnapshot: toLaneDiagnosticsSnapshot(lane),
     metricSamples: [
-      ...defaultMetricsForLane(lane),
+      ...baseTurnMetrics(lane),
       makeRateMetric("embedding_query_activation_rate", activated ? 1 : 0, 1),
     ],
   };
@@ -1046,7 +1067,7 @@ async function runScenarioP12(context: ScenarioExecutionContext): Promise<Scenar
     assertions: toAssertion(lane),
     diagnosticsSnapshot: toLaneDiagnosticsSnapshot(lane),
     metricSamples: [
-      ...defaultMetricsForLane(lane),
+      ...baseTurnMetrics(lane),
       makeRateMetric("embedding_fail_open_success_rate", failOpen ? 1 : 0, 1),
     ],
   };
@@ -1114,7 +1135,7 @@ async function runScenarioP13(context: ScenarioExecutionContext): Promise<Scenar
     assertions: toAssertion(lane),
     diagnosticsSnapshot: toLaneDiagnosticsSnapshot(lane),
     metricSamples: [
-      ...defaultMetricsForLane(lane),
+      ...baseTurnMetrics(lane),
       makeCountMetric("thread_isolation_violation_count", leaked ? 1 : 0),
     ],
   };
@@ -1197,8 +1218,7 @@ async function runScenarioP14(context: ScenarioExecutionContext): Promise<Scenar
       streamEquivalent,
     },
     metricSamples: [
-      ...defaultMetricsForLane(lane),
-      makeRateMetric("one_call_invariant_rate", oneCallInvariant ? 1 : 0, 1),
+      ...baseTurnMetrics(lane),
       makeRateMetric("stream_final_equivalence_rate", streamEquivalent ? 1 : 0, 1),
     ],
   };
