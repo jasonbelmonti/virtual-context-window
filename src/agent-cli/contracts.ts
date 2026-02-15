@@ -15,6 +15,7 @@ export type AgentCliLaunchOptions = {
   mock?: boolean;
   provider?: "ollama" | "openai_responses";
   stream?: boolean;
+  showHistory?: boolean;
   passiveHotOverlapTurns?: number;
   passiveMaxWrites?: number;
   passiveAgeCadence?: number;

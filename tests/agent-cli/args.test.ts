@@ -21,6 +21,7 @@ test("legacy --kernel arg is rejected with clear guidance", () => {
 
 test("agent cli args parse passive tuning flags", () => {
   const parsed = parseAgentCliArgs([
+    "--show-history",
     "--passive-hot-overlap",
     "1",
     "--passive-max-writes",
@@ -32,6 +33,7 @@ test("agent cli args parse passive tuning flags", () => {
   expect(parsed.passiveHotOverlapTurns).toBe(1);
   expect(parsed.passiveMaxWrites).toBe(3);
   expect(parsed.passiveAgeCadence).toBe(3);
+  expect(parsed.showHistory).toBe(true);
 });
 
 test("agent cli args reject invalid passive tuning values", () => {

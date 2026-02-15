@@ -964,6 +964,10 @@ export class ChatCliRuntime {
     return this.lastTrace;
   }
 
+  getConversationHistory(threadId = this.threadId): VirtualContextMessage[] {
+    return [...this.getOrCreateThread(threadId).messages];
+  }
+
   classifyError(error: unknown): string {
     return classifyRuntimeError(error);
   }

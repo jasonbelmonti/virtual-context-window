@@ -96,3 +96,40 @@ test("pack compiler truncates long hydrated memory lines instead of returning em
   expect(result.text).toContain("RELEVANT MEMORY");
   expect(result.usedChars).toBeLessThanOrEqual(budget.totalChars);
 });
+
+test("pack compiler does not mid-truncate symbol index entries", () => {
+  const budget = {
+    totalChars: 40,
+    symbolIndexLimit: 8,
+    indexItemMaxChars: 40,
+    focusedItemMaxChars: 120,
+    recallItemMaxChars: 80,
+    recallK: 2,
+    recentLiteralPairCount: 2,
+  };
+
+  const result = compilePassiveContextPack({
+    queryText: "index",
+    turnsUsed: 1,
+    symbolIndex: [
+      { symbolId: "sym_000001", summary: "x" },
+      { symbolId: "sym_000002", summary: "x" },
+    ],
+    hydratedFocused: [],
+    hydratedRecall: [],
+    budget,
+    highWatermark: 0.95,
+    lowWatermark: 0.6,
+    compactMode: false,
+    lexicalCandidateCount: 0,
+    vectorCandidateCount: 0,
+    rerankedCandidateCount: 0,
+  });
+
+  expect(result.text).toContain("- sym_000001: x");
+  expect(result.text).not.toContain("sym_000002");
+  const indexLines = result.text
+    .split("\n")
+    .filter((line) => line.startsWith("- sym_"));
+  expect(indexLines.every((line) => line.includes(": "))).toBe(true);
+});

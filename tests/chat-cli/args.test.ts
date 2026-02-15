@@ -3,6 +3,7 @@ import { ChatCliRuntime, parseChatCliArgs } from "../../src/chat-cli";
 
 test("chat cli args parse passive tuning flags", () => {
   const parsed = parseChatCliArgs([
+    "--show-history",
     "--passive-hot-overlap",
     "1",
     "--passive-max-writes",
@@ -14,6 +15,7 @@ test("chat cli args parse passive tuning flags", () => {
   expect(parsed.passiveHotOverlapTurns).toBe(1);
   expect(parsed.passiveMaxWrites).toBe(3);
   expect(parsed.passiveAgeCadence).toBe(3);
+  expect(parsed.showHistory).toBe(true);
 });
 
 test("chat cli args reject invalid passive tuning values", () => {

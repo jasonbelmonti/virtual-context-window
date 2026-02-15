@@ -104,6 +104,7 @@ function renderPack(input: {
   const appendSection = (
     title: "SYMBOL INDEX" | "RELEVANT MEMORY",
     items: string[],
+    options?: { allowItemTruncate?: boolean },
     onIncluded?: () => void,
   ) => {
     if (items.length === 0) {
@@ -117,7 +118,9 @@ function renderPack(input: {
 
     let included = false;
     for (const item of items) {
-      if (!appendLineWithBudget(lines, item, remainingChars, { allowTruncate: true })) {
+      if (!appendLineWithBudget(lines, item, remainingChars, {
+        allowTruncate: options?.allowItemTruncate ?? true,
+      })) {
         break;
       }
       included = true;
@@ -160,16 +163,21 @@ function renderPack(input: {
   ];
   let memoryIncludedCursor = 0;
   const appendMemory = () =>
-    appendSection("RELEVANT MEMORY", memoryLines.map((item) => item.line), () => {
-      const includedItem = memoryLines[memoryIncludedCursor];
-      memoryIncludedCursor += 1;
-      if (includedItem?.source === "focused") {
-        focusedIncluded += 1;
-        return;
-      }
-      recallIncluded += 1;
-    });
-  const appendIndex = () => appendSection("SYMBOL INDEX", indexLines);
+    appendSection(
+      "RELEVANT MEMORY",
+      memoryLines.map((item) => item.line),
+      { allowItemTruncate: true },
+      () => {
+        const includedItem = memoryLines[memoryIncludedCursor];
+        memoryIncludedCursor += 1;
+        if (includedItem?.source === "focused") {
+          focusedIncluded += 1;
+          return;
+        }
+        recallIncluded += 1;
+      },
+    );
+  const appendIndex = () => appendSection("SYMBOL INDEX", indexLines, { allowItemTruncate: false });
 
   if (input.prioritizeHydrated) {
     appendMemory();

@@ -1,6 +1,6 @@
 import { createInterface } from "node:readline/promises";
 import type { ReadStream, WriteStream } from "node:tty";
-import type { PreModelTelemetry } from "../engine";
+import type { PreModelTelemetry, VirtualContextMessage } from "../engine";
 import { createCliTheme, detectColorEnabled } from "../chat-cli/ui";
 import { isSlashCommand, parseSlashCommand } from "./commands";
 import type {
@@ -16,6 +16,7 @@ export type ParsedAgentCliArgs = {
   mock: boolean;
   provider?: "ollama" | "openai_responses";
   stream: boolean;
+  showHistory: boolean;
   passiveHotOverlapTurns?: number;
   passiveMaxWrites?: number;
   passiveAgeCadence?: number;
@@ -40,6 +41,7 @@ export function parseAgentCliArgs(argv: string[]): ParsedAgentCliArgs {
     trace: false,
     mock: false,
     stream: true,
+    showHistory: false,
     help: false,
   };
 
@@ -80,6 +82,11 @@ export function parseAgentCliArgs(argv: string[]): ParsedAgentCliArgs {
 
     if (token === "--no-stream") {
       parsed.stream = false;
+      continue;
+    }
+
+    if (token === "--show-history") {
+      parsed.showHistory = true;
       continue;
     }
 
@@ -132,8 +139,8 @@ export function parseAgentCliArgs(argv: string[]): ParsedAgentCliArgs {
 export function formatAgentCliUsage(): string {
   return [
     "Usage:",
-    "  bun run agent:interactive [--mock] [--provider ollama|openai] [--stream|--no-stream] [--trace] [--thread <id>] [--passive-hot-overlap <n>] [--passive-max-writes <n>] [--passive-age-cadence <n>]",
-    '  bun run agent:interactive --once "hello" [--mock] [--provider ollama|openai] [--stream|--no-stream] [--trace] [--passive-hot-overlap <n>] [--passive-max-writes <n>] [--passive-age-cadence <n>]',
+    "  bun run agent:interactive [--mock] [--provider ollama|openai] [--stream|--no-stream] [--trace] [--show-history] [--thread <id>] [--passive-hot-overlap <n>] [--passive-max-writes <n>] [--passive-age-cadence <n>]",
+    '  bun run agent:interactive --once "hello" [--mock] [--provider ollama|openai] [--stream|--no-stream] [--trace] [--show-history] [--passive-hot-overlap <n>] [--passive-max-writes <n>] [--passive-age-cadence <n>]',
   ].join("\n");
 }
 
@@ -193,6 +200,19 @@ function renderPreModelContextPack(
   return [
     `${theme.key("[Context Pack: Content]")}`,
     theme.value(contextPackText || "(empty)"),
+  ].join("\n");
+}
+
+function renderConversationHistory(
+  messages: VirtualContextMessage[],
+  theme: ReturnType<typeof createCliTheme>,
+): string {
+  const lines = messages.map((message) =>
+    `- [${message.role}] ${compactSingleLine(message.content || "(empty)", 160)}`
+  );
+  return [
+    theme.section("CONVERSATION HISTORY"),
+    theme.value(lines.join("\n") || "(empty)"),
   ].join("\n");
 }
 
@@ -291,6 +311,7 @@ export async function runInteractiveAgentCli(
   const print = options.print ?? ((text: string) => console.log(text));
   const printError =
     options.printError ?? ((text: string) => console.error(text));
+  const showHistory = options.showHistory ?? false;
 
   let runtime: AgentCliRuntime;
   try {
@@ -409,6 +430,9 @@ export async function runInteractiveAgentCli(
           }
         }
         writeLine(print, renderPostModelDiagnostics(turn.trace, theme));
+      }
+      if (showHistory) {
+        writeLine(print, renderConversationHistory(runtime.getConversationHistory(), theme));
       }
       return 0;
     } catch (error) {
@@ -610,6 +634,9 @@ export async function runInteractiveAgentCli(
             }
           }
           writeLine(print, renderPostModelDiagnostics(result.trace, theme));
+        }
+        if (showHistory) {
+          writeLine(print, renderConversationHistory(runtime.getConversationHistory(), theme));
         }
       } catch (error) {
         const classification = runtime.classifyError(error);

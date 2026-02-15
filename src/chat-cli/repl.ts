@@ -1,5 +1,6 @@
 import { createInterface } from "node:readline/promises";
 import type { ReadStream, WriteStream } from "node:tty";
+import type { VirtualContextMessage } from "../engine";
 import { isSlashCommand, parseSlashCommand } from "./commands";
 import type { ChatCliLaunchOptions } from "./contracts";
 import { ChatCliRuntime } from "./runtime";
@@ -12,6 +13,7 @@ export type ParsedChatCliArgs = {
   mock: boolean;
   provider?: "ollama" | "openai_responses";
   stream: boolean;
+  showHistory: boolean;
   passiveHotOverlapTurns?: number;
   passiveMaxWrites?: number;
   passiveAgeCadence?: number;
@@ -37,6 +39,7 @@ export function parseChatCliArgs(argv: string[]): ParsedChatCliArgs {
     trace: false,
     mock: false,
     stream: true,
+    showHistory: false,
     help: false,
   };
 
@@ -77,6 +80,11 @@ export function parseChatCliArgs(argv: string[]): ParsedChatCliArgs {
 
     if (token === "--no-stream") {
       parsed.stream = false;
+      continue;
+    }
+
+    if (token === "--show-history") {
+      parsed.showHistory = true;
       continue;
     }
 
@@ -136,8 +144,8 @@ export function parseChatCliArgs(argv: string[]): ParsedChatCliArgs {
 export function formatChatCliUsage(): string {
   return [
     "Usage:",
-    "  bun run chat:interactive [--mock] [--provider ollama|openai] [--stream|--no-stream] [--trace] [--thread <id>] [--trust on|off] [--passive-hot-overlap <n>] [--passive-max-writes <n>] [--passive-age-cadence <n>]",
-    "  bun run chat:interactive --once \"hello\" [--mock] [--provider ollama|openai] [--stream|--no-stream] [--trace] [--passive-hot-overlap <n>] [--passive-max-writes <n>] [--passive-age-cadence <n>]",
+    "  bun run chat:interactive [--mock] [--provider ollama|openai] [--stream|--no-stream] [--trace] [--show-history] [--thread <id>] [--trust on|off] [--passive-hot-overlap <n>] [--passive-max-writes <n>] [--passive-age-cadence <n>]",
+    "  bun run chat:interactive --once \"hello\" [--mock] [--provider ollama|openai] [--stream|--no-stream] [--trace] [--show-history] [--passive-hot-overlap <n>] [--passive-max-writes <n>] [--passive-age-cadence <n>]",
   ].join("\n");
 }
 
@@ -149,6 +157,13 @@ function toPrintableMessage(error: unknown): string {
   return String(error);
 }
 
+function renderConversationHistory(messages: VirtualContextMessage[]): string {
+  const lines = messages.map((message) =>
+    `- [${message.role}] ${message.content.replace(/\s+/gu, " ").trim() || "(empty)"}`
+  );
+  return ["CONVERSATION HISTORY", lines.join("\n") || "(empty)"].join("\n");
+}
+
 export async function runInteractiveChatCli(
   options: ChatCliLaunchOptions = {},
 ): Promise<number> {
@@ -157,6 +172,7 @@ export async function runInteractiveChatCli(
   const print = options.print ?? ((text: string) => console.log(text));
   const printError =
     options.printError ?? ((text: string) => console.error(text));
+  const showHistory = options.showHistory ?? false;
 
   let runtime: ChatCliRuntime;
   try {
@@ -204,6 +220,9 @@ export async function runInteractiveChatCli(
       }
       if (runtime.getTraceEnabled()) {
         writeLine(print, renderTurnTrace(turn.trace, { color: colorEnabled }));
+      }
+      if (showHistory) {
+        writeLine(print, theme.value(renderConversationHistory(runtime.getConversationHistory())));
       }
       return 0;
     } catch (error) {
@@ -320,6 +339,9 @@ export async function runInteractiveChatCli(
         }
         if (runtime.getTraceEnabled()) {
           writeLine(print, renderTurnTrace(result.trace, { color: colorEnabled }));
+        }
+        if (showHistory) {
+          writeLine(print, theme.value(renderConversationHistory(runtime.getConversationHistory())));
         }
       } catch (error) {
         const classification = runtime.classifyError(error);
