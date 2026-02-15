@@ -87,11 +87,13 @@ async function waitForSymbolCountToSettle(
   runtime: AgentCliRuntime,
   timeoutMs: number,
   pollMs: number,
+  minCount = 0,
 ): Promise<number> {
   const startedAt = Date.now();
   let previous = -1;
   let stableReads = 0;
   let latest = 0;
+  let reachedMinimum = minCount <= 0;
 
   while (Date.now() - startedAt <= timeoutMs) {
     const snapshot = await runtime.executeCommand({
@@ -99,9 +101,12 @@ async function waitForSymbolCountToSettle(
       limit: 1,
     });
     latest = parseSymbolTableCount(snapshot.output);
+    if (latest >= minCount) {
+      reachedMinimum = true;
+    }
     if (latest === previous) {
       stableReads += 1;
-      if (stableReads >= 2) {
+      if (stableReads >= 2 && reachedMinimum) {
         return latest;
       }
     } else {
@@ -341,9 +346,15 @@ async function executeLane(options: {
     transcript.push(`ASSISTANT> ${turn.content}`);
   }
 
-  // Give background compaction a brief chance to finish in v2 without blocking UX.
+  // Wait for background compaction to settle before the recall question.
   if (options.lane === "passive_v2") {
-    await new Promise((resolve) => setTimeout(resolve, 40));
+    const symbolsBeforeRecall = await waitForSymbolCountToSettle(
+      runtime,
+      1_400,
+      60,
+      1,
+    );
+    transcript.push(`SYSTEM> symbolsBeforeRecall=${symbolsBeforeRecall}`);
   }
 
   transcript.push(`USER> ${options.scenario.finalQuestion}`);

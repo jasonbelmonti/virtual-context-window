@@ -347,6 +347,11 @@ export function createVirtualContextEngineV2Passive(
       store: options.store,
       proposals: extraction.proposals,
       maxProposals: maxCompactionProposals,
+      candidateEntries: candidates.map((entry) => ({
+        entryId: entry.entryId,
+        offsetStart: entry.offsetStart,
+        offsetEnd: entry.offsetEnd,
+      })),
     });
     state.committedSymbolsCount += commit.committedSymbolsCount;
 
@@ -400,9 +405,7 @@ export function createVirtualContextEngineV2Passive(
       }
     })();
 
-    return state.lastCompactionOutcome === "extractor_error"
-      ? "extractor_error"
-      : "none";
+    return "none";
   }
 
   const markStage = async (
@@ -612,10 +615,6 @@ export function createVirtualContextEngineV2Passive(
       query.queryText,
       compiled.compactionTriggered,
     );
-    const compactionSkippedReason =
-      scheduledCompactionReason === "none" && state.lastCompactionOutcome !== "none"
-        ? state.lastCompactionOutcome
-        : scheduledCompactionReason;
 
     const passiveDiagnostics: PassiveTurnDiagnostics = {
       pressureRatio: compiled.pressureRatio,
@@ -624,7 +623,7 @@ export function createVirtualContextEngineV2Passive(
       compactionTriggered: compiled.compactionTriggered,
       compactionReason: compiled.compactionReason,
       compactionJobsTriggered: state.compactionJobsTriggered,
-      compactionSkippedReason,
+      compactionSkippedReason: scheduledCompactionReason,
       extractorCalls: state.extractorCalls,
       proposalsCount: state.proposalsCount,
       committedSymbolsCount: state.committedSymbolsCount,

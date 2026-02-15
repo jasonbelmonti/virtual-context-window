@@ -244,3 +244,75 @@ test("v2 passive reports no_candidates when pressure triggers without compactabl
   expect(response.diagnostics.passive?.compactionSkippedReason).toBe("no_candidates");
   expect(response.diagnostics.passive?.extractorCalls).toBe(0);
 });
+
+test("v2 passive skip reason reflects the current scheduling decision, not stale outcomes", async () => {
+  const threadId = "thread-passive-skip-reason";
+  const store = new InMemorySymbolStore();
+  for (let index = 0; index < 8; index += 1) {
+    await store.upsert(threadId, {
+      summary: `pressure summary ${index}`,
+      content: `pressure content ${index} ${"details ".repeat(16)}`,
+      kind: "note",
+    });
+  }
+
+  const extractor: CompressionExtractor = {
+    async extract(input) {
+      const entry = input.entries[0];
+      if (!entry) {
+        return [];
+      }
+      return [
+        {
+          summary: "grounded",
+          content: entry.content,
+          kind: "note",
+          confidence: 0.95,
+          evidenceSpans: [
+            {
+              entryId: entry.entryId,
+              startOffset: entry.offsetStart,
+              endOffset: entry.offsetEnd,
+            },
+          ],
+        },
+      ];
+    },
+  };
+
+  const engine = createVirtualContextEngineV2Passive({
+    assistantGenerate: async () => "ack",
+    store,
+    extractor,
+    highWatermark: 0.2,
+    lowWatermark: 0.1,
+    packBudget: {
+      totalChars: 140,
+      recentLiteralPairCount: 2,
+      recentLiteralItemMaxChars: 80,
+      recallK: 4,
+    },
+  });
+
+  const turn1 = await engine.processTurn({
+    threadId,
+    messages: [{ role: "user", content: "turn one pressure" }],
+  });
+  const turn2 = await engine.processTurn({
+    threadId,
+    messages: [{ role: "user", content: "turn two pressure" }],
+  });
+
+  // Earlier turns can legitimately report no_candidates while the tape is short.
+  expect(
+    [turn1.diagnostics.passive?.compactionSkippedReason, turn2.diagnostics.passive?.compactionSkippedReason],
+  ).toContain("no_candidates");
+
+  const turn3 = await engine.processTurn({
+    threadId,
+    messages: [{ role: "user", content: "turn three pressure" }],
+  });
+
+  expect(turn3.diagnostics.passive?.compactionJobsTriggered).toBeGreaterThan(0);
+  expect(turn3.diagnostics.passive?.compactionSkippedReason).toBe("none");
+});

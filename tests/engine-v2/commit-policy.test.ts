@@ -49,3 +49,45 @@ test("commit policy enforces confidence/evidence/secret/dedupe gates", async () 
   const records = await store.list("thread-commit");
   expect(records.length).toBe(2);
 });
+
+test("commit policy rejects proposals with evidence spans outside compaction candidates", async () => {
+  const store = new InMemorySymbolStore();
+
+  const result = await applyPassiveCommitPolicy({
+    threadId: "thread-grounding",
+    store,
+    proposals: [
+      makeProposal({
+        content: "Hallucinated span proposal",
+        evidenceSpans: [
+          {
+            entryId: "evt_missing",
+            startOffset: 0,
+            endOffset: 10,
+          },
+        ],
+      }),
+      makeProposal({
+        content: "Grounded proposal",
+        evidenceSpans: [
+          {
+            entryId: "evt_1",
+            startOffset: 5,
+            endOffset: 15,
+          },
+        ],
+      }),
+    ],
+    candidateEntries: [
+      {
+        entryId: "evt_1",
+        offsetStart: 0,
+        offsetEnd: 20,
+      },
+    ],
+  });
+
+  expect(result.proposalsCount).toBe(2);
+  expect(result.committedSymbolsCount).toBe(1);
+  expect(result.rejectedCount).toBe(1);
+});

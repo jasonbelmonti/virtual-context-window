@@ -323,10 +323,24 @@ export async function applyPassiveCommitPolicy(options: {
   confidenceThreshold?: number;
   maxProposals?: number;
   maxContentChars?: number;
+  candidateEntries?: Array<{
+    entryId: string;
+    offsetStart: number;
+    offsetEnd: number;
+  }>;
 }): Promise<PassiveCommitPolicyResult> {
   const confidenceThreshold = options.confidenceThreshold ?? DEFAULT_CONFIDENCE_THRESHOLD;
   const maxProposals = options.maxProposals ?? DEFAULT_MAX_EVENTS;
   const maxContentChars = options.maxContentChars ?? DEFAULT_MAX_CONTENT_CHARS;
+  const candidateSpanBounds = new Map(
+    (options.candidateEntries ?? []).map((entry) => [
+      entry.entryId,
+      {
+        start: entry.offsetStart,
+        end: entry.offsetEnd,
+      },
+    ]),
+  );
 
   const existing = await options.store.list(options.threadId);
   const existingContentHashes = new Set<string>();
@@ -353,6 +367,28 @@ export async function applyPassiveCommitPolicy(options: {
     if (proposal.evidenceSpans.length === 0) {
       rejectedCount += 1;
       continue;
+    }
+
+    if (candidateSpanBounds.size > 0) {
+      const spansAreGrounded = proposal.evidenceSpans.every((span) => {
+        const bounds = candidateSpanBounds.get(span.entryId);
+        if (!bounds) {
+          return false;
+        }
+
+        if (span.startOffset > span.endOffset) {
+          return false;
+        }
+
+        return (
+          span.startOffset >= bounds.start &&
+          span.endOffset <= bounds.end
+        );
+      });
+      if (!spansAreGrounded) {
+        rejectedCount += 1;
+        continue;
+      }
     }
 
     if (proposal.content.length > maxContentChars || proposal.content.trim().length === 0) {
