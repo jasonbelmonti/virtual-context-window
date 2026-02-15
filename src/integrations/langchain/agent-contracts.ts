@@ -4,14 +4,7 @@ import type {
   VirtualContextTurnRequest,
 } from "../../engine/contracts";
 import type { AssistantGenerateInput, AssistantGenerateFn } from "../../engine/hooks";
-import type { VcwLangChainMiddleware } from "./contracts";
-import type { LangChainAssistantOptions } from "./contracts";
-import type {
-  AssistantStreamProvider,
-  WriteIntentMode,
-  WriteToolSchemaVersion,
-  WriteTransport,
-} from "./contracts";
+import type { VcwLangChainMiddleware, AssistantStreamProvider } from "./contracts";
 
 export type AgentToolListResult = {
   symbols: Array<{
@@ -116,11 +109,7 @@ export type LangChainAgentMetadata = {
   agentToolCallCount: number;
   agentToolNames: string[];
   agentLoopDurationMs: number;
-  writeIntentMode: WriteIntentMode;
-  writeTransport: WriteTransport;
-  writeIntentSatisfied: boolean;
   toolCallDetected: boolean;
-  writeToolSchemaVersion: WriteToolSchemaVersion;
   autoMode?: "off" | "shadow" | "active";
   autoTriggered?: boolean;
   autoConfidence?: number;
@@ -150,8 +139,6 @@ export type VcwAgentAssistantOptions = {
   ) => LangChainAgentRuntime;
   buildToolContext?: (input: AssistantGenerateInput) => VcwAgentToolContext;
   createTools?: (context: VcwAgentToolContext) => unknown[];
-  strictWriteGenerate?: AssistantGenerateFn;
-  strictWriteAssistantOptions?: Partial<LangChainAssistantOptions>;
   onResultMetadata?: (
     metadata: LangChainAgentMetadata,
   ) => void | Promise<void>;

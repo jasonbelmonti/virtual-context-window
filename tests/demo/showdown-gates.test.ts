@@ -9,7 +9,6 @@ import {
 function makeTrace(toolNames: string[]): AgentTurnTrace {
   return {
     threadId: "thread-gate-test",
-    kernelMode: "v1",
     stages: [],
     telemetry: [],
     symbolTable: [],
@@ -51,11 +50,6 @@ function makeTrace(toolNames: string[]): AgentTurnTrace {
       agentToolCallCount: toolNames.length,
       agentToolNames: toolNames,
       agentLoopDurationMs: 1,
-      writeIntentMode: "none",
-      writeTransport: "plain_text",
-      writeIntentSatisfied: true,
-      toolCallDetected: false,
-      writeToolSchemaVersion: "v1",
     },
   };
 }
@@ -77,7 +71,7 @@ test("incident gate passes with required tools, headings, memory evidence, and w
   ].join("\n");
 
   const result = evaluateLaneGates({
-    lane: "vcw_only",
+    lane: "compaction_on",
     scenarioKind: "incident_response",
     answerText: answer,
     expectedToken: "VCW-CODE-AAAA1111BBBB",
@@ -110,7 +104,7 @@ test("incident gate reports deterministic failure reasons when requirements are 
   ].join("\n");
 
   const result = evaluateLaneGates({
-    lane: "chat_only",
+    lane: "compaction_off",
     scenarioKind: "incident_response",
     answerText: answer,
     expectedToken: "VCW-CODE-AAAA1111BBBB",

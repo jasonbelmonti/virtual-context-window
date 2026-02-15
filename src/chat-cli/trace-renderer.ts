@@ -70,11 +70,6 @@ function renderDiagnosticsTable(trace: ChatTurnTrace): string {
     ["postModelMs", trace.diagnostics.postModelMs.toFixed(2)],
     ["retrievalStrategy", trace.diagnostics.retrievalStrategy],
     ["retrievalDegraded", trace.diagnostics.retrievalDegraded],
-    ["writeIntentMode", trace.writeIntent.mode],
-    ["writeTransport", trace.writeIntent.transport],
-    ["writeIntentSatisfied", trace.writeIntent.satisfied],
-    ["toolCallDetected", trace.writeIntent.toolCallDetected],
-    ["schemaVersion", trace.writeIntent.schemaVersion],
   ]);
 
   return table.toString();
@@ -180,6 +175,32 @@ function renderSymbolTable(trace: ChatTurnTrace): string {
   return table.toString();
 }
 
+function renderPassiveSliding(trace: ChatTurnTrace): string {
+  const passive = trace.diagnostics.passive;
+  if (!passive) {
+    return "(passive diagnostics unavailable)";
+  }
+
+  const table = createKeyValueTable([
+    ["pressureRatio", passive.pressureRatio.toFixed(3)],
+    ["pressurePeak", passive.pressurePeak.toFixed(3)],
+    ["pressureState", passive.pressureState],
+    ["compactionDrainAttempted", passive.compactionDrainAttempted],
+    ["compactionDrainWaitMs", passive.compactionDrainWaitMs.toFixed(2)],
+    ["compactionDrainTimedOut", passive.compactionDrainTimedOut],
+    ["compactionTriggered", passive.compactionTriggered],
+    ["compactionReason", passive.compactionReason],
+    ["compactionJobsTriggered", passive.compactionJobsTriggered],
+    ["compactionSkippedReason", passive.compactionSkippedReason],
+    ["extractorCalls", passive.extractorCalls],
+    ["proposalsCount", passive.proposalsCount],
+    ["committedSymbolsCount", passive.committedSymbolsCount],
+    ["hydratedSymbolsCount", passive.hydratedSymbolsCount],
+    ["ignoredModelEventCount", passive.ignoredModelEventCount],
+  ]);
+  return table.toString();
+}
+
 export function renderTurnTrace(
   trace: ChatTurnTrace,
   options: TraceRenderOptions = {},
@@ -205,6 +226,9 @@ export function renderTurnTrace(
   } else {
     lines.push(...telemetryTables);
   }
+
+  lines.push(theme.section("Passive Sliding"));
+  lines.push(renderPassiveSliding(trace));
 
   lines.push(theme.section("Symbol Table"));
   lines.push(renderSymbolTable(trace));

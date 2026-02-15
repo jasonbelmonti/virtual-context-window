@@ -20,7 +20,7 @@ function makeInput(metadata: Record<string, unknown>): AssistantGenerateInput {
   };
 }
 
-test("auto intent appends deterministic trailing control block after middleware", async () => {
+test("auto metadata is reported without mutating visible output", async () => {
   let metadataValue: unknown;
   const generate = createLangChainAssistantGenerate({
     model: "mock-model",
@@ -41,7 +41,6 @@ test("auto intent appends deterministic trailing control block after middleware"
 
   const output = await generate(
     makeInput({
-      writeIntent: { mode: "auto" },
       vcwAutoSymbol: {
         mode: "active",
         triggered: true,
@@ -61,12 +60,6 @@ test("auto intent appends deterministic trailing control block after middleware"
               weight: 2.2,
               contribution: 2.2,
             },
-            {
-              feature: "has_first_person_pronoun",
-              active: true,
-              weight: 0.35,
-              contribution: 0.35,
-            },
           ],
         },
         events: [
@@ -83,13 +76,9 @@ test("auto intent appends deterministic trailing control block after middleware"
     }),
   );
 
-  expect(output).toContain("Base response|mw");
-  expect(output).toContain("<symbolic_control>");
-  expect(output.endsWith("</symbolic_control>")).toBe(true);
+  expect(output).toBe("Base response|mw");
+  expect(output).not.toContain("<symbolic_control>");
   expect(metadataValue).toMatchObject({
-    writeIntentMode: "auto",
-    writeTransport: "detector_bridge",
-    writeIntentSatisfied: true,
     autoMode: "active",
     autoTriggered: true,
     autoReason: "profile_name_statement",
@@ -99,11 +88,10 @@ test("auto intent appends deterministic trailing control block after middleware"
     autoScoreBand: "write",
     autoScorerVersion: "heuristic_v2",
     autoOverrideApplied: true,
-    autoTopFeatures: expect.any(Array),
   });
 });
 
-test("auto intent ignores invalid metadata and keeps turn non-fatal", async () => {
+test("invalid auto metadata is ignored and turn remains non-fatal", async () => {
   let metadataValue: unknown;
   const generate = createLangChainAssistantGenerate({
     model: "mock-model",
@@ -118,7 +106,6 @@ test("auto intent ignores invalid metadata and keeps turn non-fatal", async () =
 
   const output = await generate(
     makeInput({
-      writeIntent: { mode: "auto" },
       vcwAutoSymbol: {
         mode: "active",
         triggered: true,
@@ -131,15 +118,15 @@ test("auto intent ignores invalid metadata and keeps turn non-fatal", async () =
   );
 
   expect(output).toBe("Plain");
-  expect(output).not.toContain("<symbolic_control>");
   expect(metadataValue).toMatchObject({
-    writeIntentMode: "auto",
-    writeTransport: "plain_text",
-    writeIntentSatisfied: false,
+    autoMode: "active",
+    autoTriggered: true,
+    autoEventCount: 0,
+    autoReason: "profile_name_statement",
   });
 });
 
-test("auto intent keeps envelope valid when optional scoring payload is malformed", async () => {
+test("malformed optional scoring payload is tolerated", async () => {
   let metadataValue: unknown;
   const generate = createLangChainAssistantGenerate({
     model: "mock-model",
@@ -154,7 +141,6 @@ test("auto intent keeps envelope valid when optional scoring payload is malforme
 
   const output = await generate(
     makeInput({
-      writeIntent: { mode: "auto" },
       vcwAutoSymbol: {
         mode: "active",
         triggered: true,
@@ -179,11 +165,11 @@ test("auto intent keeps envelope valid when optional scoring payload is malforme
     }),
   );
 
-  expect(output).toContain("<symbolic_control>");
+  expect(output).toBe("Plain");
   expect(metadataValue).toMatchObject({
-    writeIntentMode: "auto",
-    writeTransport: "detector_bridge",
-    writeIntentSatisfied: true,
+    autoMode: "active",
+    autoTriggered: true,
+    autoEventCount: 1,
     autoScore: undefined,
     autoScoreBand: undefined,
     autoScorerVersion: undefined,
@@ -191,7 +177,7 @@ test("auto intent keeps envelope valid when optional scoring payload is malforme
   });
 });
 
-test("auto intent does not append control envelope for shadow-band scoring", async () => {
+test("shadow-band scoring metadata is surfaced without envelope injection", async () => {
   let metadataValue: unknown;
   const generate = createLangChainAssistantGenerate({
     model: "mock-model",
@@ -206,7 +192,6 @@ test("auto intent does not append control envelope for shadow-band scoring", asy
 
   const output = await generate(
     makeInput({
-      writeIntent: { mode: "auto" },
       vcwAutoSymbol: {
         mode: "active",
         triggered: true,
@@ -245,9 +230,9 @@ test("auto intent does not append control envelope for shadow-band scoring", asy
   expect(output).toBe("Plain");
   expect(output).not.toContain("<symbolic_control>");
   expect(metadataValue).toMatchObject({
-    writeIntentMode: "auto",
-    writeTransport: "plain_text",
-    writeIntentSatisfied: true,
+    autoMode: "active",
+    autoTriggered: true,
     autoScoreBand: "shadow",
+    autoEventCount: 1,
   });
 });

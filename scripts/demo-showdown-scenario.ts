@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 
-export type ShowdownLane = "chat_only" | "vcw_only";
-export type ShowdownScenarioKind = "classic" | "incident_response";
+export type ShowdownLane = "compaction_off" | "compaction_on";
+export type ShowdownScenarioKind = "incident_response";
 
 export type ShowdownSentinelFact = {
   key: string;
@@ -78,28 +78,6 @@ function makeDistractorPrompts(kind: ShowdownScenarioKind, count: number): strin
     }
   }
   return prompts;
-}
-
-function createClassicScenario(seed: string, distractorTurns: number, now: Date): ShowdownScenario {
-  const projectToken = deterministicHex(seed, "classic-project", 8);
-  const incidentToken = deterministicHex(seed, "classic-incident", 8);
-  const unlockToken = `VCW-CODE-${deterministicHex(seed, "classic-unlock", 12)}`;
-
-  const sentinels: ShowdownSentinelFact[] = [
-    { key: "Project codename", value: `VCW-NAME-${projectToken}` },
-    { key: "Incident alias", value: `VCW-INC-${incidentToken}` },
-    { key: "Demo unlock code", value: unlockToken },
-  ];
-
-  return {
-    kind: "classic",
-    runId: toRunId("classic", now),
-    seed,
-    sentinels,
-    expectedToken: unlockToken,
-    finalQuestion: "Return only the exact token for Demo unlock code. No explanation. No punctuation.",
-    distractorPrompts: makeDistractorPrompts("classic", distractorTurns),
-  };
 }
 
 function createIncidentScenario(seed: string, distractorTurns: number, now: Date): ShowdownScenario {
@@ -202,10 +180,5 @@ export function createShowdownScenario(
 ): ShowdownScenario {
   const seed = toSeed(options.seed);
   const now = options.now ?? new Date();
-
-  if (options.kind === "classic") {
-    return createClassicScenario(seed, options.distractorTurns, now);
-  }
-
   return createIncidentScenario(seed, options.distractorTurns, now);
 }

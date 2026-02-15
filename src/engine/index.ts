@@ -1,15 +1,19 @@
 export * from "./contracts";
-export * from "./control-channel-parser";
-export * from "./context-pack-composer";
 export * from "./embedding-cache";
 export * from "./errors";
 export * from "./hooks";
 export * from "./identity";
 export * from "./kernel";
 export * from "./output-sanitizer";
-export * from "./retrieval-hooks";
-export * from "./retrieval-planner";
-export * from "./symbol-event-policy";
 export * from "./symbol-store";
-export * from "./write-path-hooks";
-export * from "../engine-v2";
+export * from "./passive-contracts";
+export * from "./passive-event-tape";
+export * from "./passive-pack-compiler";
+export * from "./passive-compressor";
+export * from "./passive-kernel";
+export {
+  createProviderCompressionExtractor,
+  createDeterministicFallbackExtractor,
+  applyPassiveCommitPolicy,
+  runExtractorWithTimeout,
+} from "./passive-compressor";

@@ -9,7 +9,6 @@ test("parseShowdownArgs applies upgraded defaults", () => {
   expect(parsed.historyLimit).toBe(1);
   expect(parsed.distractorTurns).toBe(6);
   expect(parsed.stream).toBe(false);
-  expect(parsed.strict).toBe(true);
   expect(parsed.scenario).toBe("incident_response");
   expect(parsed.maxRetries).toBe(2);
   expect(parsed.seed).toBeUndefined();
@@ -26,10 +25,8 @@ test("parseShowdownArgs parses explicit overrides", () => {
     "7",
     "--stream",
     "on",
-    "--strict",
-    "off",
     "--scenario",
-    "classic",
+    "incident_response",
     "--max-retries",
     "4",
     "--seed",
@@ -42,8 +39,7 @@ test("parseShowdownArgs parses explicit overrides", () => {
   expect(parsed.historyLimit).toBe(3);
   expect(parsed.distractorTurns).toBe(7);
   expect(parsed.stream).toBe(true);
-  expect(parsed.strict).toBe(false);
-  expect(parsed.scenario).toBe("classic");
+  expect(parsed.scenario).toBe("incident_response");
   expect(parsed.maxRetries).toBe(4);
   expect(parsed.seed).toBe("seed-123");
   expect(parsed.outputDir).toBe("/tmp/demo-dir");

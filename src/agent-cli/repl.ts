@@ -1,6 +1,5 @@
 import { createInterface } from "node:readline/promises";
 import type { ReadStream, WriteStream } from "node:tty";
-import type { PostModelTelemetry } from "../engine";
 import { createCliTheme, detectColorEnabled } from "../chat-cli/ui";
 import { isSlashCommand, parseSlashCommand } from "./commands";
 import type { AgentCliLaunchOptions, AgentTurnTrace } from "./contracts";
@@ -12,7 +11,6 @@ export type ParsedAgentCliArgs = {
   trace: boolean;
   mock: boolean;
   provider?: "ollama" | "openai_responses";
-  kernelMode?: "v1" | "v2_passive";
   stream: boolean;
   threadId?: string;
   help: boolean;
@@ -60,17 +58,6 @@ export function parseAgentCliArgs(argv: string[]): ParsedAgentCliArgs {
       continue;
     }
 
-    if (token === "--kernel") {
-      const value = (argv[index + 1] ?? "").toLowerCase();
-      if (value === "v1") {
-        parsed.kernelMode = "v1";
-      } else if (value === "v2" || value === "v2_passive") {
-        parsed.kernelMode = "v2_passive";
-      }
-      index += 1;
-      continue;
-    }
-
     if (token === "--stream") {
       parsed.stream = true;
       continue;
@@ -91,6 +78,10 @@ export function parseAgentCliArgs(argv: string[]): ParsedAgentCliArgs {
       parsed.help = true;
       continue;
     }
+
+    if (token.startsWith("--")) {
+      throw new Error(`unknown_arg:${token}`);
+    }
   }
 
   return parsed;
@@ -99,8 +90,8 @@ export function parseAgentCliArgs(argv: string[]): ParsedAgentCliArgs {
 export function formatAgentCliUsage(): string {
   return [
     "Usage:",
-    "  bun run agent:interactive [--mock] [--provider ollama|openai] [--kernel v1|v2_passive] [--stream|--no-stream] [--trace] [--thread <id>]",
-    "  bun run agent:interactive --once \"hello\" [--mock] [--provider ollama|openai] [--kernel v1|v2_passive] [--stream|--no-stream] [--trace]",
+    "  bun run agent:interactive [--mock] [--provider ollama|openai] [--stream|--no-stream] [--trace] [--thread <id>]",
+    "  bun run agent:interactive --once \"hello\" [--mock] [--provider ollama|openai] [--stream|--no-stream] [--trace]",
   ].join("\n");
 }
 
@@ -109,46 +100,6 @@ function toPrintableMessage(error: unknown): string {
     return error.message;
   }
   return String(error);
-}
-
-function renderProjectionCallout(
-  trace: AgentTurnTrace,
-  theme: ReturnType<typeof createCliTheme>,
-): string | null {
-  const post = trace.telemetry.find(
-    (event): event is PostModelTelemetry => event.type === "post_model",
-  );
-  if (!post || post.eventsAccepted <= 0) {
-    return null;
-  }
-
-  const transport = trace.agent?.writeTransport ?? "plain_text";
-  const provenance =
-    transport === "plain_text"
-      ? "MODEL_RENDERED"
-      : transport === "function_call_bridge"
-        ? "BRIDGE_FUNCTION_CALL"
-        : "DETECTOR_BRIDGE";
-  const trigger = trace.autoSymbol.writeApplied
-    ? `auto:${trace.autoSymbol.reason}`
-    : trace.agent?.writeIntentMode === "strict"
-      ? "strict"
-      : "explicit";
-  const detailParts = [
-    `eventsAccepted=${post.eventsAccepted}`,
-    `parseOutcome=${post.parseOutcome}`,
-    `origin=${provenance}`,
-    `transport=${transport}`,
-    `trigger=${trigger}`,
-  ];
-  if (post.eventsRejected > 0) {
-    detailParts.push(`eventsRejected=${post.eventsRejected}`);
-  }
-  if (post.writeFailures > 0) {
-    detailParts.push(`writeFailures=${post.writeFailures}`);
-  }
-
-  return `${theme.success("PROJECTION ACCEPTED")} ${theme.value(detailParts.join(" "))}`;
 }
 
 function renderPassiveWriteIgnoredCallout(
@@ -160,7 +111,7 @@ function renderPassiveWriteIgnoredCallout(
     return null;
   }
 
-  return `${theme.subtitle("MODEL WRITE IGNORED (v2 policy)")} ${theme.value(`ignoredModelEventCount=${ignored}`)}`;
+  return `${theme.subtitle("MODEL WRITE IGNORED (passive policy)")} ${theme.value(`ignoredModelEventCount=${ignored}`)}`;
 }
 
 export async function runInteractiveAgentCli(
@@ -176,7 +127,6 @@ export async function runInteractiveAgentCli(
     runtime = new AgentCliRuntime({
       mock: options.mock,
       provider: options.provider,
-      kernelMode: options.kernelMode,
       streamEnabled: options.stream,
       traceEnabled: options.trace,
       threadId: options.threadId,
@@ -212,10 +162,6 @@ export async function runInteractiveAgentCli(
       } else {
         process.stdout.write("\n");
       }
-      const projectionCallout = renderProjectionCallout(turn.trace, theme);
-      if (projectionCallout) {
-        writeLine(print, projectionCallout);
-      }
       const ignoredCallout = renderPassiveWriteIgnoredCallout(turn.trace, theme);
       if (ignoredCallout) {
         writeLine(print, ignoredCallout);
@@ -238,7 +184,7 @@ export async function runInteractiveAgentCli(
   writeLine(
     print,
     theme.subtitle(
-      "Type /help for commands. Use /stream on|off to toggle streaming and /remember <text> for strict writes.",
+      "Type /help for commands. Use /stream on|off to toggle streaming and /remember <text> for deterministic writes.",
     ),
   );
 
@@ -294,10 +240,6 @@ export async function runInteractiveAgentCli(
             writeLine(print, renderTurnTrace(result.turn.trace, { color: colorEnabled }));
           }
           if (result.turn) {
-            const projectionCallout = renderProjectionCallout(result.turn.trace, theme);
-            if (projectionCallout) {
-              writeLine(print, projectionCallout);
-            }
             const ignoredCallout = renderPassiveWriteIgnoredCallout(result.turn.trace, theme);
             if (ignoredCallout) {
               writeLine(print, ignoredCallout);
@@ -336,10 +278,6 @@ export async function runInteractiveAgentCli(
           writeLine(print, theme.assistant(streamedText));
         } else {
           process.stdout.write("\n");
-        }
-        const projectionCallout = renderProjectionCallout(result.trace, theme);
-        if (projectionCallout) {
-          writeLine(print, projectionCallout);
         }
         const ignoredCallout = renderPassiveWriteIgnoredCallout(result.trace, theme);
         if (ignoredCallout) {

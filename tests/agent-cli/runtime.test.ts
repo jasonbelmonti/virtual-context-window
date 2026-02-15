@@ -9,7 +9,7 @@ const WRITE_PATH_ASSISTANT: AssistantGenerateFn = async () => {
   ].join("\n");
 };
 
-test("agent runtime captures parse/apply/scrub telemetry and mutates symbol state", async () => {
+test("agent runtime ignores model-origin writes and still sanitizes output", async () => {
   const runtime = new AgentCliRuntime({
     assistantGenerate: WRITE_PATH_ASSISTANT,
   });
@@ -19,38 +19,29 @@ test("agent runtime captures parse/apply/scrub telemetry and mutates symbol stat
   expect(turn.content).toContain("Visible reply with leak");
   expect(turn.content).not.toContain("<symbolic_control>");
   expect(turn.content).not.toContain("⟦S:");
-  expect(turn.trace.symbolTable.length).toBe(1);
-  expect(turn.trace.symbolTable[0]?.symbolId).toBe("sym_agent");
-
-  const pre = turn.trace.telemetry.find((event) => event.type === "pre_model");
-  expect(pre?.type).toBe("pre_model");
-  if (pre?.type === "pre_model") {
-    expect(typeof pre.vectorCandidateCount).toBe("number");
-  }
+  expect(turn.trace.symbolTable.length).toBe(0);
 
   const post = turn.trace.telemetry.find((event) => event.type === "post_model");
   expect(post?.type).toBe("post_model");
   if (post?.type === "post_model") {
     expect(post.parseOutcome).toBe("control_channel_valid");
     expect(post.parsedEventCount).toBe(1);
-    expect(post.eventsAccepted).toBe(1);
-    expect(post.eventsRejected).toBe(0);
-    expect(post.writeFailures).toBe(0);
-    expect(post.scrubbedControlLeakCount).toBeGreaterThanOrEqual(0);
-    expect(post.scrubbedSymbolEchoCount).toBeGreaterThan(0);
+    expect(post.eventsAccepted).toBe(0);
+    expect(post.eventsRejected).toBe(1);
   }
 
   const view = await runtime.executeCommand({ type: "trace", action: "view" });
   expect(view.output).toContain("Agent Loop");
   expect(view.output).toContain("parseOutcome");
-  expect(view.output).toContain("writeTransport");
 
   const pack = await runtime.executeCommand({ type: "trace", action: "pack" });
   expect(pack.output).toContain("--- Context Pack ---");
-  expect(pack.output).toContain("(empty)");
+
+  const tape = await runtime.executeCommand({ type: "trace", action: "tape" });
+  expect(tape.output).toContain("--- Event Tape ---");
 });
 
-test("remember command persists symbols through policy write path in mock mode", async () => {
+test("remember command persists symbols directly in passive mode", async () => {
   const runtime = new AgentCliRuntime({
     mock: true,
   });
@@ -60,11 +51,7 @@ test("remember command persists symbols through policy write path in mock mode",
     content: "Plan Seven has deterministic tooling",
   });
 
-  expect(result.output).toContain("Got it");
-  expect((result.turn?.trace.symbolTable.length ?? 0) > 0).toBe(true);
-  expect(result.turn?.trace.symbolTable[0]?.content).toContain(
-    "Plan Seven has deterministic tooling",
-  );
+  expect(result.output).toContain("Remembered via passive policy write path");
 
   const symbols = await runtime.executeCommand({ type: "symbols" });
   expect(symbols.output).toContain("Plan Seven has deterministic tooling");
@@ -75,6 +62,7 @@ test("history and symbol clear commands isolate chat and VCW state", async () =>
     mock: true,
   });
 
+  await runtime.processUserMessage("hello");
   await runtime.executeCommand({
     type: "remember",
     content: "Keep VCW state",
@@ -141,7 +129,6 @@ test("history window can be set via environment variable", async () => {
   const runtime = new AgentCliRuntime({
     env: {
       VCW_OLLAMA_MODEL: "mock",
-      VCW_OLLAMA_EMBED_MODEL: "mock",
       VCW_HISTORY_MAX_TURNS: "2",
     },
     assistantGenerate: async () => "ok",

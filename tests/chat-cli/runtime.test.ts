@@ -9,7 +9,7 @@ const WRITE_PATH_ASSISTANT: AssistantGenerateFn = async () => {
   ].join("\n");
 };
 
-test("processUserMessage captures parse/apply/scrub telemetry and mutates symbol state", async () => {
+test("processUserMessage captures parse/sanitize telemetry and ignores model-origin writes", async () => {
   const runtime = new ChatCliRuntime({
     assistantGenerate: WRITE_PATH_ASSISTANT,
   });
@@ -19,33 +19,20 @@ test("processUserMessage captures parse/apply/scrub telemetry and mutates symbol
   expect(turn.content).toContain("Visible reply with leak");
   expect(turn.content).not.toContain("<symbolic_control>");
   expect(turn.content).not.toContain("⟦S:");
-  expect(turn.trace.writeIntent.mode).toBe("auto");
-  expect(turn.trace.writeIntent.transport).toBe("plain_text");
   expect(turn.trace.autoSymbol.mode).toBe("shadow");
-  expect(turn.trace.symbolTable.length).toBe(1);
-  expect(turn.trace.symbolTable[0]?.symbolId).toBe("sym_cli");
-  expect(turn.trace.symbolTable[0]?.content).toBe("cli content");
+  expect(turn.trace.symbolTable.length).toBe(0);
 
   const post = turn.trace.telemetry.find((event) => event.type === "post_model");
   expect(post?.type).toBe("post_model");
   if (post?.type === "post_model") {
     expect(post.parseOutcome).toBe("control_channel_valid");
     expect(post.parsedEventCount).toBe(1);
-    expect(post.eventsAccepted).toBe(1);
-    expect(post.eventsRejected).toBe(0);
-    expect(post.writeFailures).toBe(0);
-    expect(post.scrubbedControlLeakCount).toBeGreaterThanOrEqual(0);
-    expect(post.scrubbedSymbolEchoCount).toBeGreaterThan(0);
+    expect(post.eventsAccepted).toBe(0);
+    expect(post.eventsRejected).toBe(1);
   }
 
   const symbols = await runtime.executeCommand({ type: "symbols" });
-  expect(symbols.output).toContain("sym_cli");
-
-  const show = await runtime.executeCommand({
-    type: "show",
-    symbolId: "sym_cli",
-  });
-  expect(show.output).toContain("cli content");
+  expect(symbols.output).toContain("No symbols in current thread.");
 });
 
 test("trust toggle propagates into telemetry pre-model event", async () => {
@@ -96,7 +83,7 @@ test("trace raw command returns last raw model output", async () => {
   expect(raw.output).toContain("<symbolic_control>");
 });
 
-test("remember command uses strict write intent and mutates symbol state in mock mode", async () => {
+test("remember command writes directly to symbol store", async () => {
   const runtime = new ChatCliRuntime({
     mock: true,
   });
@@ -106,11 +93,7 @@ test("remember command uses strict write intent and mutates symbol state in mock
     content: "Buy milk and eggs",
   });
 
-  expect(result.output).toContain("Got it");
-  expect(result.turn?.trace.writeIntent.mode).toBe("strict");
-  expect(result.turn?.trace.writeIntent.satisfied).toBe(true);
-  expect((result.turn?.trace.symbolTable.length ?? 0) > 0).toBe(true);
-  expect(result.turn?.trace.symbolTable[0]?.content).toContain("Buy milk and eggs");
+  expect(result.output).toContain("Remembered via passive policy write path");
 
   const symbols = await runtime.executeCommand({ type: "symbols" });
   expect(symbols.output).toContain("Buy milk and eggs");
@@ -121,6 +104,7 @@ test("history clear wipes conversation but preserves symbol table", async () => 
     mock: true,
   });
 
+  await runtime.processUserMessage("hello");
   await runtime.executeCommand({
     type: "remember",
     content: "Plan Omega is important",
@@ -143,6 +127,7 @@ test("symbols clear wipes symbol table but preserves conversation history", asyn
     mock: true,
   });
 
+  await runtime.processUserMessage("hello");
   await runtime.executeCommand({
     type: "remember",
     content: "Keep launch checklist",
@@ -160,51 +145,6 @@ test("symbols clear wipes symbol table but preserves conversation history", asyn
   expect(runtime.getState().messageCount).toBe(messageCountBefore);
 });
 
-test("experiment vcw-only clears history and keeps symbols", async () => {
-  const runtime = new ChatCliRuntime({
-    mock: true,
-  });
-
-  await runtime.executeCommand({
-    type: "remember",
-    content: "Plan Orion is active",
-  });
-  expect(runtime.getState().messageCount).toBeGreaterThan(0);
-
-  const result = await runtime.executeCommand({
-    type: "experiment",
-    mode: "vcw-only",
-  });
-  expect(result.output).toContain("VCW-only");
-  expect(runtime.getState().messageCount).toBe(0);
-
-  const symbols = await runtime.executeCommand({ type: "symbols" });
-  expect(symbols.output).toContain("Plan Orion is active");
-});
-
-test("experiment chat-only clears symbols and keeps history", async () => {
-  const runtime = new ChatCliRuntime({
-    mock: true,
-  });
-
-  await runtime.executeCommand({
-    type: "remember",
-    content: "Plan Delta is approved",
-  });
-  const messageCountBefore = runtime.getState().messageCount;
-  expect(messageCountBefore).toBeGreaterThan(0);
-
-  const result = await runtime.executeCommand({
-    type: "experiment",
-    mode: "chat-only",
-  });
-  expect(result.output).toContain("chat-only");
-
-  const symbols = await runtime.executeCommand({ type: "symbols" });
-  expect(symbols.output).toContain("No symbols in current thread.");
-  expect(runtime.getState().messageCount).toBe(messageCountBefore);
-});
-
 test("state output includes active mode badge", async () => {
   const runtime = new ChatCliRuntime({
     mock: true,
@@ -215,21 +155,14 @@ test("state output includes active mode badge", async () => {
 
   await runtime.processUserMessage("hello chat only");
   const chatOnlyState = await runtime.executeCommand({ type: "state" });
-  expect(chatOnlyState.output).toContain("activeMode=[CHAT] chat-only");
+  expect(chatOnlyState.output).toContain("activeMode=[PASSIVE] active");
 
   await runtime.executeCommand({
     type: "remember",
     content: "Project Vega has a launch date",
   });
   const combinedState = await runtime.executeCommand({ type: "state" });
-  expect(combinedState.output).toContain("activeMode=[VCW+CHAT] combined");
-
-  await runtime.executeCommand({
-    type: "experiment",
-    mode: "vcw-only",
-  });
-  const vcwOnlyState = await runtime.executeCommand({ type: "state" });
-  expect(vcwOnlyState.output).toContain("activeMode=[VCW] vcw-only");
+  expect(combinedState.output).toContain("activeMode=[PASSIVE] active");
 });
 
 test("processUserMessage rejects concurrent turns with explicit error", async () => {

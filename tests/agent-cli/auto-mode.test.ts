@@ -4,7 +4,7 @@ import type { AssistantGenerateFn } from "../../src/engine";
 
 const PLAIN_ASSISTANT: AssistantGenerateFn = async () => "plain response";
 
-test("agent runtime defaults to active auto mode and writes high-confidence facts", async () => {
+test("agent runtime defaults to active auto mode and records high-confidence facts", async () => {
   const runtime = new AgentCliRuntime({
     mock: true,
   });
@@ -13,12 +13,11 @@ test("agent runtime defaults to active auto mode and writes high-confidence fact
 
   expect(turn.trace.autoSymbol.mode).toBe("active");
   expect(turn.trace.autoSymbol.triggered).toBe(true);
-  expect(turn.trace.autoSymbol.writeApplied).toBe(true);
+  expect(turn.trace.autoSymbol.writeApplied).toBe(false);
   expect(turn.trace.autoSymbol.overrideApplied).toBe(true);
   expect(turn.trace.autoSymbol.scoreBand).toBe("write");
   expect(turn.trace.autoSymbol.scorerVersion).toBe("heuristic_v2");
-  expect(turn.trace.symbolTable.length).toBe(1);
-  expect(turn.trace.symbolTable[0]?.symbolId).toBe("profile:name");
+  expect(turn.trace.symbolTable.length).toBe(0);
 });
 
 test("agent auto shadow mode records detection but does not mutate symbols", async () => {
@@ -26,7 +25,6 @@ test("agent auto shadow mode records detection but does not mutate symbols", asy
     assistantGenerate: PLAIN_ASSISTANT,
     env: {
       VCW_OLLAMA_MODEL: "mock",
-      VCW_OLLAMA_EMBED_MODEL: "mock",
     },
   });
 

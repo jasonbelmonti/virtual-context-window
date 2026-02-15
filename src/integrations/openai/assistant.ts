@@ -1,34 +1,18 @@
 import OpenAI from "openai";
 import type {
-  VirtualContextTurnRequest,
-  UpsertSymbolEvent,
-} from "../../engine/contracts";
-import type {
   AssistantGenerateFn,
   AssistantGenerateInput,
   AssistantGenerateStreamEvent,
 } from "../../engine/hooks";
 import {
-  DEFAULT_RECOGNIZER_CONFIG,
   parseAutoSymbolMetadataEnvelope,
   type RecognitionScoring,
 } from "../../recognition";
-import {
-  buildDeterministicPrompt,
-  resolveWriteIntentFromMetadata,
-} from "../langchain/assistant";
+import { buildDeterministicPrompt } from "../langchain/assistant";
 import type {
   VcwLangChainMiddleware,
   VcwLangChainMiddlewareContext,
-  WriteIntentMode,
-  WriteToolSchemaVersion,
 } from "../langchain/contracts";
-import {
-  WRITE_TOOL_NAME,
-  buildDeterministicControlEnvelope,
-  convertWriteToolArgsToPayload,
-  getWriteToolDefinition,
-} from "../langchain/write-tool-bridge";
 import type {
   CreateOpenAIClient,
   OpenAIResponsesAssistantOptions,
@@ -38,7 +22,6 @@ import type {
 
 const DEFAULT_OPENAI_BASE_URL = "https://api.openai.com/v1";
 const DEFAULT_TEMPERATURE = 0;
-const DEFAULT_WRITE_TOOL_SCHEMA_VERSION: WriteToolSchemaVersion = "v1";
 
 function resolveEnv(
   env: Record<string, string | undefined> | undefined,
@@ -66,27 +49,6 @@ function createDefaultClient(config: {
     apiKey: config.apiKey,
     baseURL: config.baseUrl,
   }) as unknown as OpenAIResponsesClientLike;
-}
-
-function buildStrictWriteIntentPrompt(basePrompt: string): string {
-  return [
-    basePrompt,
-    "",
-    "### WRITE_INTENT_STRICT",
-    `This turn requires tool-based write output. Call tool \"${WRITE_TOOL_NAME}\" exactly once.`,
-    "Provide tool args with:",
-    "- assistant_response: user-visible response text",
-    "- symbol_events: array of upsert_symbol events",
-    "Each symbol_events item may include only these keys:",
-    "- type, symbol_id, summary, content, kind, key_hint",
-    "Required per event:",
-    "- type must be \"upsert_symbol\"",
-    "- content must be a string",
-    "kind is optional and, when present, must be one of: memory|fact|plan|note",
-    "Example tool args JSON:",
-    "{\"assistant_response\":\"Got it.\",\"symbol_events\":[{\"type\":\"upsert_symbol\",\"content\":\"Plan Omega is about reinventing our core business\",\"summary\":\"Plan Omega memory\",\"kind\":\"note\",\"key_hint\":\"remember\"}]}",
-    "Do not emit symbolic_control XML directly in the visible text.",
-  ].join("\n");
 }
 
 function extractMessageContentText(content: unknown): string {
@@ -144,51 +106,14 @@ function coerceResponseText(response: unknown): string {
   throw new Error("openai_responses_output_missing_text");
 }
 
-function extractWriteToolArgs(response: unknown): {
-  toolCallDetected: boolean;
-  args?: unknown;
-} {
-  const objectValue = asObject(response);
-  if (!objectValue) {
-    return {
-      toolCallDetected: false,
-    };
-  }
-
-  const outputItems = Array.isArray(objectValue.output) ? objectValue.output : [];
-  let toolCallDetected = false;
-
-  for (const itemValue of outputItems) {
-    const item = asObject(itemValue);
-    if (!item || item.type !== "function_call") {
-      continue;
-    }
-
-    toolCallDetected = true;
-    if (item.name !== WRITE_TOOL_NAME) {
-      continue;
-    }
-
-    return {
-      toolCallDetected,
-      args: item.arguments,
-    };
-  }
-
-  return {
-    toolCallDetected,
-  };
-}
-
 type ResolvedAutoSymbolMetadata = {
   mode: "off" | "shadow" | "active";
   triggered: boolean;
   confidence: number;
   reason: string;
-  events: UpsertSymbolEvent[];
+  eventCount: number;
   suppressed: boolean;
   scoring?: RecognitionScoring;
-  valid: boolean;
 };
 
 function topScoringFeatures(scoring: RecognitionScoring | undefined): string[] {
@@ -206,16 +131,8 @@ function topScoringFeatures(scoring: RecognitionScoring | undefined): string[] {
     );
 }
 
-function isAutoWriteDecision(auto: ResolvedAutoSymbolMetadata): boolean {
-  if (auto.scoring) {
-    return auto.scoring.band === "write";
-  }
-
-  return auto.confidence >= DEFAULT_RECOGNIZER_CONFIG.activeMinScore;
-}
-
 function resolveAutoSymbolMetadata(
-  request: VirtualContextTurnRequest,
+  request: AssistantGenerateInput["request"],
 ): ResolvedAutoSymbolMetadata | undefined {
   const metadata = asObject(request.metadata);
   const parsed = parseAutoSymbolMetadataEnvelope(metadata);
@@ -223,47 +140,15 @@ function resolveAutoSymbolMetadata(
     return undefined;
   }
 
-  if (!parsed.valid) {
-    return {
-      mode: parsed.mode,
-      triggered: parsed.triggered,
-      confidence: parsed.confidence,
-      reason: parsed.reason,
-      events: [],
-      suppressed: parsed.suppressed,
-      scoring: parsed.scoring,
-      valid: false,
-    };
-  }
-
-  try {
-    const events = convertWriteToolArgsToPayload({
-      assistant_response: "",
-      symbol_events: parsed.events,
-    }).symbol_events;
-
-    return {
-      mode: parsed.mode,
-      triggered: parsed.triggered,
-      confidence: parsed.confidence,
-      reason: parsed.reason,
-      events,
-      suppressed: parsed.suppressed,
-      scoring: parsed.scoring,
-      valid: true,
-    };
-  } catch {
-    return {
-      mode: parsed.mode,
-      triggered: parsed.triggered,
-      confidence: parsed.confidence,
-      reason: parsed.reason,
-      events: [],
-      suppressed: parsed.suppressed,
-      scoring: parsed.scoring,
-      valid: false,
-    };
-  }
+  return {
+    mode: parsed.mode,
+    triggered: parsed.triggered,
+    confidence: parsed.confidence,
+    reason: parsed.reason,
+    eventCount: parsed.events.length,
+    suppressed: parsed.suppressed,
+    scoring: parsed.scoring,
+  };
 }
 
 async function runBeforeMiddleware(
@@ -358,19 +243,6 @@ function coerceStream(
   throw new Error("openai_responses_stream_invalid");
 }
 
-function buildOpenAIWriteToolDefinition(
-  schemaVersion: WriteToolSchemaVersion,
-): Record<string, unknown> {
-  const toolDefinition = getWriteToolDefinition(schemaVersion);
-  return {
-    type: "function",
-    name: toolDefinition.function.name,
-    description: toolDefinition.function.description,
-    strict: true,
-    parameters: toolDefinition.function.parameters,
-  };
-}
-
 export function createOpenAIResponsesAssistantGenerate(
   options: OpenAIResponsesAssistantOptions = {},
 ): AssistantGenerateFn {
@@ -390,10 +262,6 @@ export function createOpenAIResponsesAssistantGenerate(
   const temperature = options.temperature ?? DEFAULT_TEMPERATURE;
   const now = options.now ?? (() => Date.now());
   const middleware = options.middleware ?? [];
-  const writeIntentResolver =
-    options.writeIntentResolver ?? resolveWriteIntentFromMetadata;
-  const writeToolSchemaVersion =
-    options.writeToolSchemaVersion ?? DEFAULT_WRITE_TOOL_SCHEMA_VERSION;
 
   const client = (options.createClient ??
     (createDefaultClient as CreateOpenAIClient))({
@@ -405,13 +273,8 @@ export function createOpenAIResponsesAssistantGenerate(
     input: AssistantGenerateInput,
     streamSink?: (delta: string) => void | Promise<void>,
   ): Promise<string> => {
-    const writeIntentMode = writeIntentResolver(input.request);
     const autoSymbolMetadata = resolveAutoSymbolMetadata(input.request);
-    const basePrompt = buildDeterministicPrompt(input);
-    const prompt =
-      writeIntentMode === "strict"
-        ? buildStrictWriteIntentPrompt(basePrompt)
-        : basePrompt;
+    const prompt = buildDeterministicPrompt(input);
     const startedAtMs = now();
 
     const context: VcwLangChainMiddlewareContext = {
@@ -435,25 +298,7 @@ export function createOpenAIResponsesAssistantGenerate(
       let responsePayload: unknown;
       let streamedText = "";
 
-      if (writeIntentMode === "strict") {
-        if (streamSink) {
-          streamBuffered = true;
-          streamProvider = "buffered";
-        }
-
-        responsePayload = await client.responses.create({
-          model,
-          input: prompt,
-          temperature,
-          tools: [buildOpenAIWriteToolDefinition(writeToolSchemaVersion)],
-          tool_choice: {
-            type: "function",
-            name: WRITE_TOOL_NAME,
-          },
-          parallel_tool_calls: false,
-          stream: false,
-        });
-      } else if (streamSink) {
+      if (streamSink) {
         streamProvider = "sse";
         const streamValue = await client.responses.create({
           model,
@@ -500,61 +345,8 @@ export function createOpenAIResponsesAssistantGenerate(
 
       const durationMs = now() - startedAtMs;
       const responseObject = asObject(responsePayload) ?? {};
-
-      const writeToolExtraction = extractWriteToolArgs(responsePayload);
-      let middlewareInputText: string;
-      let controlEvents: UpsertSymbolEvent[] = [];
-      let writeTransport: "plain_text" | "function_call_bridge" | "detector_bridge" =
-        "plain_text";
-      let writeIntentSatisfied = true;
-
-      if (writeIntentMode === "strict") {
-        if (writeToolExtraction.args === undefined) {
-          throw new Error("write_intent_protocol_violation:no_write_tool_payload");
-        }
-
-        const payload = convertWriteToolArgsToPayload(writeToolExtraction.args);
-        middlewareInputText = payload.assistant_response;
-        controlEvents = payload.symbol_events;
-        writeTransport = "function_call_bridge";
-      } else {
-        middlewareInputText =
-          streamedText.length > 0 ? streamedText : coerceResponseText(responsePayload);
-      }
-
-      const expectsAutoWrite =
-        writeIntentMode === "auto" &&
-        autoSymbolMetadata?.valid &&
-        autoSymbolMetadata.mode === "active" &&
-        autoSymbolMetadata.triggered &&
-        !autoSymbolMetadata.suppressed &&
-        autoSymbolMetadata.events.length > 0 &&
-        isAutoWriteDecision(autoSymbolMetadata);
-
-      if (expectsAutoWrite) {
-        controlEvents = autoSymbolMetadata.events;
-        writeTransport = "detector_bridge";
-      }
-
-      if (writeIntentMode === "strict") {
-        writeIntentSatisfied = true;
-      } else if (writeIntentMode === "auto") {
-        if (!autoSymbolMetadata) {
-          writeIntentSatisfied = true;
-        } else if (!autoSymbolMetadata.valid) {
-          writeIntentSatisfied = false;
-        } else if (
-          autoSymbolMetadata.mode === "active" &&
-          autoSymbolMetadata.triggered &&
-          !autoSymbolMetadata.suppressed
-        ) {
-          writeIntentSatisfied = expectsAutoWrite
-            ? controlEvents.length > 0
-            : true;
-        } else {
-          writeIntentSatisfied = true;
-        }
-      }
+      const middlewareInputText =
+        streamedText.length > 0 ? streamedText : coerceResponseText(responsePayload);
 
       const provisionalMetadata: OpenAIResponsesAssistantResultMetadata = {
         provider: "openai_responses",
@@ -568,16 +360,12 @@ export function createOpenAIResponsesAssistantGenerate(
         streamedTextChars,
         streamBuffered,
         streamProvider,
-        writeIntentMode,
-        writeIntentSatisfied,
-        writeTransport,
-        toolCallDetected: writeToolExtraction.toolCallDetected,
-        writeToolSchemaVersion,
+        toolCallDetected: false,
         autoMode: autoSymbolMetadata?.mode,
         autoTriggered: autoSymbolMetadata?.triggered,
         autoConfidence: autoSymbolMetadata?.confidence,
         autoReason: autoSymbolMetadata?.reason,
-        autoEventCount: autoSymbolMetadata?.events.length ?? 0,
+        autoEventCount: autoSymbolMetadata?.eventCount ?? 0,
         autoSuppressed: autoSymbolMetadata?.suppressed,
         autoScore: autoSymbolMetadata?.scoring?.probability,
         autoScoreBand: autoSymbolMetadata?.scoring?.band,
@@ -594,24 +382,14 @@ export function createOpenAIResponsesAssistantGenerate(
         usageMetadata: asObject(responseObject.usage),
       };
 
-      const processedVisibleText = await runAfterMiddleware(
+      const outputText = await runAfterMiddleware(
         middleware,
         context,
         middlewareInputText,
         provisionalMetadata,
       );
-      const outputText =
-        controlEvents.length > 0
-          ? buildDeterministicControlEnvelope({
-              assistant_response: processedVisibleText,
-              symbol_events: controlEvents,
-            })
-          : processedVisibleText;
 
-      const metadata: OpenAIResponsesAssistantResultMetadata = {
-        ...provisionalMetadata,
-      };
-      await notifyResultMetadata(options.onResultMetadata, metadata);
+      await notifyResultMetadata(options.onResultMetadata, provisionalMetadata);
       return outputText;
     } catch (error) {
       const durationMs = now() - startedAtMs;

@@ -3,38 +3,38 @@ import type {
   PostModelTelemetry,
   PreModelTelemetry,
   SymbolRecord,
+  VirtualContextThreadInspection,
   VirtualContextEngine,
   VirtualContextTurnRequest,
   VirtualContextTurnResponse,
   VirtualContextTurnStreamEvent,
-} from "../engine/contracts";
-import { StrictControlChannelParser } from "../engine/control-channel-parser";
+} from "./contracts";
+import { StrictControlChannelParser } from "./control-channel-parser";
 import {
   GenerationCallInvariantError,
   SecondGenerationCallError,
-} from "../engine/errors";
+} from "./errors";
 import {
   defaultQueryBuilder,
   type AssistantGenerateInput,
   type AssistantGenerateStreamEvent,
-} from "../engine/hooks";
-import { resolveThreadIdentity, resolveTrustedSymbolRefs } from "../engine/identity";
-import { strictOutputSanitizer } from "../engine/output-sanitizer";
+} from "./hooks";
+import { resolveThreadIdentity, resolveTrustedSymbolRefs } from "./identity";
+import { strictOutputSanitizer } from "./output-sanitizer";
 import {
   applyPassiveCommitPolicy,
   createDeterministicFallbackExtractor,
   runExtractorWithTimeout,
-} from "./compressor";
+} from "./passive-compressor";
 import type {
-  EventTapeEntry,
   PassiveKernelOptions,
   PassivePackBudget,
   PassivePackHydratedRecord,
   PassiveThreadCounters,
   PassiveTurnDiagnostics,
-} from "./contracts";
-import { InMemoryEventTape } from "./event-tape";
-import { compilePassiveContextPack } from "./pack-compiler";
+} from "./passive-contracts";
+import { InMemoryEventTape } from "./passive-event-tape";
+import { compilePassiveContextPack } from "./passive-pack-compiler";
 
 const CONTROL_START_PREFIX = "<symbolic_control";
 const CONTROL_OPEN_TAG = "<symbolic_control>";
@@ -269,7 +269,7 @@ async function emitTelemetry(
   }
 }
 
-export function createVirtualContextEngineV2Passive(
+export function createVirtualContextEnginePassive(
   options: PassiveKernelOptions,
 ): VirtualContextEngine {
   const now = options.now ?? defaultNow;
@@ -798,6 +798,42 @@ export function createVirtualContextEngineV2Passive(
       if (runError) {
         throw runError;
       }
+    },
+    async inspectThread(threadId: string): Promise<VirtualContextThreadInspection> {
+      const state = getThreadState(threadId);
+      const entries = tape.listEntries(threadId);
+      const compressionRecords = tape.listCompressionRecords(threadId);
+      const hydrationLeases = tape.listHydrationLeases(threadId);
+      const pendingCandidates = tape.listUnsymbolizedCompactionCandidates(
+        threadId,
+        budget.recentLiteralPairCount,
+        6,
+      );
+
+      return {
+        threadId,
+        passive: {
+          eventTapeEntryCount: entries.length,
+          compressionRecordCount: compressionRecords.length,
+          hydrationLeaseCount: hydrationLeases.length,
+          pendingCompactionCandidates: pendingCandidates.length,
+          pressurePeak: state.pressurePeak,
+          compactMode: state.compactMode,
+          compactionInFlight: state.compactionInFlight,
+          lastCompactionOutcome: state.lastCompactionOutcome,
+          counters: {
+            compactionJobsTriggered: state.compactionJobsTriggered,
+            extractorCalls: state.extractorCalls,
+            proposalsCount: state.proposalsCount,
+            committedSymbolsCount: state.committedSymbolsCount,
+          },
+          recentEntryIds: entries.slice(-6).map((entry) => entry.entryId),
+          compressedSymbolIds: compressionRecords
+            .slice(-6)
+            .map((record) => record.symbolId),
+          hydratedSymbolIds: hydrationLeases.map((lease) => lease.symbolId),
+        },
+      };
     },
   };
 }

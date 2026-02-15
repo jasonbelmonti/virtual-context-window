@@ -125,7 +125,7 @@ test("openai responses stream emits deltas and final_text with middleware output
   expect(metadataProvider).toBe("sse");
 });
 
-test("openai strict write-intent fails fast when tool payload is missing", async () => {
+test("openai adapter ignores strict write-intent metadata and returns visible text", async () => {
   const generate = createOpenAIResponsesAssistantGenerate({
     apiKey: "test-key",
     model: "gpt-4.1-mini",
@@ -157,5 +157,5 @@ test("openai strict write-intent fails fast when tool payload is missing", async
         },
       }),
     ),
-  ).rejects.toThrow("write_intent_protocol_violation:no_write_tool_payload");
+  ).resolves.toBe("plain text without tool payload");
 });

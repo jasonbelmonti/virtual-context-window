@@ -50,7 +50,6 @@ function createKeyValueTable(
 function renderSummary(trace: AgentTurnTrace): string {
   const table = createKeyValueTable([
     ["threadId", trace.threadId],
-    ["kernelMode", trace.kernelMode],
     ["stages", trace.stages.join(" -> ")],
     ["contextPackChars", trace.contextPackText.length],
     ["rawModelChars", trace.rawModelContent.length],
@@ -143,11 +142,6 @@ function renderAgentLoop(trace: AgentTurnTrace): string {
     ["agentToolCallCount", trace.agent.agentToolCallCount],
     ["agentToolNames", trace.agent.agentToolNames.join(", ") || "(none)"],
     ["agentLoopDurationMs", trace.agent.agentLoopDurationMs.toFixed(2)],
-    ["writeIntentMode", trace.agent.writeIntentMode],
-    ["writeTransport", trace.agent.writeTransport],
-    ["writeIntentSatisfied", trace.agent.writeIntentSatisfied],
-    ["toolCallDetected", trace.agent.toolCallDetected],
-    ["schemaVersion", trace.agent.writeToolSchemaVersion],
   ]);
   return table.toString();
 }
@@ -155,7 +149,7 @@ function renderAgentLoop(trace: AgentTurnTrace): string {
 function renderPassiveSliding(trace: AgentTurnTrace): string {
   const passive = trace.diagnostics.passive;
   if (!passive) {
-    return "(v1 kernel: passive diagnostics unavailable)";
+    return "(passive diagnostics unavailable)";
   }
 
   const table = createKeyValueTable([
@@ -219,7 +213,7 @@ export function renderTurnTrace(
     renderSummary(trace),
     theme.section("Engine Diagnostics"),
     renderEngineDiagnostics(trace),
-    theme.section("Retrieval + Write Path"),
+    theme.section("Retrieval + Post-Model"),
     renderTelemetry(trace),
     theme.section("Auto Symbol Recognition"),
     renderAutoSymbol(trace),

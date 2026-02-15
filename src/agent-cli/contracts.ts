@@ -5,22 +5,15 @@ import type {
   TelemetryEvent,
   VirtualContextMessage,
 } from "../engine";
-import type {
-  WriteIntentMode,
-  WriteToolSchemaVersion,
-  WriteTransport,
-} from "../integrations/langchain";
 import type { AutoSymbolMode, RecognitionScoreBand } from "../recognition";
 
 export type TraceMode = "off" | "on";
-export type KernelMode = "v1" | "v2_passive";
 
 export type AgentCliLaunchOptions = {
   once?: string;
   trace?: boolean;
   mock?: boolean;
   provider?: "ollama" | "openai_responses";
-  kernelMode?: KernelMode;
   stream?: boolean;
   threadId?: string;
   env?: Record<string, string | undefined>;
@@ -48,16 +41,10 @@ export type AgentAssistantTraceMetadata = {
   agentToolCallCount: number;
   agentToolNames: string[];
   agentLoopDurationMs: number;
-  writeIntentMode: WriteIntentMode;
-  writeTransport: WriteTransport;
-  writeIntentSatisfied: boolean;
-  toolCallDetected: boolean;
-  writeToolSchemaVersion: WriteToolSchemaVersion;
 };
 
 export type AgentTurnTrace = {
   threadId: string;
-  kernelMode: KernelMode;
   stages: EngineStage[];
   telemetry: TelemetryEvent[];
   symbolTable: SymbolRecord[];
@@ -119,7 +106,6 @@ export type AgentCliStateView = {
   threadId: string;
   traceMode: TraceMode;
   provider: "ollama" | "openai_responses";
-  kernelMode: KernelMode;
   streamEnabled: boolean;
   autoSymbolMode: AutoSymbolMode;
   historyTurnLimit: number | null;
@@ -128,7 +114,7 @@ export type AgentCliStateView = {
 
 export type AgentCliCommand =
   | { type: "help" }
-  | { type: "trace"; action: "on" | "off" | "view" | "raw" | "pack" }
+  | { type: "trace"; action: "on" | "off" | "view" | "raw" | "pack" | "tape" }
   | { type: "stream"; action: "on" | "off" | "status" }
   | { type: "auto"; action: "on" | "off" | "shadow" | "status" }
   | { type: "state" }
@@ -138,7 +124,6 @@ export type AgentCliCommand =
   | { type: "show"; symbolId: string }
   | { type: "history"; action: "clear" | "status" | "off" }
   | { type: "history_limit"; turns: number }
-  | { type: "experiment"; mode: "vcw-only" | "chat-only" }
   | { type: "thread"; threadId: string }
   | { type: "quit" };
 

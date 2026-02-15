@@ -95,6 +95,29 @@ export type VirtualContextTurnStreamEvent =
       };
     };
 
+export type VirtualContextThreadInspection = {
+  threadId: string;
+  passive: {
+    eventTapeEntryCount: number;
+    compressionRecordCount: number;
+    hydrationLeaseCount: number;
+    pendingCompactionCandidates: number;
+    pressurePeak: number;
+    compactMode: boolean;
+    compactionInFlight: boolean;
+    lastCompactionOutcome: "none" | "no_candidates" | "extractor_error";
+    counters: {
+      compactionJobsTriggered: number;
+      extractorCalls: number;
+      proposalsCount: number;
+      committedSymbolsCount: number;
+    };
+    recentEntryIds: string[];
+    compressedSymbolIds: string[];
+    hydratedSymbolIds: string[];
+  };
+};
+
 export interface VirtualContextEngine {
   processTurn(
     request: VirtualContextTurnRequest,
@@ -102,6 +125,7 @@ export interface VirtualContextEngine {
   processTurnStream(
     request: VirtualContextTurnRequest,
   ): AsyncIterable<VirtualContextTurnStreamEvent>;
+  inspectThread?(threadId: string): Promise<VirtualContextThreadInspection>;
 }
 
 export type ParseOutcome =

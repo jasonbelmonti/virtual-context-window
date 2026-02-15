@@ -1,11 +1,9 @@
 import { createMiddleware } from "langchain";
-import type { UpsertSymbolEvent } from "../../engine/contracts";
 import type {
   LangChainAssistantResultMetadata,
   VcwLangChainMiddleware,
   VcwLangChainMiddlewareContext,
 } from "./contracts";
-import { convertWriteToolArgsToPayload } from "./write-tool-bridge";
 
 export type VcwCreateAgentBridgeAdapter = {
   buildContext(agentRequest: unknown): VcwLangChainMiddlewareContext;
@@ -53,11 +51,7 @@ function buildResultMetadata(
     model: adapter.model?.name ?? "unknown",
     baseUrl: adapter.model?.baseUrl ?? "unknown",
     durationMs,
-    writeIntentMode: "none",
-    writeIntentSatisfied: true,
-    writeTransport: "plain_text",
     toolCallDetected: false,
-    writeToolSchemaVersion: "v1",
   };
 }
 
@@ -135,10 +129,4 @@ export function toLangChainAgentMiddleware(
       wrapModelCall: spec.wrapModelCall,
     }),
   );
-}
-
-export function convertCreateAgentToolArgsToUpsertEvents(
-  args: unknown,
-): UpsertSymbolEvent[] {
-  return convertWriteToolArgsToPayload(args).symbol_events;
 }

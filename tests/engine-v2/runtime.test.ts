@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import {
   createVirtualContextEngine,
-  createVirtualContextEngineV2Passive,
+  createVirtualContextEnginePassive,
   InMemorySymbolStore,
   type AssistantGenerateFn,
   type CompressionExtractor,
@@ -50,7 +50,7 @@ test("v2 passive compaction is async, ignores model-origin writes, and keeps one
     return `response text\n<symbolic_control>${JSON.stringify(payload)}</symbolic_control>`;
   };
 
-  const engine = createVirtualContextEngineV2Passive({
+  const engine = createVirtualContextEnginePassive({
     assistantGenerate,
     store,
     extractor,
@@ -155,7 +155,7 @@ test("v2 passive compaction improves recall under pressure vs baseline v1", asyn
     },
   };
 
-  const passive = createVirtualContextEngineV2Passive({
+  const passive = createVirtualContextEnginePassive({
     assistantGenerate,
     store: passiveStore,
     extractor,
@@ -222,7 +222,7 @@ test("v2 passive reports no_candidates when pressure triggers without compactabl
     },
   };
 
-  const engine = createVirtualContextEngineV2Passive({
+  const engine = createVirtualContextEnginePassive({
     assistantGenerate: async () => "ack",
     store,
     extractor,
@@ -346,7 +346,7 @@ test("v2 passive waits for in-flight compaction before pre-model retrieval", asy
     },
   };
 
-  const engine = createVirtualContextEngineV2Passive({
+  const engine = createVirtualContextEnginePassive({
     assistantGenerate: async () => "ack",
     store,
     extractor,
@@ -409,7 +409,7 @@ test("v2 passive compaction drain timeout does not block the turn", async () => 
     },
   };
 
-  const engine = createVirtualContextEngineV2Passive({
+  const engine = createVirtualContextEnginePassive({
     assistantGenerate: async () => "ack",
     store,
     extractor,

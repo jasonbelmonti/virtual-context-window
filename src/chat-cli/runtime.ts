@@ -1,25 +1,17 @@
 import {
+  createProviderCompressionExtractor,
   createVirtualContextEngine,
   InMemorySymbolStore,
-  createRetrievalHooks,
-  createWritePathHooks,
+  type AssistantGenerateFn,
+  type EngineStage,
+  type SymbolRecord,
+  type TelemetryEvent,
+  type VirtualContextEngine,
+  type VirtualContextMessage,
 } from "../engine";
-import type {
-  EngineStage,
-  SymbolRecord,
-  TelemetryEvent,
-  VirtualContextEngine,
-  VirtualContextMessage,
-} from "../engine";
-import type { AssistantGenerateFn } from "../engine";
 import {
   createLangChainAssistantGenerate,
-  resolveWriteIntentFromMetadata,
-  type WriteIntentMode,
-} from "../integrations/langchain";
-import type {
-  LangChainAssistantResultMetadata,
-  WriteToolSchemaVersion,
+  type LangChainAssistantResultMetadata,
 } from "../integrations/langchain";
 import {
   createOpenAIResponsesAssistantGenerate,
@@ -97,15 +89,6 @@ function summarizeDeterministically(text: string, maxChars = 80): string {
   return `${normalized.slice(0, maxChars - 3)}...`;
 }
 
-function parseWriteIntentModeFromMetadata(
-  metadata: Record<string, unknown> | undefined,
-): WriteIntentMode {
-  return resolveWriteIntentFromMetadata({
-    messages: [],
-    metadata,
-  });
-}
-
 function parsePositiveFloat(value: string | undefined, fallback: number): number {
   if (!value) {
     return fallback;
@@ -120,17 +103,38 @@ function parsePositiveFloat(value: string | undefined, fallback: number): number
   return parsed;
 }
 
+function parsePositiveInt(value: string | undefined, fallback: number): number {
+  if (!value) {
+    return fallback;
+  }
+  const parsed = Number.parseInt(value, 10);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    return fallback;
+  }
+  return parsed;
+}
+
+function parseBoolean(value: string | undefined, fallback: boolean): boolean {
+  if (!value) {
+    return fallback;
+  }
+
+  const normalized = value.trim().toLowerCase();
+  if (normalized === "true" || normalized === "1" || normalized === "yes" || normalized === "on") {
+    return true;
+  }
+  if (normalized === "false" || normalized === "0" || normalized === "no" || normalized === "off") {
+    return false;
+  }
+  return fallback;
+}
+
 export function createMockAssistantGenerate(): AssistantGenerateFn {
   return async (input) => {
     const lastUserText = getLastUserMessage(input.request.messages).trim();
-    const rememberPrefix = /^remember\s*:\s*/iu;
-    const writeIntentMode = parseWriteIntentModeFromMetadata(
-      input.request.metadata as Record<string, unknown> | undefined,
-    );
     const autoMetadata = parseAutoSymbolMetadataEnvelope(
       input.request.metadata as Record<string, unknown> | undefined,
     );
-    const strictWriteIntent = writeIntentMode === "strict";
     const autoWriteActive =
       autoMetadata?.valid === true &&
       autoMetadata.mode === "active" &&
@@ -141,34 +145,8 @@ export function createMockAssistantGenerate(): AssistantGenerateFn {
         (autoMetadata.scoring === undefined &&
           autoMetadata.confidence >= DEFAULT_AUTO_ACTIVE_MIN_SCORE));
 
-    if (rememberPrefix.test(lastUserText) || strictWriteIntent) {
-      const content = rememberPrefix.test(lastUserText)
-        ? lastUserText.replace(rememberPrefix, "").trim()
-        : lastUserText;
-      const payload = {
-        symbol_events: [
-          {
-            type: "upsert_symbol",
-            summary: summarizeDeterministically(content || "(empty memory)"),
-            content: content || "(empty memory)",
-            kind: "note",
-            key_hint: "chat_cli_mock",
-          },
-        ],
-      };
-
-      return `Got it.\n<symbolic_control>${JSON.stringify(payload)}</symbolic_control>`;
-    }
-
     if (autoWriteActive) {
-      const payload = {
-        symbol_events: autoMetadata.events,
-      };
-
-      return [
-        `Mock assistant: ${lastUserText || "hello"}`,
-        `<symbolic_control>${JSON.stringify(payload)}</symbolic_control>`,
-      ].join("\n");
+      return `Mock assistant: ${lastUserText || "hello"} [auto-detected]`;
     }
 
     if (lastUserText.length === 0) {
@@ -194,10 +172,6 @@ function classifyRuntimeError(error: unknown): string {
 
     if (message.includes("timeout") || message.includes("aborted")) {
       return "timeout_or_latency";
-    }
-
-    if (message.includes("write_intent_protocol_violation")) {
-      return "contract_violation";
     }
 
     if (message.includes("turn_in_progress")) {
@@ -253,8 +227,6 @@ export class ChatCliRuntime {
   private threadId: string;
   private activeStages: EngineStage[] | null = null;
   private activeTelemetry: TelemetryEvent[] | null = null;
-  private activeWriteIntentMode: WriteIntentMode = "none";
-  private activeWriteToolSchemaVersion: WriteToolSchemaVersion = "v1";
   private activeAssistantMetadata: AssistantTraceMetadata | null = null;
   private activeAutoDecision: RecognitionDecision | null = null;
   private lastAssistantMetadata: AssistantTraceMetadata | null = null;
@@ -332,20 +304,23 @@ export class ChatCliRuntime {
   }
 
   private createEngine(): VirtualContextEngine {
-    const hooks = createRetrievalHooks({
-      store: this.store,
-      strategy: "hybrid_v2",
-    });
-    const writePathHooks = createWritePathHooks({
-      store: this.store,
-    });
+    const env = this.options.env ?? process.env;
+    const passiveHighWatermark = parsePositiveFloat(
+      env.VCW_PASSIVE_HIGH_WATERMARK,
+      0.8,
+    );
+    const passiveLowWatermarkRaw = parsePositiveFloat(
+      env.VCW_PASSIVE_LOW_WATERMARK,
+      0.6,
+    );
+    const passiveLowWatermark = Math.min(
+      passiveLowWatermarkRaw,
+      Math.max(0.05, passiveHighWatermark - 0.05),
+    );
 
     return createVirtualContextEngine({
       assistantGenerate: this.resolveAssistantGenerate(),
-      hooks: {
-        ...hooks,
-        ...writePathHooks,
-      },
+      store: this.store,
       onStage: (stage) => {
         this.activeStages?.push(stage);
       },
@@ -355,6 +330,31 @@ export class ChatCliRuntime {
         },
       },
       retrievalStrategy: "hybrid_v2",
+      highWatermark: passiveHighWatermark,
+      lowWatermark: passiveLowWatermark,
+      packBudget: {
+        totalChars: parsePositiveInt(env.VCW_PASSIVE_PACK_TOTAL_CHARS, 420),
+        recentLiteralPairCount: 2,
+        recentLiteralItemMaxChars: 180,
+      },
+      maxEventTapeEntriesPerThread: parsePositiveInt(
+        env.VCW_PASSIVE_MAX_EVENT_TAPE_ENTRIES,
+        2_000,
+      ),
+      waitForCompactionDrain: parseBoolean(
+        env.VCW_PASSIVE_WAIT_FOR_COMPACTION_DRAIN,
+        true,
+      ),
+      compactionDrainTimeoutMs: parsePositiveInt(
+        env.VCW_PASSIVE_COMPACTION_DRAIN_TIMEOUT_MS,
+        1_200,
+      ),
+      extractor: this.options.mock
+        ? undefined
+        : createProviderCompressionExtractor({
+            provider: this.provider,
+            env,
+          }),
     });
   }
 
@@ -372,32 +372,16 @@ export class ChatCliRuntime {
     return created;
   }
 
-  private deriveFallbackWriteIntentSatisfied(
-    writeIntentMode: WriteIntentMode,
-    rawModelContent: string,
-  ): boolean {
-    if (writeIntentMode === "auto") {
-      const auto = this.lastAutoDecision;
-      if (!auto) {
-        return true;
+  private async collectSymbolTableSnapshot(threadId: string): Promise<SymbolRecord[]> {
+    const listed = await this.store.list(threadId);
+    const records: SymbolRecord[] = [];
+    for (const item of listed) {
+      const record = await this.store.get(threadId, item.symbolId);
+      if (record) {
+        records.push(record);
       }
-      if (auto.mode !== "active" || !auto.triggered || auto.suppressed) {
-        return true;
-      }
-      return (
-        rawModelContent.includes("<symbolic_control>") &&
-        rawModelContent.includes("</symbolic_control>")
-      );
     }
-
-    if (writeIntentMode !== "strict") {
-      return true;
-    }
-
-    return (
-      rawModelContent.includes("<symbolic_control>") &&
-      rawModelContent.includes("</symbolic_control>")
-    );
+    return records;
   }
 
   private emptyAutoDecision(): RecognitionDecision {
@@ -420,14 +404,7 @@ export class ChatCliRuntime {
     };
   }
 
-  private async buildAutoDecision(
-    userText: string,
-    writeIntentMode: WriteIntentMode,
-  ): Promise<RecognitionDecision | null> {
-    if (writeIntentMode === "strict") {
-      return null;
-    }
-
+  private async buildAutoDecision(userText: string): Promise<RecognitionDecision | null> {
     const initial = recognizeAutomaticSymbols({
       latestUserText: userText,
       mode: this.autoSymbolMode,
@@ -489,7 +466,7 @@ export class ChatCliRuntime {
     };
   }
 
-  private buildTrace(response: {
+  private async buildTrace(response: {
     content: string;
     rawModelContent: string;
     contextPackText: string;
@@ -499,22 +476,33 @@ export class ChatCliRuntime {
       postModelMs: number;
       retrievalStrategy: "lexical_v1" | "hybrid_v2";
       retrievalDegraded: boolean;
+      passive?: {
+        pressureRatio: number;
+        pressurePeak: number;
+        pressureState: "normal" | "compact";
+        compactionDrainAttempted: boolean;
+        compactionDrainWaitMs: number;
+        compactionDrainTimedOut: boolean;
+        compactionTriggered: boolean;
+        compactionReason: "high_watermark" | "below_threshold" | "none";
+        compactionJobsTriggered: number;
+        compactionSkippedReason:
+          | "none"
+          | "in_flight"
+          | "low_pressure"
+          | "no_candidates"
+          | "extractor_error";
+        extractorCalls: number;
+        proposalsCount: number;
+        committedSymbolsCount: number;
+        hydratedSymbolsCount: number;
+        ignoredModelEventCount: number;
+      };
     };
   }): Promise<ChatTurnTrace> {
     const metadata = this.lastAssistantMetadata;
-    const writeIntentMode = metadata?.writeIntentMode ?? this.activeWriteIntentMode;
     const auto = this.lastAutoDecision ?? this.emptyAutoDecision();
-    const env = this.options.env ?? process.env;
-    const post = this.activeTelemetry?.find(
-      (event) => event.type === "post_model",
-    );
-    const writeApplied =
-      (metadata?.writeTransport === "detector_bridge" &&
-        (post?.type !== "post_model" || post.eventsAccepted > 0)) ||
-      (post?.type === "post_model" &&
-        auto.mode === "active" &&
-        auto.triggered &&
-        post.eventsAccepted > 0);
+
     return this.collectSymbolTableSnapshot(this.threadId).then((symbolTable) => ({
       threadId: this.threadId,
       stages: this.activeStages ?? [],
@@ -523,35 +511,14 @@ export class ChatCliRuntime {
       contextPackText: response.contextPackText,
       rawModelContent: response.rawModelContent,
       visibleContent: response.content,
-      writeIntent: {
-        mode: writeIntentMode,
-        transport: metadata?.writeTransport ?? "plain_text",
-        satisfied:
-          metadata?.writeIntentSatisfied ??
-          this.deriveFallbackWriteIntentSatisfied(
-            writeIntentMode,
-            response.rawModelContent,
-          ),
-        toolCallDetected: metadata?.toolCallDetected ?? false,
-        schemaVersion:
-          metadata?.writeToolSchemaVersion ?? this.activeWriteToolSchemaVersion,
-      },
       assistant: {
-        provider:
-          metadata?.provider ??
-          (this.provider === "openai_responses"
-            ? "openai_responses"
-            : "langchain_ollama"),
-        model:
-          metadata?.model ??
-          (this.provider === "openai_responses"
-            ? env.VCW_OPENAI_MODEL ?? "(unknown)"
-            : env.VCW_OLLAMA_MODEL ?? "(unknown)"),
+        provider: metadata?.provider ?? this.provider,
+        model: metadata?.model ?? "(unknown)",
         baseUrl:
           metadata?.baseUrl ??
           (this.provider === "openai_responses"
-            ? env.VCW_OPENAI_BASE_URL ?? "https://api.openai.com/v1"
-            : env.VCW_OLLAMA_BASE_URL ?? "http://127.0.0.1:11434"),
+            ? "https://api.openai.com/v1"
+            : "http://127.0.0.1:11434"),
         streamEnabled: metadata?.streamEnabled ?? this.streamEnabled,
         streamChunkCount: metadata?.streamChunkCount ?? 0,
         streamedTextChars: metadata?.streamedTextChars ?? 0,
@@ -565,57 +532,23 @@ export class ChatCliRuntime {
         reason: metadata?.autoReason ?? auto.reason,
         eventCount: metadata?.autoEventCount ?? auto.events.length,
         suppressed: metadata?.autoSuppressed ?? auto.suppressed,
-        writeApplied,
+        writeApplied: false,
         scorerVersion: metadata?.autoScorerVersion ?? auto.scoring.scorerVersion,
         score: metadata?.autoScore ?? auto.scoring.probability,
         scoreBand: metadata?.autoScoreBand ?? auto.scoring.band,
         overrideApplied:
           metadata?.autoOverrideApplied ?? auto.scoring.overrideApplied,
-        topFeatures: metadata?.autoTopFeatures ?? topFeaturesFromDecision(auto),
+        topFeatures:
+          metadata?.autoTopFeatures ??
+          topFeaturesFromDecision(auto),
       },
       diagnostics: response.diagnostics,
     }));
   }
 
-  private async collectSymbolTableSnapshot(threadId: string): Promise<SymbolRecord[]> {
-    const listed = await this.store.list(threadId);
-    const records: SymbolRecord[] = [];
-
-    for (const item of listed) {
-      const record = await this.store.get(threadId, item.symbolId);
-      if (!record) {
-        continue;
-      }
-
-      records.push(record);
-    }
-
-    return records;
-  }
-
-  private getActiveContextModeBadge(
-    messageCount: number,
-    symbolCount: number,
-  ): string {
-    if (messageCount > 0 && symbolCount > 0) {
-      return "[VCW+CHAT] combined";
-    }
-
-    if (messageCount === 0 && symbolCount > 0) {
-      return "[VCW] vcw-only";
-    }
-
-    if (messageCount > 0 && symbolCount === 0) {
-      return "[CHAT] chat-only";
-    }
-
-    return "[EMPTY] cold-start";
-  }
-
   async processUserMessage(
     userInput: string,
     options?: {
-      writeIntentMode?: WriteIntentMode;
       onAssistantDelta?: (delta: string) => void | Promise<void>;
     },
   ): Promise<ChatTurnResult> {
@@ -624,42 +557,23 @@ export class ChatCliRuntime {
     }
 
     const text = userInput.trim();
-    if (text.length === 0) {
+    if (!text) {
       throw new Error("empty_user_message");
     }
 
     const thread = this.getOrCreateThread(this.threadId);
     const requestMessages = [...thread.messages, { role: "user" as const, content: text }];
-    const requestedWriteIntentMode = options?.writeIntentMode ?? "none";
-    const autoDecision = await this.buildAutoDecision(text, requestedWriteIntentMode);
-    const writeIntentMode =
-      requestedWriteIntentMode === "strict"
-        ? "strict"
-        : this.autoSymbolMode === "off"
-          ? "none"
-          : "auto";
-    const metadata: Record<string, unknown> | undefined =
-      requestedWriteIntentMode === "strict"
-        ? {
-            writeIntent: {
-              mode: "strict",
-            },
-          }
-        : this.autoSymbolMode !== "off"
-          ? {
-              writeIntent: {
-                mode: "auto",
-              },
-              vcwAutoSymbol: toAutoSymbolMetadataEnvelope(
-                autoDecision ?? this.emptyAutoDecision(),
-              ),
-            }
-          : undefined;
+    const autoDecision = await this.buildAutoDecision(text);
+    const metadata: Record<string, unknown> | undefined = this.autoSymbolMode !== "off"
+      ? {
+          vcwAutoSymbol: toAutoSymbolMetadataEnvelope(
+            autoDecision ?? this.emptyAutoDecision(),
+          ),
+        }
+      : undefined;
 
     this.activeStages = [];
     this.activeTelemetry = [];
-    this.activeWriteIntentMode = writeIntentMode;
-    this.activeWriteToolSchemaVersion = "v1";
     this.activeAssistantMetadata = null;
     this.activeAutoDecision = autoDecision;
     this.turnInFlight = true;
@@ -671,6 +585,7 @@ export class ChatCliRuntime {
         messages: requestMessages,
         metadata,
       };
+
       let response:
         | {
             content: string;
@@ -682,9 +597,32 @@ export class ChatCliRuntime {
               postModelMs: number;
               retrievalStrategy: "lexical_v1" | "hybrid_v2";
               retrievalDegraded: boolean;
+              passive?: {
+                pressureRatio: number;
+                pressurePeak: number;
+                pressureState: "normal" | "compact";
+                compactionDrainAttempted: boolean;
+                compactionDrainWaitMs: number;
+                compactionDrainTimedOut: boolean;
+                compactionTriggered: boolean;
+                compactionReason: "high_watermark" | "below_threshold" | "none";
+                compactionJobsTriggered: number;
+                compactionSkippedReason:
+                  | "none"
+                  | "in_flight"
+                  | "low_pressure"
+                  | "no_candidates"
+                  | "extractor_error";
+                extractorCalls: number;
+                proposalsCount: number;
+                committedSymbolsCount: number;
+                hydratedSymbolsCount: number;
+                ignoredModelEventCount: number;
+              };
             };
           }
         | undefined;
+
       if (this.streamEnabled) {
         for await (const event of this.engine.processTurnStream(request)) {
           if (event.type === "assistant_text_delta" && options?.onAssistantDelta) {
@@ -697,9 +635,11 @@ export class ChatCliRuntime {
       } else {
         response = await this.engine.processTurn(request);
       }
+
       if (!response) {
         throw new Error("turn_stream_missing_completion");
       }
+
       this.lastAssistantMetadata = this.activeAssistantMetadata;
       this.lastAutoDecision = this.activeAutoDecision;
 
@@ -708,7 +648,6 @@ export class ChatCliRuntime {
 
       const trace = await this.buildTrace(response);
       this.lastTrace = trace;
-
       return {
         content: response.content,
         trace,
@@ -716,7 +655,6 @@ export class ChatCliRuntime {
     } finally {
       this.activeStages = null;
       this.activeTelemetry = null;
-      this.activeWriteIntentMode = "none";
       this.activeAssistantMetadata = null;
       this.activeAutoDecision = null;
       this.turnInFlight = false;
@@ -727,15 +665,11 @@ export class ChatCliRuntime {
     switch (command.type) {
       case "help":
         return { output: formatHelpText() };
-
-      case "trace":
+      case "trace": {
         if (command.action === "raw") {
           if (!this.lastTrace) {
-            return {
-              output: "No raw output available yet.",
-            };
+            return { output: "No raw output available yet." };
           }
-
           return {
             output: [
               "--- Raw Model Output ---",
@@ -744,24 +678,53 @@ export class ChatCliRuntime {
           };
         }
 
-        if (command.action === "view") {
+        if (command.action === "pack") {
           if (!this.lastTrace) {
-            return {
-              output: "No trace available yet.",
-            };
+            return { output: "No context pack available yet." };
           }
-
           return {
-            output: renderTurnTrace(this.lastTrace),
+            output: [
+              "--- Context Pack ---",
+              this.lastTrace.contextPackText || "(empty)",
+            ].join("\n"),
           };
         }
 
-        this.traceEnabled = command.action === "on";
-        return {
-          output: `trace=${this.traceEnabled ? "on" : "off"}`,
-        };
+        if (command.action === "tape") {
+          if (!this.engine.inspectThread) {
+            return { output: "Engine inspection unavailable." };
+          }
+          const snapshot = await this.engine.inspectThread(this.threadId);
+          return {
+            output: [
+              "--- Event Tape ---",
+              `entries=${snapshot.passive.eventTapeEntryCount}`,
+              `compressionRecords=${snapshot.passive.compressionRecordCount}`,
+              `hydrationLeases=${snapshot.passive.hydrationLeaseCount}`,
+              `pendingCandidates=${snapshot.passive.pendingCompactionCandidates}`,
+              `pressurePeak=${snapshot.passive.pressurePeak.toFixed(3)}`,
+              `compactMode=${snapshot.passive.compactMode}`,
+              `compactionInFlight=${snapshot.passive.compactionInFlight}`,
+              `lastCompactionOutcome=${snapshot.passive.lastCompactionOutcome}`,
+              `jobsTriggered=${snapshot.passive.counters.compactionJobsTriggered}`,
+              `extractorCalls=${snapshot.passive.counters.extractorCalls}`,
+              `proposals=${snapshot.passive.counters.proposalsCount}`,
+              `committedSymbols=${snapshot.passive.counters.committedSymbolsCount}`,
+            ].join("\n"),
+          };
+        }
 
-      case "stream":
+        if (command.action === "view") {
+          if (!this.lastTrace) {
+            return { output: "No trace available yet." };
+          }
+          return { output: renderTurnTrace(this.lastTrace) };
+        }
+
+        this.traceEnabled = command.action === "on";
+        return { output: `trace=${this.traceEnabled ? "on" : "off"}` };
+      }
+      case "stream": {
         if (command.action === "status") {
           return {
             output: `stream=${this.streamEnabled ? "on" : "off"}`,
@@ -771,12 +734,10 @@ export class ChatCliRuntime {
         return {
           output: `stream=${this.streamEnabled ? "on" : "off"}`,
         };
-
-      case "auto":
+      }
+      case "auto": {
         if (command.action === "status") {
-          return {
-            output: `autoSymbolMode=${this.autoSymbolMode}`,
-          };
+          return { output: `autoSymbolMode=${this.autoSymbolMode}` };
         }
         this.autoSymbolMode =
           command.action === "on"
@@ -784,66 +745,8 @@ export class ChatCliRuntime {
             : command.action === "off"
               ? "off"
               : "shadow";
-        return {
-          output: `autoSymbolMode=${this.autoSymbolMode}`,
-        };
-
-      case "remember": {
-        const turn = await this.processUserMessage(command.content, {
-          writeIntentMode: "strict",
-        });
-        return {
-          output: turn.content,
-          turn,
-        };
+        return { output: `autoSymbolMode=${this.autoSymbolMode}` };
       }
-
-      case "state": {
-        const state = this.getState();
-        const symbolCount = (await this.store.list(this.threadId)).length;
-        const activeMode = this.getActiveContextModeBadge(
-          state.messageCount,
-          symbolCount,
-        );
-        return {
-          output: [
-            `threadId=${state.threadId}`,
-            `trace=${state.traceMode}`,
-            `trustedSymbolRefs=${state.trustedSymbolRefs}`,
-            `provider=${state.provider}`,
-            `stream=${state.streamEnabled ? "on" : "off"}`,
-            `autoSymbolMode=${state.autoSymbolMode}`,
-            `messageCount=${state.messageCount}`,
-            `symbolCount=${symbolCount}`,
-            `activeMode=${activeMode}`,
-          ].join("\n"),
-        };
-      }
-
-      case "experiment":
-        if (command.mode === "vcw-only") {
-          const thread = this.getOrCreateThread(this.threadId);
-          thread.messages = [];
-          return {
-            output:
-              "Experiment mode set: VCW-only. Conversation history cleared; symbol table preserved.",
-          };
-        }
-
-        if (command.mode === "chat-only") {
-          const removedCount = await this.store.clearThread(this.threadId);
-          return {
-            output:
-              removedCount > 0
-                ? `Experiment mode set: chat-only. Cleared ${removedCount} symbol(s); conversation history preserved.`
-                : "Experiment mode set: chat-only. No symbols found; conversation history preserved.",
-          };
-        }
-
-        return {
-          output: "unknown_experiment_mode",
-        };
-
       case "history": {
         const thread = this.getOrCreateThread(this.threadId);
         thread.messages = [];
@@ -851,17 +754,47 @@ export class ChatCliRuntime {
           output: "Cleared conversation history for current thread. Symbol table preserved.",
         };
       }
-
-      case "symbols_clear": {
-        const removedCount = await this.store.clearThread(this.threadId);
+      case "remember": {
+        const content = command.content.trim();
+        if (!content) {
+          return {
+            output: "empty_remember_content",
+          };
+        }
+        await this.store.upsert(this.threadId, {
+          summary: summarizeDeterministically(content),
+          content,
+          kind: "note",
+          meta: {
+            source: "passive_manual",
+            keyHint: "chat_cli_remember",
+          },
+        });
         return {
-          output:
-            removedCount > 0
-              ? `Cleared ${removedCount} symbol(s) for current thread. Conversation history preserved.`
-              : "No symbols to clear for current thread.",
+          output: "Remembered via passive policy write path.",
         };
       }
-
+      case "state": {
+        const state = this.getState();
+        const symbolCount = (await this.store.list(this.threadId)).length;
+        const activeMode =
+          state.messageCount === 0 && symbolCount === 0
+            ? "[EMPTY] cold-start"
+            : "[PASSIVE] active";
+        return {
+          output: [
+            `threadId=${state.threadId}`,
+            `trace=${state.traceMode}`,
+            `provider=${state.provider}`,
+            `stream=${state.streamEnabled ? "on" : "off"}`,
+            `trustedSymbolRefs=${state.trustedSymbolRefs}`,
+            `autoSymbolMode=${state.autoSymbolMode}`,
+            `messageCount=${state.messageCount}`,
+            `symbolCount=${symbolCount}`,
+            `activeMode=${activeMode}`,
+          ].join("\n"),
+        };
+      }
       case "symbols": {
         const list = await this.store.list(this.threadId);
         if (list.length === 0) {
@@ -875,19 +808,22 @@ export class ChatCliRuntime {
         });
 
         return {
-          output: [
-            `symbols(${Math.min(limit, list.length)}/${list.length}):`,
-            ...lines,
-          ].join("\n"),
+          output: [`symbols(${Math.min(limit, list.length)}/${list.length}):`, ...lines].join("\n"),
         };
       }
-
+      case "symbols_clear": {
+        const removedCount = await this.store.clearThread(this.threadId);
+        return {
+          output:
+            removedCount > 0
+              ? `Cleared ${removedCount} symbol(s) for current thread. Conversation history preserved.`
+              : "No symbols to clear for current thread.",
+        };
+      }
       case "show": {
         const record = await this.store.get(this.threadId, command.symbolId);
         if (!record) {
-          return {
-            output: `symbol_not_found: ${command.symbolId}`,
-          };
+          return { output: `symbol_not_found: ${command.symbolId}` };
         }
 
         return {
@@ -899,42 +835,32 @@ export class ChatCliRuntime {
           ].join("\n"),
         };
       }
-
-      case "trust":
+      case "trust": {
         this.trustedSymbolRefs = command.enabled;
         return {
           output: `trustedSymbolRefs=${this.trustedSymbolRefs}`,
         };
-
-      case "thread":
+      }
+      case "thread": {
         this.threadId = command.threadId;
         this.getOrCreateThread(this.threadId);
-        return {
-          output: `threadId=${this.threadId}`,
-        };
-
-      case "clear":
+        return { output: `threadId=${this.threadId}` };
+      }
+      case "clear": {
         this.sessions.clear();
         this.store = new InMemorySymbolStore();
         this.engine = this.createEngine();
-        this.lastTrace = null;
-        this.lastAssistantMetadata = null;
-        this.lastAutoDecision = null;
-        this.getOrCreateThread(this.threadId);
         return {
-          output: "Cleared in-memory sessions and symbol store.",
+          output: "Cleared sessions and symbol store.",
         };
-
+      }
       case "quit":
         return {
           shouldQuit: true,
           output: "Bye.",
         };
-
       default:
-        return {
-          output: "unknown_command",
-        };
+        return { output: "unknown_command" };
     }
   }
 

@@ -1,10 +1,7 @@
 import {
   createProviderCompressionExtractor,
   InMemorySymbolStore,
-  createRetrievalHooks,
   createVirtualContextEngine,
-  createVirtualContextEngineV2Passive,
-  createWritePathHooks,
   type AssistantGenerateFn,
   type EngineStage,
   type SymbolRecord,
@@ -12,15 +9,11 @@ import {
   type VirtualContextEngine,
   type VirtualContextMessage,
 } from "../engine";
-import { createOllamaEmbeddingProvider } from "../integrations/ollama";
 import {
   createLangChainAgentAssistantGenerate,
   type LangChainAgentMetadata,
-  resolveWriteIntentFromMetadata,
 } from "../integrations/langchain";
-import type { WriteIntentMode } from "../integrations/langchain";
 import {
-  createOpenAIEmbeddingProvider,
   createOpenAIResponsesAgentAssistantGenerate,
   type OpenAIResponsesAgentResultMetadata,
 } from "../integrations/openai";
@@ -37,7 +30,6 @@ import {
 } from "../recognition";
 import type {
   AgentCliCommand,
-  KernelMode,
   AgentCliStateView,
   AgentThreadState,
   AgentTurnResult,
@@ -187,28 +179,9 @@ function parseProvider(
   return fallback;
 }
 
-function parseKernelMode(
-  value: string | undefined,
-  fallback: KernelMode,
-): KernelMode {
-  if (!value) {
-    return fallback;
-  }
-
-  const normalized = value.toLowerCase();
-  if (normalized === "v2" || normalized === "v2_passive") {
-    return "v2_passive";
-  }
-  if (normalized === "v1") {
-    return "v1";
-  }
-  return fallback;
-}
-
 export type AgentCliRuntimeOptions = {
   mock?: boolean;
   provider?: AgentProvider;
-  kernelMode?: KernelMode;
   streamEnabled?: boolean;
   traceEnabled?: boolean;
   threadId?: string;
@@ -219,9 +192,6 @@ export type AgentCliRuntimeOptions = {
 export function createMockAgentAssistantGenerate(): AssistantGenerateFn {
   return async (input) => {
     const lastUserText = getLastUserMessage(input.request.messages).trim();
-    const rememberPrefix = /^remember\s*:\s*/iu;
-    const strictWriteIntent =
-      resolveWriteIntentFromMetadata(input.request) === "strict";
     const autoMetadata = parseAutoSymbolMetadataEnvelope(
       input.request.metadata as Record<string, unknown> | undefined,
     );
@@ -235,31 +205,8 @@ export function createMockAgentAssistantGenerate(): AssistantGenerateFn {
         (autoMetadata.scoring === undefined &&
           autoMetadata.confidence >= DEFAULT_AUTO_ACTIVE_MIN_SCORE));
 
-    if (rememberPrefix.test(lastUserText) || strictWriteIntent) {
-      const content = lastUserText.replace(rememberPrefix, "").trim();
-      const payload = {
-        symbol_events: [
-          {
-            type: "upsert_symbol",
-            summary: summarizeDeterministically(content || "(empty memory)"),
-            content: content || "(empty memory)",
-            kind: "note",
-            key_hint: "agent_cli_mock",
-          },
-        ],
-      };
-
-      return `Got it.\n<symbolic_control>${JSON.stringify(payload)}</symbolic_control>`;
-    }
-
     if (autoWriteActive) {
-      const payload = {
-        symbol_events: autoMetadata.events,
-      };
-      return [
-        `Mock agent: ${lastUserText || "hello"}`,
-        `<symbolic_control>${JSON.stringify(payload)}</symbolic_control>`,
-      ].join("\n");
+      return `Mock agent: ${lastUserText || "hello"} [auto-detected]`;
     }
 
     return `Mock agent: ${lastUserText || "hello"}`;
@@ -272,7 +219,6 @@ export class AgentCliRuntime {
   private store = new InMemorySymbolStore();
   private engine: VirtualContextEngine;
   private readonly provider: AgentProvider;
-  private readonly kernelMode: KernelMode;
   private streamEnabled: boolean;
   private traceEnabled: boolean;
   private autoSymbolMode: AutoSymbolMode;
@@ -295,10 +241,6 @@ export class AgentCliRuntime {
       options.provider ?? env.VCW_ASSISTANT_PROVIDER,
       "ollama",
     );
-    this.kernelMode = parseKernelMode(
-      options.kernelMode ?? env.VCW_KERNEL_MODE,
-      "v1",
-    );
     this.streamEnabled = options.streamEnabled ?? true;
     this.traceEnabled = options.traceEnabled ?? false;
     this.autoSymbolMode = parseAutoSymbolMode(env.VCW_AUTO_SYMBOL_MODE, "active");
@@ -317,7 +259,6 @@ export class AgentCliRuntime {
     this.threadId = options.threadId ?? makeThreadId();
 
     if (!options.mock && !options.assistantGenerate) {
-      const needsEmbeddings = this.kernelMode !== "v2_passive";
       if (this.provider === "openai_responses") {
         if (!env.OPENAI_API_KEY) {
           throw new Error("missing_env:OPENAI_API_KEY");
@@ -325,15 +266,9 @@ export class AgentCliRuntime {
         if (!env.VCW_OPENAI_MODEL) {
           throw new Error("missing_env:VCW_OPENAI_MODEL");
         }
-        if (needsEmbeddings && !env.VCW_OPENAI_EMBED_MODEL) {
-          throw new Error("missing_env:VCW_OPENAI_EMBED_MODEL");
-        }
       } else {
         if (!env.VCW_OLLAMA_MODEL) {
           throw new Error("missing_env:VCW_OLLAMA_MODEL");
-        }
-        if (needsEmbeddings && !env.VCW_OLLAMA_EMBED_MODEL) {
-          throw new Error("missing_env:VCW_OLLAMA_EMBED_MODEL");
         }
       }
     }
@@ -396,108 +331,56 @@ export class AgentCliRuntime {
 
   private createEngine(): VirtualContextEngine {
     const env = this.options.env ?? process.env;
-    if (this.kernelMode === "v2_passive") {
-      const passiveHighWatermark = parsePositiveFloat(
-        env.VCW_PASSIVE_HIGH_WATERMARK,
-        0.8,
-      );
-      const passiveLowWatermarkRaw = parsePositiveFloat(
-        env.VCW_PASSIVE_LOW_WATERMARK,
-        0.6,
-      );
-      const passiveLowWatermark = Math.min(
-        passiveLowWatermarkRaw,
-        Math.max(0.05, passiveHighWatermark - 0.05),
-      );
-      const waitForCompactionDrain = parseBoolean(
-        env.VCW_PASSIVE_WAIT_FOR_COMPACTION_DRAIN,
-        true,
-      );
-
-      return createVirtualContextEngineV2Passive({
-        assistantGenerate: this.resolveAssistantGenerate(),
-        store: this.store,
-        telemetry: {
-          emit: (event) => {
-            this.activeTelemetry?.push(event);
-          },
-        },
-        onStage: (stage) => {
-          this.activeStages?.push(stage);
-        },
-        retrievalStrategy: "hybrid_v2",
-        highWatermark: passiveHighWatermark,
-        lowWatermark: passiveLowWatermark,
-        packBudget: {
-          totalChars: parsePositiveInt(env.VCW_PASSIVE_PACK_TOTAL_CHARS, 420),
-          recentLiteralPairCount: 2,
-          recentLiteralItemMaxChars: 180,
-        },
-        maxEventTapeEntriesPerThread: parsePositiveInt(
-          env.VCW_PASSIVE_MAX_EVENT_TAPE_ENTRIES,
-          2_000,
-        ),
-        waitForCompactionDrain,
-        compactionDrainTimeoutMs: parsePositiveInt(
-          env.VCW_PASSIVE_COMPACTION_DRAIN_TIMEOUT_MS,
-          1_200,
-        ),
-        extractor: this.options.mock
-          ? undefined
-          : createProviderCompressionExtractor({
-              provider: this.provider,
-              env,
-            }),
-      });
-    }
-
-    const embedModel =
-      this.provider === "openai_responses"
-        ? env.VCW_OPENAI_EMBED_MODEL
-        : env.VCW_OLLAMA_EMBED_MODEL;
-    const embedCacheEntries = parsePositiveInt(
-      env.VCW_EMBED_CACHE_MAX_ENTRIES,
-      2_000,
+    const passiveHighWatermark = parsePositiveFloat(
+      env.VCW_PASSIVE_HIGH_WATERMARK,
+      0.8,
     );
-    const embeddingProvider = this.options.mock
-      ? undefined
-      : this.provider === "openai_responses"
-        ? createOpenAIEmbeddingProvider({
-            env,
-            defaultModel: embedModel,
-          })
-        : createOllamaEmbeddingProvider({
-            env,
-            defaultModel: embedModel,
-          });
-
-    const hooks = createRetrievalHooks({
-      store: this.store,
-      strategy: "hybrid_v2",
-      embeddingProvider,
-      embeddingModel: embedModel,
-      failOnEmbeddingError: false,
-      embeddingCacheMaxEntries: embedCacheEntries,
-    });
-    const writePathHooks = createWritePathHooks({
-      store: this.store,
-    });
+    const passiveLowWatermarkRaw = parsePositiveFloat(
+      env.VCW_PASSIVE_LOW_WATERMARK,
+      0.6,
+    );
+    const passiveLowWatermark = Math.min(
+      passiveLowWatermarkRaw,
+      Math.max(0.05, passiveHighWatermark - 0.05),
+    );
 
     return createVirtualContextEngine({
       assistantGenerate: this.resolveAssistantGenerate(),
-      hooks: {
-        ...hooks,
-        ...writePathHooks,
-      },
-      onStage: (stage) => {
-        this.activeStages?.push(stage);
-      },
+      store: this.store,
       telemetry: {
         emit: (event) => {
           this.activeTelemetry?.push(event);
         },
       },
+      onStage: (stage) => {
+        this.activeStages?.push(stage);
+      },
       retrievalStrategy: "hybrid_v2",
+      highWatermark: passiveHighWatermark,
+      lowWatermark: passiveLowWatermark,
+      packBudget: {
+        totalChars: parsePositiveInt(env.VCW_PASSIVE_PACK_TOTAL_CHARS, 420),
+        recentLiteralPairCount: 2,
+        recentLiteralItemMaxChars: 180,
+      },
+      maxEventTapeEntriesPerThread: parsePositiveInt(
+        env.VCW_PASSIVE_MAX_EVENT_TAPE_ENTRIES,
+        2_000,
+      ),
+      waitForCompactionDrain: parseBoolean(
+        env.VCW_PASSIVE_WAIT_FOR_COMPACTION_DRAIN,
+        true,
+      ),
+      compactionDrainTimeoutMs: parsePositiveInt(
+        env.VCW_PASSIVE_COMPACTION_DRAIN_TIMEOUT_MS,
+        1_200,
+      ),
+      extractor: this.options.mock
+        ? undefined
+        : createProviderCompressionExtractor({
+            provider: this.provider,
+            env,
+          }),
     });
   }
 
@@ -562,12 +445,7 @@ export class AgentCliRuntime {
 
   private async buildAutoDecision(
     userText: string,
-    writeIntentMode: WriteIntentMode,
   ): Promise<RecognitionDecision | null> {
-    if (writeIntentMode === "strict") {
-      return null;
-    }
-
     const initial = recognizeAutomaticSymbols({
       latestUserText: userText,
       mode: this.autoSymbolMode,
@@ -666,19 +544,9 @@ export class AgentCliRuntime {
     const symbolTable = await this.collectSymbolTableSnapshot(this.threadId);
     const env = this.options.env ?? process.env;
     const auto = this.lastAutoDecision ?? this.emptyAutoDecision();
-    const post = this.activeTelemetry?.find(
-      (event) => event.type === "post_model",
-    );
-    const writeApplied =
-      (this.lastAgentMetadata?.writeTransport === "detector_bridge" &&
-        (post?.type !== "post_model" || post.eventsAccepted > 0)) ||
-      (post?.type === "post_model" &&
-        auto.mode === "active" &&
-        auto.triggered &&
-        post.eventsAccepted > 0);
+
     return {
       threadId: this.threadId,
-      kernelMode: this.kernelMode,
       stages: this.activeStages ?? [],
       telemetry: this.activeTelemetry ?? [],
       symbolTable,
@@ -693,7 +561,7 @@ export class AgentCliRuntime {
         reason: this.lastAgentMetadata?.autoReason ?? auto.reason,
         eventCount: this.lastAgentMetadata?.autoEventCount ?? auto.events.length,
         suppressed: this.lastAgentMetadata?.autoSuppressed ?? auto.suppressed,
-        writeApplied,
+        writeApplied: false,
         scorerVersion:
           this.lastAgentMetadata?.autoScorerVersion ?? auto.scoring.scorerVersion,
         score: this.lastAgentMetadata?.autoScore ?? auto.scoring.probability,
@@ -720,12 +588,6 @@ export class AgentCliRuntime {
             agentToolCallCount: this.lastAgentMetadata.agentToolCallCount,
             agentToolNames: this.lastAgentMetadata.agentToolNames,
             agentLoopDurationMs: this.lastAgentMetadata.agentLoopDurationMs,
-            writeIntentMode: this.lastAgentMetadata.writeIntentMode,
-            writeTransport: this.lastAgentMetadata.writeTransport,
-            writeIntentSatisfied: this.lastAgentMetadata.writeIntentSatisfied,
-            toolCallDetected: this.lastAgentMetadata.toolCallDetected,
-            writeToolSchemaVersion:
-              this.lastAgentMetadata.writeToolSchemaVersion,
           }
         : {
             provider:
@@ -750,11 +612,6 @@ export class AgentCliRuntime {
             agentToolCallCount: 0,
             agentToolNames: [],
             agentLoopDurationMs: 0,
-            writeIntentMode: "none",
-            writeTransport: "plain_text",
-            writeIntentSatisfied: true,
-            toolCallDetected: false,
-            writeToolSchemaVersion: "v1",
           },
     };
   }
@@ -762,7 +619,6 @@ export class AgentCliRuntime {
   async processUserMessage(
     userInput: string,
     options?: {
-      writeIntentMode?: WriteIntentMode;
       onAssistantDelta?: (delta: string) => void | Promise<void>;
     },
   ): Promise<AgentTurnResult> {
@@ -778,31 +634,14 @@ export class AgentCliRuntime {
     const thread = this.getOrCreateThread(this.threadId);
     const historyForRequest = this.getWindowedHistory(thread.messages);
     const requestMessages = [...historyForRequest, { role: "user" as const, content: text }];
-    const requestedWriteIntentMode = options?.writeIntentMode ?? "none";
-    const autoDecision = await this.buildAutoDecision(text, requestedWriteIntentMode);
-    const writeIntentMode =
-      requestedWriteIntentMode === "strict"
-        ? "strict"
-        : this.autoSymbolMode === "off"
-          ? "none"
-          : "auto";
-    const metadata: Record<string, unknown> | undefined =
-      requestedWriteIntentMode === "strict"
-        ? {
-            writeIntent: {
-              mode: "strict",
-            },
-          }
-        : this.autoSymbolMode !== "off"
-          ? {
-              writeIntent: {
-                mode: "auto",
-              },
-              vcwAutoSymbol: toAutoSymbolMetadataEnvelope(
-                autoDecision ?? this.emptyAutoDecision(),
-              ),
-            }
-          : undefined;
+    const autoDecision = await this.buildAutoDecision(text);
+    const metadata: Record<string, unknown> | undefined = this.autoSymbolMode !== "off"
+      ? {
+          vcwAutoSymbol: toAutoSymbolMetadataEnvelope(
+            autoDecision ?? this.emptyAutoDecision(),
+          ),
+        }
+      : undefined;
 
     this.activeStages = [];
     this.activeTelemetry = [];
@@ -915,6 +754,32 @@ export class AgentCliRuntime {
             ].join("\n"),
           };
         }
+        if (command.action === "tape") {
+          if (!this.engine.inspectThread) {
+            return { output: "Engine inspection unavailable." };
+          }
+          const snapshot = await this.engine.inspectThread(this.threadId);
+          return {
+            output: [
+              "--- Event Tape ---",
+              `entries=${snapshot.passive.eventTapeEntryCount}`,
+              `compressionRecords=${snapshot.passive.compressionRecordCount}`,
+              `hydrationLeases=${snapshot.passive.hydrationLeaseCount}`,
+              `pendingCandidates=${snapshot.passive.pendingCompactionCandidates}`,
+              `pressurePeak=${snapshot.passive.pressurePeak.toFixed(3)}`,
+              `compactMode=${snapshot.passive.compactMode}`,
+              `compactionInFlight=${snapshot.passive.compactionInFlight}`,
+              `lastCompactionOutcome=${snapshot.passive.lastCompactionOutcome}`,
+              `jobsTriggered=${snapshot.passive.counters.compactionJobsTriggered}`,
+              `extractorCalls=${snapshot.passive.counters.extractorCalls}`,
+              `proposals=${snapshot.passive.counters.proposalsCount}`,
+              `committedSymbols=${snapshot.passive.counters.committedSymbolsCount}`,
+              `recentEntryIds=${snapshot.passive.recentEntryIds.join(",") || "(none)"}`,
+              `compressedSymbolIds=${snapshot.passive.compressedSymbolIds.join(",") || "(none)"}`,
+              `hydratedSymbolIds=${snapshot.passive.hydratedSymbolIds.join(",") || "(none)"}`,
+            ].join("\n"),
+          };
+        }
         if (command.action === "view") {
           if (!this.lastTrace) {
             return { output: "No trace available yet." };
@@ -947,48 +812,43 @@ export class AgentCliRuntime {
       case "state": {
         const state = this.getState();
         const symbolCount = (await this.store.list(this.threadId)).length;
+        const inspection = this.engine.inspectThread
+          ? await this.engine.inspectThread(this.threadId)
+          : null;
         return {
           output: [
             `threadId=${state.threadId}`,
             `trace=${state.traceMode}`,
             `provider=${state.provider}`,
-            `kernelMode=${state.kernelMode}`,
             `stream=${state.streamEnabled ? "on" : "off"}`,
             `autoSymbolMode=${state.autoSymbolMode}`,
             `historyTurnLimit=${state.historyTurnLimit ?? "off"}`,
             `messageCount=${state.messageCount}`,
             `symbolCount=${symbolCount}`,
+            `compactMode=${inspection?.passive.compactMode ?? false}`,
+            `compactionInFlight=${inspection?.passive.compactionInFlight ?? false}`,
+            `pressurePeak=${inspection?.passive.pressurePeak.toFixed(3) ?? "0.000"}`,
           ].join("\n"),
         };
       }
       case "remember": {
-        if (this.kernelMode === "v2_passive") {
-          const content = command.content.trim();
-          if (!content) {
-            return {
-              output: "empty_remember_content",
-            };
-          }
-          await this.store.upsert(this.threadId, {
-            summary: summarizeDeterministically(content),
-            content,
-            kind: "note",
-            meta: {
-              source: "passive_manual",
-              keyHint: "agent_cli_remember",
-            },
-          });
+        const content = command.content.trim();
+        if (!content) {
           return {
-            output: "Remembered via passive policy write path.",
+            output: "empty_remember_content",
           };
         }
-
-        const turn = await this.processUserMessage(command.content, {
-          writeIntentMode: "strict",
+        await this.store.upsert(this.threadId, {
+          summary: summarizeDeterministically(content),
+          content,
+          kind: "note",
+          meta: {
+            source: "passive_manual",
+            keyHint: "agent_cli_remember",
+          },
         });
         return {
-          output: turn.content,
-          turn,
+          output: "Remembered via passive policy write path.",
         };
       }
       case "history": {
@@ -1014,25 +874,6 @@ export class AgentCliRuntime {
         return {
           output: `historyTurnLimit=${this.historyTurnLimit}`,
         };
-      case "experiment":
-        if (command.mode === "vcw-only") {
-          const thread = this.getOrCreateThread(this.threadId);
-          thread.messages = [];
-          return {
-            output:
-              "Experiment mode set: VCW-only. Conversation history cleared; symbol table preserved.",
-          };
-        }
-        if (command.mode === "chat-only") {
-          const removedCount = await this.store.clearThread(this.threadId);
-          return {
-            output:
-              removedCount > 0
-                ? `Experiment mode set: chat-only. Cleared ${removedCount} symbol(s); conversation history preserved.`
-                : "Experiment mode set: chat-only. No symbols found; conversation history preserved.",
-          };
-        }
-        return { output: "unknown_experiment_mode" };
       case "symbols_clear": {
         const removedCount = await this.store.clearThread(this.threadId);
         return {
@@ -1092,7 +933,6 @@ export class AgentCliRuntime {
       threadId: this.threadId,
       traceMode: this.traceEnabled ? "on" : "off",
       provider: this.provider,
-      kernelMode: this.kernelMode,
       streamEnabled: this.streamEnabled,
       autoSymbolMode: this.autoSymbolMode,
       historyTurnLimit: this.historyTurnLimit,

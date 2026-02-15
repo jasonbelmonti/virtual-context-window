@@ -3,7 +3,6 @@ import path from "node:path";
 import { AgentCliRuntime, type AgentTurnTrace } from "../src/agent-cli";
 import type {
   AssistantGenerateFn,
-  PostModelTelemetry,
   PreModelTelemetry,
 } from "../src/engine";
 import {
@@ -24,14 +23,11 @@ import {
   renderFinalScoreboard,
   renderLaneEvent,
   renderPhase,
-  renderProjectionEvent,
   type RenderLaneMetric,
   type RenderRunSummary,
 } from "./demo-showdown-renderer";
 
 export type DemoProvider = "ollama" | "openai_responses";
-
-type StrictMode = boolean;
 
 export type ShowdownCliOptions = {
   provider: DemoProvider;
@@ -39,7 +35,6 @@ export type ShowdownCliOptions = {
   distractorTurns: number;
   stream: boolean;
   outputDir?: string;
-  strict: StrictMode;
   scenario: ShowdownScenarioKind;
   maxRetries: number;
   seed?: string;
@@ -75,6 +70,14 @@ export type ShowdownLaneMetric = {
   strictGatePassed: boolean;
   failureReasons: string[];
   attemptsUsed: number;
+  pressurePeak: number;
+  pressureFinal: number;
+  compactionJobsTriggered: number;
+  extractorCalls: number;
+  proposalsCount: number;
+  committedSymbolsCount: number;
+  hydratedSymbolsCount: number;
+  ignoredModelEventCount: number;
 };
 
 export type ShowdownRunResult = {
@@ -82,7 +85,6 @@ export type ShowdownRunResult = {
   runId: string;
   provider: DemoProvider;
   scenario: ShowdownScenarioKind;
-  strictMode: StrictMode;
   seed: string;
   outputDir: string;
   expectedToken: string;
@@ -107,7 +109,6 @@ type RunShowdownOptions = {
   distractorTurns: number;
   stream: boolean;
   outputDir: string;
-  strict?: StrictMode;
   scenarioKind?: ShowdownScenarioKind;
   maxRetries?: number;
   seed?: string;
@@ -122,7 +123,7 @@ type RunShowdownOptions = {
 };
 
 type ShowdownProgressEvent = {
-  kind: "phase" | "lane" | "projection";
+  kind: "phase" | "lane";
   lane?: ShowdownLane;
   message: string;
   detail?: string;
@@ -164,24 +165,10 @@ function parseStream(raw: string): boolean {
   throw new Error(`invalid_stream:${raw}`);
 }
 
-function parseStrict(raw: string): boolean {
-  const normalized = raw.toLowerCase();
-  if (normalized === "on" || normalized === "true") {
-    return true;
-  }
-  if (normalized === "off" || normalized === "false") {
-    return false;
-  }
-  throw new Error(`invalid_strict:${raw}`);
-}
-
 function parseScenario(raw: string): ShowdownScenarioKind {
   const normalized = raw.toLowerCase();
   if (normalized === "incident_response") {
     return "incident_response";
-  }
-  if (normalized === "classic") {
-    return "classic";
   }
   throw new Error(`invalid_scenario:${raw}`);
 }
@@ -192,7 +179,6 @@ export function parseShowdownArgs(argv: string[]): ShowdownCliOptions {
     historyLimit: 1,
     distractorTurns: DEFAULT_DISTRACTOR_TURNS,
     stream: false,
-    strict: true,
     scenario: DEFAULT_SCENARIO,
     maxRetries: DEFAULT_MAX_RETRIES,
   };
@@ -222,12 +208,6 @@ export function parseShowdownArgs(argv: string[]): ShowdownCliOptions {
 
     if (token === "--stream") {
       parsed.stream = parseStream(argv[index + 1] ?? "");
-      index += 1;
-      continue;
-    }
-
-    if (token === "--strict") {
-      parsed.strict = parseStrict(argv[index + 1] ?? "");
       index += 1;
       continue;
     }
@@ -296,34 +276,6 @@ function extractPreModel(trace: AgentTurnTrace): PreModelTelemetry | undefined {
   return pre;
 }
 
-function extractPostModel(trace: AgentTurnTrace): PostModelTelemetry | undefined {
-  const post = trace.telemetry.find((event) => event.type === "post_model");
-  if (post?.type !== "post_model") {
-    return undefined;
-  }
-  return post;
-}
-
-function projectionOriginFromTrace(trace: AgentTurnTrace): {
-  origin: "MODEL_RENDERED" | "BRIDGE_FUNCTION_CALL" | "DETECTOR_BRIDGE";
-  transport: "plain_text" | "function_call_bridge" | "detector_bridge";
-  trigger: string;
-} {
-  const transport = trace.agent?.writeTransport ?? "plain_text";
-  const origin =
-    transport === "plain_text"
-      ? "MODEL_RENDERED"
-      : transport === "function_call_bridge"
-        ? "BRIDGE_FUNCTION_CALL"
-        : "DETECTOR_BRIDGE";
-  const trigger = trace.autoSymbol.writeApplied
-    ? `auto:${trace.autoSymbol.reason}`
-    : trace.agent?.writeIntentMode === "strict"
-      ? "strict"
-      : "explicit";
-  return { origin, transport, trigger };
-}
-
 function timelinePush(
   timeline: ShowdownTimelineEvent[],
   phase: string,
@@ -388,7 +340,6 @@ function renderSummaryMarkdown(result: ShowdownRunResult): string {
   lines.push(`- Run ID: ${result.runId}`);
   lines.push(`- Provider: ${result.provider}`);
   lines.push(`- Scenario: ${result.scenario}`);
-  lines.push(`- Strict mode: ${result.strictMode}`);
   lines.push(`- Seed: ${result.seed}`);
   lines.push(`- History limit: ${result.historyLimit}`);
   lines.push(`- Distractor turns: ${result.distractorTurns}`);
@@ -398,12 +349,12 @@ function renderSummaryMarkdown(result: ShowdownRunResult): string {
   lines.push("");
   lines.push("## Scoreboard");
   lines.push("");
-  lines.push("| Lane | Answer | Tools | Brief | Memory | Web | Strict | history | focus | recall | symbols | tries | Reasons |");
-  lines.push("| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |");
+  lines.push("| Lane | Answer | Tools | Brief | Memory | Web | Strict | history | focus | recall | symbols | peak | final | jobs | commits | tries | Reasons |");
+  lines.push("| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |");
 
   for (const metric of result.metrics) {
     lines.push(
-      `| ${metric.lane} | ${metric.answerCorrect ? "PASS" : "FAIL"} | ${metric.requiredToolCallsSatisfied ? "PASS" : "FAIL"} | ${metric.briefFormatSatisfied ? "PASS" : "FAIL"} | ${metric.memoryEvidenceSatisfied ? "PASS" : "FAIL"} | ${metric.webEvidenceSatisfied ? "PASS" : "FAIL"} | ${metric.strictGatePassed ? "PASS" : "FAIL"} | ${metric.historyTurnsUsed} | ${metric.focusedInjectedCount} | ${metric.recallInjectedCount} | ${metric.symbolTableCount} | ${metric.attemptsUsed} | ${metric.failureReasons.length > 0 ? metric.failureReasons.join(", ") : "-"} |`,
+      `| ${metric.lane} | ${metric.answerCorrect ? "PASS" : "FAIL"} | ${metric.requiredToolCallsSatisfied ? "PASS" : "FAIL"} | ${metric.briefFormatSatisfied ? "PASS" : "FAIL"} | ${metric.memoryEvidenceSatisfied ? "PASS" : "FAIL"} | ${metric.webEvidenceSatisfied ? "PASS" : "FAIL"} | ${metric.strictGatePassed ? "PASS" : "FAIL"} | ${metric.historyTurnsUsed} | ${metric.focusedInjectedCount} | ${metric.recallInjectedCount} | ${metric.symbolTableCount} | ${metric.pressurePeak.toFixed(2)} | ${metric.pressureFinal.toFixed(2)} | ${metric.compactionJobsTriggered} | ${metric.committedSymbolsCount} | ${metric.attemptsUsed} | ${metric.failureReasons.length > 0 ? metric.failureReasons.join(", ") : "-"} |`,
     );
   }
 
@@ -412,10 +363,10 @@ function renderSummaryMarkdown(result: ShowdownRunResult): string {
   lines.push("");
   lines.push(`- ${result.outputDir}/summary.md`);
   lines.push(`- ${result.outputDir}/metrics.json`);
-  lines.push(`- ${result.outputDir}/transcript-chat-only.txt`);
-  lines.push(`- ${result.outputDir}/transcript-vcw-only.txt`);
-  lines.push(`- ${result.outputDir}/brief-chat-only.md`);
-  lines.push(`- ${result.outputDir}/brief-vcw-only.md`);
+  lines.push(`- ${result.outputDir}/transcript-compaction-off.txt`);
+  lines.push(`- ${result.outputDir}/transcript-compaction-on.txt`);
+  lines.push(`- ${result.outputDir}/brief-compaction-off.md`);
+  lines.push(`- ${result.outputDir}/brief-compaction-on.md`);
   lines.push(`- ${result.outputDir}/timeline.jsonl`);
 
   return lines.join("\n");
@@ -479,7 +430,6 @@ async function executeLane(options: {
   provider: DemoProvider;
   historyLimit: number;
   stream: boolean;
-  strict: boolean;
   maxRetries: number;
   requiredToolNames: string[];
   env: Record<string, string | undefined>;
@@ -542,26 +492,6 @@ async function executeLane(options: {
     });
     pushAssistant(remember.output ?? "");
 
-    const rememberPost = remember.turn ? extractPostModel(remember.turn.trace) : undefined;
-    if (rememberPost && rememberPost.eventsAccepted > 0) {
-      const projection = remember.turn
-        ? projectionOriginFromTrace(remember.turn.trace)
-        : {
-            origin: "MODEL_RENDERED" as const,
-            transport: "plain_text" as const,
-            trigger: "strict",
-          };
-      emitProgress(options.progressReporter, {
-        kind: "projection",
-        lane: options.lane,
-        message: "control envelope accepted",
-        detail:
-          `eventsAccepted=${rememberPost.eventsAccepted} parseOutcome=${rememberPost.parseOutcome} ` +
-          `origin=${projection.origin} transport=${projection.transport} trigger=${projection.trigger} ` +
-          `key=${fact.key}`,
-      });
-    }
-
     emitProgress(options.progressReporter, {
       kind: "lane",
       lane: options.lane,
@@ -608,33 +538,8 @@ async function executeLane(options: {
     detail: `turns=${options.scenario.distractorPrompts.length}`,
   });
 
-  if (options.lane === "chat_only") {
-    const branch = await runtime.executeCommand({
-      type: "experiment",
-      mode: "chat-only",
-    });
-    pushCommand("/experiment chat-only");
-    pushAssistant(branch.output ?? "");
-  } else {
-    const branch = await runtime.executeCommand({
-      type: "experiment",
-      mode: "vcw-only",
-    });
-    pushCommand("/experiment vcw-only");
-    pushAssistant(branch.output ?? "");
-  }
-  timelinePush(
-    options.timeline,
-    "branch",
-    "lane branch mode applied",
-    options.lane,
-    { mode: options.lane === "chat_only" ? "chat-only" : "vcw-only" },
-  );
-  emitProgress(options.progressReporter, {
-    kind: "lane",
-    lane: options.lane,
-    message: "branch mode applied",
-    detail: options.lane === "chat_only" ? "chat-only (symbols cleared)" : "vcw-only (history cleared)",
+  timelinePush(options.timeline, "lane_mode", "lane compaction mode active", options.lane, {
+    mode: options.lane,
   });
 
   let attempt = 0;
@@ -671,20 +576,6 @@ async function executeLane(options: {
     });
     const turn = await runtime.processUserMessage(prompt);
     pushAssistant(turn.content);
-
-    const turnPost = extractPostModel(turn.trace);
-    if (turnPost && turnPost.eventsAccepted > 0) {
-      const projection = projectionOriginFromTrace(turn.trace);
-      emitProgress(options.progressReporter, {
-        kind: "projection",
-        lane: options.lane,
-        message: "control envelope accepted",
-        detail:
-          `eventsAccepted=${turnPost.eventsAccepted} parseOutcome=${turnPost.parseOutcome} ` +
-          `origin=${projection.origin} transport=${projection.transport} trigger=${projection.trigger} ` +
-          `attempt=${attempt}`,
-      });
-    }
 
     finalTurn = turn;
     gateResult = gateForTurn({
@@ -724,6 +615,7 @@ async function executeLane(options: {
   }
 
   const pre = extractPreModel(finalTurn.trace);
+  const passive = finalTurn.trace.diagnostics.passive;
 
   const metric: ShowdownLaneMetric = {
     lane: options.lane,
@@ -747,6 +639,14 @@ async function executeLane(options: {
     strictGatePassed: gateResult.strictGatePassed,
     failureReasons: gateResult.failureReasons,
     attemptsUsed: attempt,
+    pressurePeak: passive?.pressurePeak ?? 0,
+    pressureFinal: passive?.pressureRatio ?? 0,
+    compactionJobsTriggered: passive?.compactionJobsTriggered ?? 0,
+    extractorCalls: passive?.extractorCalls ?? 0,
+    proposalsCount: passive?.proposalsCount ?? 0,
+    committedSymbolsCount: passive?.committedSymbolsCount ?? 0,
+    hydratedSymbolsCount: passive?.hydratedSymbolsCount ?? 0,
+    ignoredModelEventCount: passive?.ignoredModelEventCount ?? 0,
   };
 
   timelinePush(options.timeline, "lane_completed", "lane completed", options.lane, {
@@ -796,6 +696,14 @@ function buildLaneFailureResult(options: {
       strictGatePassed: false,
       failureReasons: [failureReason],
       attemptsUsed: Math.max(1, options.attempt),
+      pressurePeak: 0,
+      pressureFinal: 0,
+      compactionJobsTriggered: 0,
+      extractorCalls: 0,
+      proposalsCount: 0,
+      committedSymbolsCount: 0,
+      hydratedSymbolsCount: 0,
+      ignoredModelEventCount: 0,
     },
     transcript: `ERROR> ${failureReason}`,
     brief: `# Lane Failure\n\n${failureReason}\n`,
@@ -806,7 +714,6 @@ async function validateProvider(options: {
   provider: DemoProvider;
   env: Record<string, string | undefined>;
   stream: boolean;
-  scenarioKind: ShowdownScenarioKind;
   requiredToolNames: string[];
   assistantGenerate?: AssistantGenerateFn;
   mock?: boolean;
@@ -841,15 +748,6 @@ async function validateProvider(options: {
 
   if (!result.content.trim()) {
     throw new Error("provider_healthcheck_empty_response");
-  }
-
-  if (options.scenarioKind !== "incident_response") {
-    emitProgress(options.progressReporter, {
-      kind: "phase",
-      message: "provider healthcheck passed",
-      detail: "classic scenario",
-    });
-    return;
   }
 
   const normalizedRequiredTools = Array.from(
@@ -913,12 +811,12 @@ async function validateProvider(options: {
 
     if (/recursion limit|GRAPH_RECURSION_LIMIT/iu.test(message)) {
       throw new Error(
-        `provider_tool_probe_failed:recursion_limit:model=${model}. Configure a tool-capable model or run --scenario classic.`,
+        `provider_tool_probe_failed:recursion_limit:model=${model}. Configure a tool-capable model for incident scenario.`,
       );
     }
 
     throw new Error(
-      `provider_tool_probe_failed:${message}:model=${model}. Configure a tool-capable model or run --scenario classic.`,
+      `provider_tool_probe_failed:${message}:model=${model}. Configure a tool-capable model for incident scenario.`,
     );
   }
 }
@@ -940,6 +838,10 @@ function toRenderSummary(result: ShowdownRunResult): RenderRunSummary {
     focusedInjectedCount: metric.focusedInjectedCount,
     recallInjectedCount: metric.recallInjectedCount,
     symbolTableCount: metric.symbolTableCount,
+    pressurePeak: metric.pressurePeak,
+    pressureFinal: metric.pressureFinal,
+    compactionJobsTriggered: metric.compactionJobsTriggered,
+    committedSymbolsCount: metric.committedSymbolsCount,
     attemptsUsed: metric.attemptsUsed,
     failureReasons: metric.failureReasons,
   }));
@@ -948,7 +850,6 @@ function toRenderSummary(result: ShowdownRunResult): RenderRunSummary {
     runId: result.runId,
     provider: result.provider,
     scenario: result.scenario,
-    strictMode: result.strictMode,
     runDurationMs: result.runDurationMs,
     outputDir: result.outputDir,
     metrics,
@@ -958,12 +859,9 @@ function toRenderSummary(result: ShowdownRunResult): RenderRunSummary {
 export async function runShowdown(
   options: RunShowdownOptions,
 ): Promise<ShowdownRunResult> {
-  const strict = options.strict ?? true;
   const scenarioKind = options.scenarioKind ?? DEFAULT_SCENARIO;
   const maxRetries = options.maxRetries ?? DEFAULT_MAX_RETRIES;
-  const requiredToolNames =
-    options.requiredToolNames ??
-    (scenarioKind === "incident_response" ? [...INCIDENT_REQUIRED_TOOL_NAMES] : []);
+  const requiredToolNames = options.requiredToolNames ?? [...INCIDENT_REQUIRED_TOOL_NAMES];
 
   const env: Record<string, string | undefined> = {
     ...process.env,
@@ -977,20 +875,18 @@ export async function runShowdown(
   timelinePush(timeline, "run_started", "showdown run started", undefined, {
     provider: options.provider,
     scenario: scenarioKind,
-    strict,
     maxRetries,
   });
   emitProgress(options.progressReporter, {
     kind: "phase",
     message: "run started",
-    detail: `provider=${options.provider} scenario=${scenarioKind} strict=${strict} maxRetries=${maxRetries}`,
+    detail: `provider=${options.provider} scenario=${scenarioKind} maxRetries=${maxRetries}`,
   });
 
   await validateProvider({
     provider: options.provider,
     env,
     stream: options.stream,
-    scenarioKind,
     requiredToolNames,
     mock: options.mock,
     assistantGenerate: options.assistantGenerate,
@@ -1016,79 +912,89 @@ export async function runShowdown(
     detail: `runId=${scenario.runId} sentinels=${scenario.sentinels.length} seed=${scenario.seed}`,
   });
 
-  let chatOnly: LaneExecutionResult;
+  const compactionOffEnv: Record<string, string | undefined> = {
+    ...env,
+    VCW_PASSIVE_HIGH_WATERMARK: "0.999",
+    VCW_PASSIVE_LOW_WATERMARK: "0.95",
+  };
+
+  let compactionOff: LaneExecutionResult;
   try {
-    chatOnly = await executeLane({
-      lane: "chat_only",
+    compactionOff = await executeLane({
+      lane: "compaction_off",
       provider: options.provider,
       historyLimit: options.historyLimit,
       stream: options.stream,
-      strict,
       maxRetries,
       requiredToolNames,
-      env,
+      env: compactionOffEnv,
       scenario,
       timeline,
-      gateToolNameOverride: options.gateToolNameOverrides?.chat_only,
+      gateToolNameOverride: options.gateToolNameOverrides?.compaction_off,
       mock: options.mock,
       assistantGenerate: options.assistantGenerate,
       progressReporter: options.progressReporter,
     });
   } catch (error) {
     const message = toErrorMessage(error);
-    timelinePush(timeline, "lane_error", "lane execution failed", "chat_only", {
+    timelinePush(timeline, "lane_error", "lane execution failed", "compaction_off", {
       message,
     });
     emitProgress(options.progressReporter, {
       kind: "lane",
-      lane: "chat_only",
+      lane: "compaction_off",
       message: "lane failed",
       detail: compactPreview(message, 120),
     });
-    chatOnly = buildLaneFailureResult({
-      lane: "chat_only",
+    compactionOff = buildLaneFailureResult({
+      lane: "compaction_off",
       message,
       attempt: maxRetries + 1,
     });
   }
 
-  let vcwOnly: LaneExecutionResult;
+  const compactionOnEnv: Record<string, string | undefined> = {
+    ...env,
+    VCW_PASSIVE_HIGH_WATERMARK: "0.8",
+    VCW_PASSIVE_LOW_WATERMARK: "0.6",
+  };
+
+  let compactionOn: LaneExecutionResult;
   try {
-    vcwOnly = await executeLane({
-      lane: "vcw_only",
+    compactionOn = await executeLane({
+      lane: "compaction_on",
       provider: options.provider,
       historyLimit: options.historyLimit,
       stream: options.stream,
-      strict,
       maxRetries,
       requiredToolNames,
-      env,
+      env: compactionOnEnv,
       scenario,
       timeline,
-      gateToolNameOverride: options.gateToolNameOverrides?.vcw_only,
+      gateToolNameOverride: options.gateToolNameOverrides?.compaction_on,
       mock: options.mock,
       assistantGenerate: options.assistantGenerate,
       progressReporter: options.progressReporter,
     });
   } catch (error) {
     const message = toErrorMessage(error);
-    timelinePush(timeline, "lane_error", "lane execution failed", "vcw_only", {
+    timelinePush(timeline, "lane_error", "lane execution failed", "compaction_on", {
       message,
     });
     emitProgress(options.progressReporter, {
       kind: "lane",
-      lane: "vcw_only",
+      lane: "compaction_on",
       message: "lane failed",
       detail: compactPreview(message, 120),
     });
-    vcwOnly = buildLaneFailureResult({
-      lane: "vcw_only",
+    compactionOn = buildLaneFailureResult({
+      lane: "compaction_on",
       message,
       attempt: maxRetries + 1,
     });
   }
 
-  const metrics = [chatOnly.metric, vcwOnly.metric];
+  const metrics = [compactionOff.metric, compactionOn.metric];
   const strictGatePassed = metrics.every((metric) => metric.strictGatePassed);
 
   const runDurationMs = performance.now() - runStartedAt;
@@ -1097,7 +1003,6 @@ export async function runShowdown(
     runId: scenario.runId,
     provider: options.provider,
     scenario: scenario.kind,
-    strictMode: strict,
     seed: scenario.seed,
     outputDir: options.outputDir,
     expectedToken: scenario.expectedToken,
@@ -1136,7 +1041,6 @@ export async function runShowdown(
           runId: result.runId,
           provider: result.provider,
           scenario: result.scenario,
-          strictMode: result.strictMode,
           seed: result.seed,
           expectedToken: result.expectedToken,
           historyLimit: result.historyLimit,
@@ -1152,23 +1056,23 @@ export async function runShowdown(
       "utf8",
     ),
     writeFile(
-      path.join(options.outputDir, "transcript-chat-only.txt"),
-      chatOnly.transcript,
+      path.join(options.outputDir, "transcript-compaction-off.txt"),
+      compactionOff.transcript,
       "utf8",
     ),
     writeFile(
-      path.join(options.outputDir, "transcript-vcw-only.txt"),
-      vcwOnly.transcript,
+      path.join(options.outputDir, "transcript-compaction-on.txt"),
+      compactionOn.transcript,
       "utf8",
     ),
     writeFile(
-      path.join(options.outputDir, "brief-chat-only.md"),
-      chatOnly.brief,
+      path.join(options.outputDir, "brief-compaction-off.md"),
+      compactionOff.brief,
       "utf8",
     ),
     writeFile(
-      path.join(options.outputDir, "brief-vcw-only.md"),
-      vcwOnly.brief,
+      path.join(options.outputDir, "brief-compaction-on.md"),
+      compactionOn.brief,
       "utf8",
     ),
     writeFile(
@@ -1191,13 +1095,6 @@ export async function runShowdownCli(argv: string[]): Promise<number> {
     const progressReporter: ShowdownProgressReporter = (event) => {
       const elapsedSeconds = ((performance.now() - cliStartedAt) / 1000).toFixed(1);
       const detail = event.detail ? ` ${event.detail}` : "";
-      if (event.kind === "projection" && event.lane) {
-        const projectionDetail = [`t+${elapsedSeconds}s`, event.message, event.detail]
-          .filter((item) => Boolean(item && String(item).trim().length > 0))
-          .join(" | ");
-        console.log(renderProjectionEvent(event.lane, projectionDetail));
-        return;
-      }
       if (event.kind === "lane" && event.lane) {
         console.log(
           renderLaneEvent(
@@ -1221,7 +1118,6 @@ export async function runShowdownCli(argv: string[]): Promise<number> {
       distractorTurns: parsed.distractorTurns,
       stream: parsed.stream,
       outputDir,
-      strict: parsed.strict,
       scenarioKind: parsed.scenario,
       maxRetries: parsed.maxRetries,
       seed: parsed.seed,
@@ -1231,7 +1127,7 @@ export async function runShowdownCli(argv: string[]): Promise<number> {
     console.log(renderPhase("rendering final scoreboard"));
     console.log(renderFinalScoreboard(toRenderSummary(result)));
 
-    if (parsed.strict && !result.strictGatePassed) {
+    if (!result.strictGatePassed) {
       console.error("[demo-showdown] strict gate failed in one or more lanes.");
       return 1;
     }

@@ -1,7 +1,12 @@
-import type { EngineStage, RetrievalStrategy, SymbolRecordKind, SymbolStore, TelemetrySink, VirtualContextEngine } from "../engine/contracts";
-import type { AssistantGenerateFn, QueryBuilderHook } from "../engine/hooks";
-
-export type PassiveKernelMode = "v2_passive";
+import type {
+  EngineStage,
+  RetrievalStrategy,
+  SymbolRecordKind,
+  SymbolStore,
+  TelemetrySink,
+  VirtualContextEngine,
+} from "./contracts";
+import type { AssistantGenerateFn, QueryBuilderHook } from "./hooks";
 
 export type EventTapeEntry = {
   entryId: string;

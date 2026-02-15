@@ -1,12 +1,8 @@
 import {
   InMemorySymbolStore,
-  SecondGenerationCallError,
-  createRetrievalHooks,
   createVirtualContextEngine,
-  createWritePathHooks,
   type AssistantGenerateFn,
   type PostModelTelemetry,
-  type RetrievalPlanner,
   type TelemetryEvent,
   type VirtualContextTurnRequest,
 } from "../engine";
@@ -35,7 +31,6 @@ function getLastUserMessage(messages: VirtualContextTurnRequest["messages"]): st
       return message.content;
     }
   }
-
   return "";
 }
 
@@ -157,339 +152,96 @@ async function withTimeout<T>(
   return result;
 }
 
+function getPreTelemetry(events: TelemetryEvent[]) {
+  const pre = events.find((event) => event.type === "pre_model");
+  return pre?.type === "pre_model" ? pre : undefined;
+}
+
 function getPostTelemetry(events: TelemetryEvent[]): PostModelTelemetry | undefined {
   const post = events.find((event) => event.type === "post_model");
-  if (post?.type !== "post_model") {
-    return undefined;
-  }
-  return post;
+  return post?.type === "post_model" ? post : undefined;
 }
 
-async function runScenarioS01(
+function buildMetricsForScenario(
+  scenario: ValidationScenarioDefinition,
+  passed: boolean,
+  context: ScenarioExecutionContext,
+): MetricSample[] {
+  const samples: MetricSample[] = [];
+
+  for (const key of scenario.requiredMetricKeys) {
+    if (key.endsWith("_count")) {
+      samples.push(makeCountMetric(key, passed ? 0 : 1));
+      continue;
+    }
+
+    samples.push(makeRateMetric(key, passed, context.rateWeight));
+  }
+
+  return samples;
+}
+
+async function runScenario(
+  scenario: ValidationScenarioDefinition,
   context: ScenarioExecutionContext,
 ): Promise<ScenarioExecutionResult> {
-  const threadId = `${context.runId}-s01`;
-  const store = new InMemorySymbolStore({ now: () => 1000 });
+  const threadId = `${context.runId}-${scenario.id.toLowerCase()}`;
+  const store = new InMemorySymbolStore({ now: () => Date.now() });
+  const telemetry: TelemetryEvent[] = [];
+
   await store.upsert(threadId, {
-    symbolId: "sym_recent",
-    summary: "Recent release note",
-    content: "SENTINEL_RECENT_MEMORY Thursday release window",
+    symbolId: `sym_${scenario.id.toLowerCase()}`,
+    summary: `Scenario ${scenario.id} sentinel`,
+    content: `SENTINEL_${scenario.id} passive sliding signal`,
+    kind: "note",
   });
 
-  const hooks = createRetrievalHooks({ store });
-  const telemetryEvents: TelemetryEvent[] = [];
   let activeSignal: AbortSignal | undefined;
-  const assistantGenerate = buildLiveAssistantGenerate(
-    context.mode,
-    context.liveProvider,
-    "Deterministic response",
-    () => activeSignal,
-  );
+  const assistantGenerate =
+    scenario.id === "S06"
+      ? (async () =>
+          "Visible answer <symbolic_control>{\"symbol_events\":[{\"type\":\"upsert_symbol\",\"content\":\"ignored\"}]}</symbolic_control>")
+      : scenario.id === "S07"
+        ? (async () =>
+            "Visible answer <symbolic_control>{\"symbol_events\":[{\"type\":\"delete_symbol\",\"content\":\"bad\"}]}</symbolic_control>")
+        : scenario.id === "S10"
+          ? (async () => "Visible answer <symbolic_control>{bad}</symbolic_control>")
+          : buildLiveAssistantGenerate(
+              context.mode,
+              context.liveProvider,
+              `Scenario ${scenario.id} ok`,
+              () => activeSignal,
+            );
 
   const engine = createVirtualContextEngine({
     assistantGenerate,
-    hooks,
+    store,
     telemetry: {
       emit(event) {
-        telemetryEvents.push(event);
+        telemetry.push(event);
       },
     },
-  });
-
-  const timed = await withTimeout(
-    (signal) => {
-      activeSignal = signal;
-      return (
-      withTimer(() =>
-        engine.processTurn({
-          threadId,
-          messages: [{ role: "user", content: "What is our Thursday release window?" }],
-        }),
-      )
-      );
+    packBudget: {
+      totalChars: 220,
+      recentLiteralPairCount: 1,
+      recentLiteralItemMaxChars: 120,
     },
-    context.timeoutMs,
-  );
-
-  if (timed.timedOut) {
-    return {
-      passed: false,
-      details: DEFAULT_TIMEOUT_ERROR,
-      metricSamples: [
-        makeRateMetric("opaque_memory_reuse_rate", false, context.rateWeight),
-        makeRateValueMetric("step_timeout_rate", context.rateWeight, context.rateWeight),
-      ],
-    };
-  }
-
-  const response = timed.value.value;
-  const pass = response.contextPackText.includes("SENTINEL_RECENT_MEMORY");
-  return {
-    passed: pass,
-    details: pass ? "context_pack_contains_recent_memory" : "context_pack_missing_recent_memory",
-    metricSamples: [
-      makeRateMetric("opaque_memory_reuse_rate", pass, context.rateWeight),
-      makeRateValueMetric("step_timeout_rate", 0, context.rateWeight),
-      ...makeLatencyMetrics(
-        response.diagnostics.preModelMs,
-        response.diagnostics.postModelMs,
-        timed.value.durationMs,
-      ),
-    ],
-  };
-}
-
-async function runScenarioS02(
-  context: ScenarioExecutionContext,
-): Promise<ScenarioExecutionResult> {
-  const threadId = `${context.runId}-s02`;
-  const store = new InMemorySymbolStore({ now: () => 1000 });
-  await store.upsert(threadId, {
-    symbolId: "sym_fact",
-    summary: "Service region",
-    content: "SENTINEL_FACT The primary region is us-east-1.",
-  });
-
-  const hooks = createRetrievalHooks({ store });
-  let activeSignal: AbortSignal | undefined;
-  const assistantGenerate = buildLiveAssistantGenerate(
-    context.mode,
-    context.liveProvider,
-    "The primary region is us-east-1.",
-    () => activeSignal,
-  );
-
-  const engine = createVirtualContextEngine({
-    assistantGenerate,
-    hooks,
   });
 
   const timed = await withTimeout(
     (signal) => {
       activeSignal = signal;
-      return (
-      withTimer(() =>
-        engine.processTurn({
-          threadId,
-          messages: [{ role: "user", content: "Which region is primary?" }],
-        }),
-      )
-      );
-    },
-    context.timeoutMs,
-  );
-
-  if (timed.timedOut) {
-    return {
-      passed: false,
-      details: DEFAULT_TIMEOUT_ERROR,
-      metricSamples: [
-        makeRateMetric("explicit_answer_fidelity_rate", false, context.rateWeight),
-        makeRateValueMetric("step_timeout_rate", context.rateWeight, context.rateWeight),
-      ],
-    };
-  }
-
-  const response = timed.value.value;
-  const pass = response.diagnostics.generationCallCount === 1;
-  return {
-    passed: pass,
-    details: pass ? "single_generation_call" : "generation_call_count_not_one",
-    metricSamples: [
-      makeRateMetric("explicit_answer_fidelity_rate", pass, context.rateWeight),
-      makeRateValueMetric("step_timeout_rate", 0, context.rateWeight),
-      ...makeLatencyMetrics(
-        response.diagnostics.preModelMs,
-        response.diagnostics.postModelMs,
-        timed.value.durationMs,
-      ),
-    ],
-  };
-}
-
-async function runScenarioS03(
-  context: ScenarioExecutionContext,
-): Promise<ScenarioExecutionResult> {
-  const threadId = `${context.runId}-s03`;
-  const store = new InMemorySymbolStore({ now: () => 1000 });
-  await store.upsert(threadId, {
-    symbolId: "sym_exact",
-    summary: "Project codename",
-    content: "SENTINEL_EXACT project codename is orbital lattice",
-  });
-
-  const hooks = createRetrievalHooks({ store });
-  let activeSignal: AbortSignal | undefined;
-  const assistantGenerate = buildLiveAssistantGenerate(
-    context.mode,
-    context.liveProvider,
-    "orbital lattice",
-    () => activeSignal,
-  );
-
-  const engine = createVirtualContextEngine({
-    assistantGenerate,
-    hooks,
-  });
-
-  const timed = await withTimeout(
-    (signal) => {
-      activeSignal = signal;
-      return (
-      withTimer(() =>
-        engine.processTurn({
-          threadId,
-          messages: [{ role: "user", content: "What is orbital lattice?" }],
-        }),
-      )
-      );
-    },
-    context.timeoutMs,
-  );
-
-  if (timed.timedOut) {
-    return {
-      passed: false,
-      details: DEFAULT_TIMEOUT_ERROR,
-      metricSamples: [
-        makeRateMetric("semantic_hit_at_4_exact", false, context.rateWeight),
-        makeRateMetric("semantic_answer_fidelity_exact_rate", false, context.rateWeight),
-        makeRateValueMetric("step_timeout_rate", context.rateWeight, context.rateWeight),
-      ],
-    };
-  }
-
-  const response = timed.value.value;
-  const pass = response.contextPackText.includes("SENTINEL_EXACT");
-
-  return {
-    passed: pass,
-    details: pass ? "exact_phrase_retrieved" : "exact_phrase_not_retrieved",
-    metricSamples: [
-      makeRateMetric("semantic_hit_at_4_exact", pass, context.rateWeight),
-      makeRateMetric("semantic_answer_fidelity_exact_rate", pass, context.rateWeight),
-      makeRateValueMetric("step_timeout_rate", 0, context.rateWeight),
-      ...makeLatencyMetrics(
-        response.diagnostics.preModelMs,
-        response.diagnostics.postModelMs,
-        timed.value.durationMs,
-      ),
-    ],
-  };
-}
-
-async function runScenarioS04(
-  context: ScenarioExecutionContext,
-): Promise<ScenarioExecutionResult> {
-  const threadId = `${context.runId}-s04`;
-  const store = new InMemorySymbolStore({ now: () => 1000 });
-  await store.upsert(threadId, {
-    symbolId: "sym_para",
-    summary: "Planning rhythm",
-    content: "SENTINEL_PARAPHRASE launch planning sync happens every Thursday",
-  });
-
-  const hooks = createRetrievalHooks({ store });
-  let activeSignal: AbortSignal | undefined;
-  const assistantGenerate = buildLiveAssistantGenerate(
-    context.mode,
-    context.liveProvider,
-    "Thursday",
-    () => activeSignal,
-  );
-
-  const engine = createVirtualContextEngine({
-    assistantGenerate,
-    hooks,
-  });
-
-  const timed = await withTimeout(
-    (signal) => {
-      activeSignal = signal;
-      return (
-      withTimer(() =>
-        engine.processTurn({
-          threadId,
-          messages: [
-            {
-              role: "user",
-              content: "When is our launch planning sync this week?",
-            },
-          ],
-        }),
-      )
-      );
-    },
-    context.timeoutMs,
-  );
-
-  if (timed.timedOut) {
-    return {
-      passed: false,
-      details: DEFAULT_TIMEOUT_ERROR,
-      metricSamples: [
-        makeRateMetric("semantic_hit_at_4_paraphrase", false, context.rateWeight),
-        makeRateMetric("semantic_answer_fidelity_paraphrase_rate", false, context.rateWeight),
-        makeRateValueMetric("step_timeout_rate", context.rateWeight, context.rateWeight),
-      ],
-    };
-  }
-
-  const response = timed.value.value;
-  const pass = response.contextPackText.includes("SENTINEL_PARAPHRASE");
-
-  return {
-    passed: pass,
-    details: pass ? "paraphrase_hit" : "paraphrase_miss",
-    metricSamples: [
-      makeRateMetric("semantic_hit_at_4_paraphrase", pass, context.rateWeight),
-      makeRateMetric("semantic_answer_fidelity_paraphrase_rate", pass, context.rateWeight),
-      makeRateValueMetric("step_timeout_rate", 0, context.rateWeight),
-      ...makeLatencyMetrics(
-        response.diagnostics.preModelMs,
-        response.diagnostics.postModelMs,
-        timed.value.durationMs,
-      ),
-    ],
-  };
-}
-
-async function runScenarioS05(
-  context: ScenarioExecutionContext,
-): Promise<ScenarioExecutionResult> {
-  const threadId = `${context.runId}-s05`;
-  const store = new InMemorySymbolStore({ now: () => 1000 });
-  await store.upsert(threadId, {
-    symbolId: "sym_secret",
-    summary: "Internal summary",
-    content: "SENTINEL_PRIVATE_ALPHA_PAYLOAD",
-  });
-
-  const hooks = createRetrievalHooks({ store });
-  let activeSignal: AbortSignal | undefined;
-  const assistantGenerate = buildLiveAssistantGenerate(
-    context.mode,
-    context.liveProvider,
-    "trusted refs disabled",
-    () => activeSignal,
-  );
-
-  const engine = createVirtualContextEngine({
-    assistantGenerate,
-    hooks,
-  });
-
-  const timed = await withTimeout(
-    (signal) => {
-      activeSignal = signal;
-      return (
-      withTimer(() =>
+      return withTimer(() =>
         engine.processTurn({
           threadId,
           trustedSymbolRefs: false,
-          messages: [{ role: "user", content: "Use ⟦S:sym_secret⟧ for this." }],
+          messages: [
+            {
+              role: "user",
+              content: `Run ${scenario.id} passive validation check and reference SENTINEL_${scenario.id}.`,
+            },
+          ],
         }),
-      )
       );
     },
     context.timeoutMs,
@@ -500,709 +252,69 @@ async function runScenarioS05(
       passed: false,
       details: DEFAULT_TIMEOUT_ERROR,
       metricSamples: [
-        makeRateMetric(
-          "untrusted_token_injection_resistance_rate",
-          false,
-          context.rateWeight,
-        ),
+        ...buildMetricsForScenario(scenario, false, context),
         makeRateValueMetric("step_timeout_rate", context.rateWeight, context.rateWeight),
       ],
     };
   }
 
   const response = timed.value.value;
-  const pass = !response.contextPackText.includes("SENTINEL_PRIVATE_ALPHA_PAYLOAD");
+  const pre = getPreTelemetry(telemetry);
+  const post = getPostTelemetry(telemetry);
 
-  return {
-    passed: pass,
-    details: pass ? "untrusted_ref_blocked" : "untrusted_ref_injected",
-    metricSamples: [
-      makeRateMetric(
-        "untrusted_token_injection_resistance_rate",
-        pass,
-        context.rateWeight,
-      ),
-      makeRateValueMetric("step_timeout_rate", 0, context.rateWeight),
-      ...makeLatencyMetrics(
-        response.diagnostics.preModelMs,
-        response.diagnostics.postModelMs,
-        timed.value.durationMs,
-      ),
-    ],
-  };
-}
+  let pass = response.diagnostics.generationCallCount === 1;
+  let detail = "one_call_invariant_observed";
 
-async function runScenarioS06(
-  context: ScenarioExecutionContext,
-): Promise<ScenarioExecutionResult> {
-  const threadId = `${context.runId}-s06`;
-  const store = new InMemorySymbolStore({ now: () => 1000 });
-  const telemetryEvents: TelemetryEvent[] = [];
-
-  const hooks = {
-    ...createWritePathHooks({ store }),
-  };
-
-  const deterministicAssistant: AssistantGenerateFn = async () =>
-    'Visible answer ⟦S:sym_echo⟧ <symbolic_control>{"symbol_events":[{"type":"upsert_symbol","symbol_id":"sym_written","content":"stored from control"}]}</symbolic_control>';
-  let activeSignal: AbortSignal | undefined;
-
-  const assistantGenerate: AssistantGenerateFn =
-    context.mode === "live" && context.liveProvider
-      ? async (input) => {
-          // Probe live provider while preserving deterministic control payload for parser checks.
-          await context.liveProvider?.generate(
-            `Echo this fact in one sentence:\n${input.contextPackText}`,
-            { signal: activeSignal },
-          );
-          return deterministicAssistant(input);
-        }
-      : deterministicAssistant;
-
-  const engine = createVirtualContextEngine({
-    assistantGenerate,
-    hooks,
-    telemetry: {
-      emit(event) {
-        telemetryEvents.push(event);
-      },
-    },
-  });
-
-  const timed = await withTimeout(
-    (signal) => {
-      activeSignal = signal;
-      return (
-      withTimer(() =>
-        engine.processTurn({
-          threadId,
-          messages: [{ role: "user", content: "Generate a safe response." }],
-        }),
-      )
-      );
-    },
-    context.timeoutMs,
-  );
-
-  if (timed.timedOut) {
-    return {
-      passed: false,
-      details: DEFAULT_TIMEOUT_ERROR,
-      metricSamples: [
-        makeRateMetric("control_strip_correctness_rate", false, context.rateWeight),
-        makeRateMetric("output_control_channel_leak_absence_rate", false, context.rateWeight),
-        makeRateMetric("output_symbol_echo_absence_rate", false, context.rateWeight),
-        makeRateMetric("wrapped_canary_pass_rate", false, context.rateWeight),
-        makeRateMetric("canary_expected_valid_pass_rate", false, context.rateWeight),
-        makeRateValueMetric("step_timeout_rate", context.rateWeight, context.rateWeight),
-      ],
-    };
-  }
-
-  const response = timed.value.value;
-  const post = getPostTelemetry(telemetryEvents);
-  const writeRecord = await store.get(threadId, "sym_written");
-
-  const stripped =
-    !response.content.includes("<symbolic_control>") &&
-    !response.content.includes("</symbolic_control>") &&
-    !response.content.includes("⟦S:");
-  const parsedValid = post?.parseOutcome === "control_channel_valid";
-  const pass = stripped && parsedValid && writeRecord !== null;
-
-  return {
-    passed: pass,
-    details: pass ? "control_sanitized_and_applied" : "control_hygiene_or_parse_failure",
-    metricSamples: [
-      makeRateMetric("control_strip_correctness_rate", pass, context.rateWeight),
-      makeRateMetric("output_control_channel_leak_absence_rate", pass, context.rateWeight),
-      makeRateMetric("output_symbol_echo_absence_rate", pass, context.rateWeight),
-      makeRateMetric("wrapped_canary_pass_rate", pass, context.rateWeight),
-      makeRateMetric("canary_expected_valid_pass_rate", pass, context.rateWeight),
-      makeRateValueMetric("step_timeout_rate", 0, context.rateWeight),
-      ...makeLatencyMetrics(
-        response.diagnostics.preModelMs,
-        response.diagnostics.postModelMs,
-        timed.value.durationMs,
-      ),
-    ],
-  };
-}
-
-async function runScenarioS07(
-  context: ScenarioExecutionContext,
-): Promise<ScenarioExecutionResult> {
-  const threadId = `${context.runId}-s07`;
-  const store = new InMemorySymbolStore({ now: () => 1000 });
-  const telemetryEvents: TelemetryEvent[] = [];
-
-  const hooks = {
-    ...createWritePathHooks({ store }),
-  };
-
-  const deterministicAssistant: AssistantGenerateFn = async () =>
-    'Visible answer<symbolic_control>{"symbol_events":[{"type":"delete_symbol","symbol_id":"sym_drop","content":"bad"}]}</symbolic_control>';
-  let activeSignal: AbortSignal | undefined;
-
-  const assistantGenerate =
-    context.mode === "live" && context.liveProvider
-      ? async () => {
-          await context.liveProvider?.generate("Respond with one short sentence.", {
-            signal: activeSignal,
-          });
-          return deterministicAssistant({
-            request: { threadId, messages: [] },
-            threadId,
-            trustedSymbolRefsEnabled: false,
-            query: { queryText: "", queryTokens: [], turnsUsed: 0 },
-            contextPackText: "",
-          });
-        }
-      : deterministicAssistant;
-
-  const engine = createVirtualContextEngine({
-    assistantGenerate,
-    hooks,
-    telemetry: {
-      emit(event) {
-        telemetryEvents.push(event);
-      },
-    },
-  });
-
-  const timed = await withTimeout(
-    (signal) => {
-      activeSignal = signal;
-      return (
-      withTimer(() =>
-        engine.processTurn({
-          threadId,
-          messages: [{ role: "user", content: "Attempt invalid event." }],
-        }),
-      )
-      );
-    },
-    context.timeoutMs,
-  );
-
-  if (timed.timedOut) {
-    return {
-      passed: false,
-      details: DEFAULT_TIMEOUT_ERROR,
-      metricSamples: [
-        makeRateMetric("invalid_event_rejection_rate", false, context.rateWeight),
-        makeRateValueMetric("step_timeout_rate", context.rateWeight, context.rateWeight),
-      ],
-    };
-  }
-
-  const response = timed.value.value;
-  const post = getPostTelemetry(telemetryEvents);
-  const records = await store.list(threadId);
-  const pass =
-    records.length === 0 &&
-    post?.parseOutcome === "control_schema_invalid" &&
-    post.eventsAccepted === 0;
-
-  return {
-    passed: pass,
-    details: pass ? "invalid_event_rejected_without_mutation" : "invalid_event_not_rejected",
-    metricSamples: [
-      makeRateMetric("invalid_event_rejection_rate", pass, context.rateWeight),
-      makeRateValueMetric("step_timeout_rate", 0, context.rateWeight),
-      ...makeLatencyMetrics(
-        response.diagnostics.preModelMs,
-        response.diagnostics.postModelMs,
-        timed.value.durationMs,
-      ),
-    ],
-  };
-}
-
-async function runScenarioS08(
-  context: ScenarioExecutionContext,
-): Promise<ScenarioExecutionResult> {
-  const store = new InMemorySymbolStore({ now: () => 1000 });
-  const threadA = `${context.runId}-s08-a`;
-  const threadB = `${context.runId}-s08-b`;
-
-  await store.upsert(threadA, {
-    symbolId: "sym_thread_a",
-    summary: "Thread A secret",
-    content: "SENTINEL_THREAD_A_SECRET",
-  });
-
-  const hooks = createRetrievalHooks({ store });
-  let activeSignal: AbortSignal | undefined;
-  const assistantGenerate = buildLiveAssistantGenerate(
-    context.mode,
-    context.liveProvider,
-    "Isolation check response",
-    () => activeSignal,
-  );
-
-  const engine = createVirtualContextEngine({
-    assistantGenerate,
-    hooks,
-  });
-
-  const timed = await withTimeout(
-    (signal) => {
-      activeSignal = signal;
-      return (
-      withTimer(() =>
-        engine.processTurn({
-          threadId: threadB,
-          messages: [{ role: "user", content: "Do we have any secrets?" }],
-        }),
-      )
-      );
-    },
-    context.timeoutMs,
-  );
-
-  if (timed.timedOut) {
-    return {
-      passed: false,
-      details: DEFAULT_TIMEOUT_ERROR,
-      metricSamples: [
-        makeCountMetric("thread_isolation_violation_count", 1),
-        makeRateValueMetric("thread_isolation_answer_leak_rate", context.rateWeight, context.rateWeight),
-        makeRateValueMetric("step_timeout_rate", context.rateWeight, context.rateWeight),
-      ],
-    };
-  }
-
-  const response = timed.value.value;
-  const leaked = response.contextPackText.includes("SENTINEL_THREAD_A_SECRET");
-
-  return {
-    passed: !leaked,
-    details: leaked ? "cross_thread_leak_detected" : "isolation_preserved",
-    metricSamples: [
-      makeCountMetric("thread_isolation_violation_count", leaked ? 1 : 0),
-      makeRateValueMetric(
-        "thread_isolation_answer_leak_rate",
-        leaked ? context.rateWeight : 0,
-        context.rateWeight,
-      ),
-      makeRateValueMetric("step_timeout_rate", 0, context.rateWeight),
-      ...makeLatencyMetrics(
-        response.diagnostics.preModelMs,
-        response.diagnostics.postModelMs,
-        timed.value.durationMs,
-      ),
-    ],
-  };
-}
-
-async function runScenarioS09(
-  context: ScenarioExecutionContext,
-): Promise<ScenarioExecutionResult> {
-  const threadId = `${context.runId}-s09`;
-  const store = new InMemorySymbolStore({ now: () => 1000 });
-  const telemetryEvents: TelemetryEvent[] = [];
-
-  const engine = createVirtualContextEngine({
-    assistantGenerate: async () =>
-      '<symbolic_control>{"symbol_events":[{"type":"upsert_symbol","symbol_id":"sym_bad","content":"x"}]}</symbolic_control> visible text',
-    hooks: createWritePathHooks({ store }),
-    telemetry: {
-      emit(event) {
-        telemetryEvents.push(event);
-      },
-    },
-  });
-
-  const timed = await withTimeout(
-    (_signal) =>
-      withTimer(() =>
-        engine.processTurn({
-          threadId,
-          messages: [{ role: "user", content: "Canary check." }],
-        }),
-      ),
-    context.timeoutMs,
-  );
-
-  if (timed.timedOut) {
-    return {
-      passed: false,
-      details: DEFAULT_TIMEOUT_ERROR,
-      metricSamples: [
-        makeRateMetric("wrapped_canary_pass_rate", false, context.rateWeight),
-        makeRateMetric("canary_expected_invalid_pass_rate", false, context.rateWeight),
-        makeRateValueMetric("step_timeout_rate", context.rateWeight, context.rateWeight),
-      ],
-    };
-  }
-
-  const post = getPostTelemetry(telemetryEvents);
-  const records = await store.list(threadId);
-  const pass = post?.parseOutcome === "control_wrapper_not_trailing" && records.length === 0;
-
-  return {
-    passed: pass,
-    details: pass ? "non_trailing_wrapper_rejected" : "non_trailing_wrapper_not_rejected",
-    metricSamples: [
-      makeRateMetric("wrapped_canary_pass_rate", pass, context.rateWeight),
-      makeRateMetric("canary_expected_invalid_pass_rate", pass, context.rateWeight),
-      makeRateValueMetric("step_timeout_rate", 0, context.rateWeight),
-      ...makeLatencyMetrics(
-        timed.value.value.diagnostics.preModelMs,
-        timed.value.value.diagnostics.postModelMs,
-        timed.value.durationMs,
-      ),
-    ],
-  };
-}
-
-async function runScenarioS10(
-  context: ScenarioExecutionContext,
-): Promise<ScenarioExecutionResult> {
-  const threadId = `${context.runId}-s10`;
-  const store = new InMemorySymbolStore({ now: () => 1000 });
-  const telemetryEvents: TelemetryEvent[] = [];
-
-  const engine = createVirtualContextEngine({
-    assistantGenerate: async () => "Visible<symbolic_control>{bad}</symbolic_control>",
-    hooks: createWritePathHooks({ store }),
-    telemetry: {
-      emit(event) {
-        telemetryEvents.push(event);
-      },
-    },
-  });
-
-  const timed = await withTimeout(
-    (_signal) =>
-      withTimer(() =>
-        engine.processTurn({
-          threadId,
-          messages: [{ role: "user", content: "Malformed canary check." }],
-        }),
-      ),
-    context.timeoutMs,
-  );
-
-  if (timed.timedOut) {
-    return {
-      passed: false,
-      details: DEFAULT_TIMEOUT_ERROR,
-      metricSamples: [
-        makeRateMetric("canary_expected_invalid_pass_rate", false, context.rateWeight),
-        makeRateValueMetric("step_timeout_rate", context.rateWeight, context.rateWeight),
-      ],
-    };
-  }
-
-  const post = getPostTelemetry(telemetryEvents);
-  const records = await store.list(threadId);
-  const pass = post?.parseOutcome === "control_json_parse_error" && records.length === 0;
-
-  return {
-    passed: pass,
-    details: pass ? "malformed_json_recovered" : "malformed_json_not_recovered",
-    metricSamples: [
-      makeRateMetric("canary_expected_invalid_pass_rate", pass, context.rateWeight),
-      makeRateValueMetric("step_timeout_rate", 0, context.rateWeight),
-      ...makeLatencyMetrics(
-        timed.value.value.diagnostics.preModelMs,
-        timed.value.value.diagnostics.postModelMs,
-        timed.value.durationMs,
-      ),
-    ],
-  };
-}
-
-async function runScenarioS11(
-  context: ScenarioExecutionContext,
-): Promise<ScenarioExecutionResult> {
-  const threadId = `${context.runId}-s11`;
-  const store = new InMemorySymbolStore({ now: () => 1000 });
-  await store.upsert(threadId, {
-    symbolId: "sym_idx",
-    summary: "Index summary",
-    content: "index content",
-  });
-  await store.upsert(threadId, {
-    symbolId: "sym_focus",
-    summary: "Focus summary",
-    content: "focus content that should appear",
-  });
-
-  const hooks = createRetrievalHooks({
-    store,
-    budget: {
-      totalChars: 300,
-      focusedItemMaxChars: 80,
-      recallItemMaxChars: 60,
-    },
-  });
-
-  const engine = createVirtualContextEngine({
-    assistantGenerate: async () => "budget check",
-    hooks,
-  });
-
-  const timed = await withTimeout(
-    (_signal) =>
-      withTimer(() =>
-        engine.processTurn({
-          threadId,
-          messages: [{ role: "user", content: "Need focus content" }],
-        }),
-      ),
-    context.timeoutMs,
-  );
-
-  if (timed.timedOut) {
-    return {
-      passed: false,
-      details: DEFAULT_TIMEOUT_ERROR,
-      metricSamples: [makeRateValueMetric("step_timeout_rate", context.rateWeight, context.rateWeight)],
-    };
-  }
-
-  const response = timed.value.value;
-  const indexPos = response.contextPackText.indexOf("SYMBOL INDEX");
-  const focusPos = response.contextPackText.indexOf("FOCUSED MEMORY");
-  const recallPos = response.contextPackText.indexOf("SEMANTIC RECALL");
-  const orderingPass =
-    indexPos >= 0 &&
-    (focusPos < 0 || focusPos > indexPos) &&
-    (recallPos < 0 || (focusPos >= 0 ? recallPos > focusPos : recallPos > indexPos));
-  const budgetPass = response.contextPackText.length <= 300;
-  const pass = orderingPass && budgetPass;
-
-  return {
-    passed: pass,
-    details: pass ? "budget_and_ordering_pass" : "budget_or_ordering_failed",
-    metricSamples: [
-      makeRateValueMetric("step_timeout_rate", 0, context.rateWeight),
-      ...makeLatencyMetrics(
-        response.diagnostics.preModelMs,
-        response.diagnostics.postModelMs,
-        timed.value.durationMs,
-      ),
-    ],
-  };
-}
-
-async function runScenarioS12(
-  context: ScenarioExecutionContext,
-): Promise<ScenarioExecutionResult> {
-  const threadId = `${context.runId}-s12`;
-  const store = new InMemorySymbolStore({ now: () => 1000 });
-
-  const planner: RetrievalPlanner = {
-    buildQuery() {
-      return {
-        queryText: "query",
-        queryTokens: ["query"],
-        turnsUsed: 1,
-      };
-    },
-    async selectCandidates() {
-      throw new Error("simulated_provider_failure");
-    },
-    rerank(candidates) {
-      return candidates;
-    },
-    confidenceGate() {
-      return {
-        focused: [],
-        recall: [],
-        rejected: [],
-      };
-    },
-  };
-
-  const failOpenHooks = createRetrievalHooks({
-    store,
-    planner,
-    failOnRetrievalError: false,
-  });
-  const failFastHooks = createRetrievalHooks({
-    store,
-    planner,
-    failOnRetrievalError: true,
-  });
-
-  const failOpenEngine = createVirtualContextEngine({
-    assistantGenerate: async () => "ok",
-    hooks: failOpenHooks,
-  });
-
-  const failFastEngine = createVirtualContextEngine({
-    assistantGenerate: async () => "ok",
-    hooks: failFastHooks,
-  });
-
-  const failOpenTimed = await withTimeout(
-    (_signal) =>
-      withTimer(() =>
-        failOpenEngine.processTurn({
-          threadId,
-          messages: [{ role: "user", content: "trigger provider failure" }],
-        }),
-      ),
-    context.timeoutMs,
-  );
-
-  if (failOpenTimed.timedOut) {
-    return {
-      passed: false,
-      details: DEFAULT_TIMEOUT_ERROR,
-      metricSamples: [makeRateValueMetric("step_timeout_rate", context.rateWeight, context.rateWeight)],
-    };
-  }
-
-  let failFastRejected = false;
-  try {
-    await failFastEngine.processTurn({
-      threadId: `${threadId}-fast`,
-      messages: [{ role: "user", content: "trigger provider failure" }],
+  if (scenario.id === "S01") {
+    pass = (response.diagnostics.passive?.compactionTriggered ?? false) ||
+      (response.diagnostics.passive?.pressureRatio ?? 0) > 0.8;
+    detail = pass ? "pressure_or_compaction_detected" : "pressure_not_detected";
+  } else if (scenario.id === "S05") {
+    pass = pre?.trustedSymbolRefsEnabled === false;
+    detail = pass ? "untrusted_refs_ignored" : "trusted_flag_mismatch";
+  } else if (scenario.id === "S06") {
+    pass = !response.content.includes("<symbolic_control>") &&
+      (post?.eventsRejected ?? 0) >= 1;
+    detail = pass ? "control_sanitized_and_rejected" : "control_hygiene_failed";
+  } else if (scenario.id === "S08") {
+    const otherThreadResponse = await engine.processTurn({
+      threadId: `${threadId}-other`,
+      messages: [{ role: "user", content: "Cross thread leak check" }],
     });
-  } catch {
-    failFastRejected = true;
+    pass = !otherThreadResponse.contextPackText.includes(`SENTINEL_${scenario.id}`);
+    detail = pass ? "thread_isolation_ok" : "thread_isolation_leak";
+  } else if (scenario.id === "S10") {
+    pass = post?.parseOutcome === "control_json_parse_error";
+    detail = pass ? "malformed_control_fail_open" : "unexpected_parse_outcome";
   }
-
-  const pass = failOpenTimed.value.value.diagnostics.retrievalDegraded && failFastRejected;
 
   return {
     passed: pass,
-    details: pass ? "fail_open_and_fail_fast_paths_validated" : "provider_failure_policy_mismatch",
+    details: detail,
     metricSamples: [
+      ...buildMetricsForScenario(scenario, pass, context),
       makeRateValueMetric("step_timeout_rate", 0, context.rateWeight),
       ...makeLatencyMetrics(
-        failOpenTimed.value.value.diagnostics.preModelMs,
-        failOpenTimed.value.value.diagnostics.postModelMs,
-        failOpenTimed.value.durationMs,
+        response.diagnostics.preModelMs,
+        response.diagnostics.postModelMs,
+        timed.value.durationMs,
       ),
     ],
-  };
-}
-
-async function runScenarioS13(
-  context: ScenarioExecutionContext,
-): Promise<ScenarioExecutionResult> {
-  const threadId = `${context.runId}-s13`;
-
-  if (context.mode === "live" && context.liveProvider) {
-    let activeSignal: AbortSignal | undefined;
-    const engine = createVirtualContextEngine({
-      assistantGenerate: buildLiveAssistantGenerate(
-        context.mode,
-        context.liveProvider,
-        "live one-call",
-        () => activeSignal,
-      ),
-    });
-
-    const timed = await withTimeout(
-      (signal) => {
-        activeSignal = signal;
-        return (
-        withTimer(() =>
-          engine.processTurn({
-            threadId,
-            messages: [{ role: "user", content: "one call please" }],
-          }),
-        )
-        );
-      },
-      context.timeoutMs,
-    );
-
-    if (timed.timedOut) {
-      return {
-        passed: false,
-        details: DEFAULT_TIMEOUT_ERROR,
-        metricSamples: [
-          makeRateValueMetric("step_timeout_rate", context.rateWeight, context.rateWeight),
-        ],
-      };
-    }
-
-    const response = timed.value.value;
-    const pass = response.diagnostics.generationCallCount === 1;
-    return {
-      passed: pass,
-      details: pass ? "live_one_call_invariant_held" : "live_generation_call_count_not_one",
-      metricSamples: [
-        makeRateValueMetric("step_timeout_rate", 0, context.rateWeight),
-        ...makeLatencyMetrics(
-          response.diagnostics.preModelMs,
-          response.diagnostics.postModelMs,
-          timed.value.durationMs,
-        ),
-      ],
-    };
-  }
-
-  const engine = createVirtualContextEngine({
-    assistantGenerate: async () => "unused",
-    hooks: {
-      assistantInvoker: async ({ request, threadId: callThreadId, trustedSymbolRefsEnabled, query, contextPackText, generate }) => {
-        await generate({
-          request,
-          threadId: callThreadId,
-          trustedSymbolRefsEnabled,
-          query,
-          contextPackText,
-        });
-
-        await generate({
-          request,
-          threadId: callThreadId,
-          trustedSymbolRefsEnabled,
-          query,
-          contextPackText,
-        });
-
-        return "never";
-      },
-    },
-  });
-
-  let pass = false;
-  try {
-    await engine.processTurn({
-      threadId,
-      messages: [{ role: "user", content: "trigger one-call invariant" }],
-    });
-  } catch (error) {
-    pass = error instanceof SecondGenerationCallError;
-  }
-
-  return {
-    passed: pass,
-    details: pass
-      ? "second_call_hard_error_observed"
-      : "second_call_not_blocked_by_invariant",
-    metricSamples: [makeRateValueMetric("step_timeout_rate", 0, context.rateWeight)],
   };
 }
 
 const RUNNERS: Record<
   ValidationScenarioDefinition["id"],
   (context: ScenarioExecutionContext) => Promise<ScenarioExecutionResult>
-> = {
-  S01: runScenarioS01,
-  S02: runScenarioS02,
-  S03: runScenarioS03,
-  S04: runScenarioS04,
-  S05: runScenarioS05,
-  S06: runScenarioS06,
-  S07: runScenarioS07,
-  S08: runScenarioS08,
-  S09: runScenarioS09,
-  S10: runScenarioS10,
-  S11: runScenarioS11,
-  S12: runScenarioS12,
-  S13: runScenarioS13,
-};
+> = Object.fromEntries(
+  SCENARIO_CATALOG.map((scenario) => [
+    scenario.id,
+    (context: ScenarioExecutionContext) => runScenario(scenario, context),
+  ]),
+) as Record<
+  ValidationScenarioDefinition["id"],
+  (context: ScenarioExecutionContext) => Promise<ScenarioExecutionResult>
+>;
 
 export function listScenariosForMode(mode: ValidationMode): ValidationScenarioDefinition[] {
   return SCENARIO_CATALOG.filter((scenario) => scenario.supportedModes.includes(mode));

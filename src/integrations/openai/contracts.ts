@@ -1,14 +1,11 @@
 import type {
   RetrievalStrategy,
   SymbolStore,
-  VirtualContextTurnRequest,
 } from "../../engine/contracts";
 import type { AssistantGenerateFn, AssistantGenerateInput } from "../../engine/hooks";
 import type {
   VcwLangChainMiddleware,
-  WriteIntentMode,
-  WriteToolSchemaVersion,
-  WriteTransport,
+  LangChainAssistantResultMetadata,
 } from "../langchain/contracts";
 import type { VcwAgentToolContext } from "../langchain/agent-contracts";
 
@@ -34,35 +31,9 @@ export type CreateOpenAIClient = (
   config: OpenAIClientConfig,
 ) => OpenAIResponsesClientLike;
 
-export type OpenAIResponsesAssistantResultMetadata = {
+export type OpenAIResponsesAssistantResultMetadata = LangChainAssistantResultMetadata & {
   provider: "openai_responses";
-  model: string;
-  baseUrl: string;
-  durationMs: number;
   responseId?: string;
-  streamEnabled?: boolean;
-  streamChunkCount?: number;
-  streamedTextChars?: number;
-  streamBuffered?: boolean;
-  streamProvider?: OpenAIStreamProvider;
-  writeIntentMode: WriteIntentMode;
-  writeIntentSatisfied: boolean;
-  writeTransport: WriteTransport;
-  toolCallDetected: boolean;
-  writeToolSchemaVersion: WriteToolSchemaVersion;
-  autoMode?: "off" | "shadow" | "active";
-  autoTriggered?: boolean;
-  autoConfidence?: number;
-  autoReason?: string;
-  autoEventCount?: number;
-  autoSuppressed?: boolean;
-  autoScore?: number;
-  autoScoreBand?: "suppress" | "shadow" | "write";
-  autoScorerVersion?: "heuristic_v2";
-  autoOverrideApplied?: boolean;
-  autoTopFeatures?: string[];
-  responseMetadata?: Record<string, unknown>;
-  usageMetadata?: Record<string, unknown>;
 };
 
 export type OpenAIResponsesAssistantOptions = {
@@ -72,8 +43,6 @@ export type OpenAIResponsesAssistantOptions = {
   temperature?: number;
   env?: Record<string, string | undefined>;
   middleware?: VcwLangChainMiddleware[];
-  writeIntentResolver?: (request: VirtualContextTurnRequest) => WriteIntentMode;
-  writeToolSchemaVersion?: WriteToolSchemaVersion;
   onResultMetadata?: (
     metadata: OpenAIResponsesAssistantResultMetadata,
   ) => void | Promise<void>;
@@ -95,11 +64,7 @@ export type OpenAIResponsesAgentResultMetadata = {
   agentToolCallCount: number;
   agentToolNames: string[];
   agentLoopDurationMs: number;
-  writeIntentMode: WriteIntentMode;
-  writeTransport: WriteTransport;
-  writeIntentSatisfied: boolean;
   toolCallDetected: boolean;
-  writeToolSchemaVersion: WriteToolSchemaVersion;
   autoMode?: "off" | "shadow" | "active";
   autoTriggered?: boolean;
   autoConfidence?: number;
@@ -127,8 +92,6 @@ export type OpenAIResponsesAgentAssistantOptions = {
   now?: () => number;
   createClient?: CreateOpenAIClient;
   buildToolContext?: (input: AssistantGenerateInput) => VcwAgentToolContext;
-  strictWriteGenerate?: AssistantGenerateFn;
-  strictWriteAssistantOptions?: Partial<OpenAIResponsesAssistantOptions>;
   onResultMetadata?: (
     metadata: OpenAIResponsesAgentResultMetadata,
   ) => void | Promise<void>;

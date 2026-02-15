@@ -68,50 +68,24 @@ test("stream emits text deltas and final_text with middleware-adjusted output", 
   expect(metadataChars).toBe(5);
 });
 
-test("strict stream mode stays buffered and yields only final_text", async () => {
+test("buffered stream mode yields only final_text when invoker has no stream support", async () => {
   const generate = createLangChainAssistantGenerate({
     model: "mock-model",
     baseUrl: "http://example.local",
     createInvoker: () => ({
-      invoke: async () => ({ content: "unused" }),
-      invokeWithWriteTool: async () => ({
-        tool_calls: [
-          {
-            name: "emit_symbol_events",
-            args: {
-              assistant_response: "Got it.",
-              symbol_events: [
-                {
-                  type: "upsert_symbol",
-                  content: "remember this",
-                },
-              ],
-            },
-          },
-        ],
-      }),
+      invoke: async () => ({ content: "buffered output" }),
     }),
   });
 
-  const input = makeInput({
-    request: {
-      threadId: "thread-langchain-stream",
-      messages: [{ role: "user", content: "remember this" }],
-      metadata: {
-        writeIntent: {
-          mode: "strict",
-        },
-      },
-    },
-  });
   const events = [];
-  for await (const event of generate.stream!(input)) {
+  for await (const event of generate.stream!(makeInput())) {
     events.push(event);
   }
 
-  expect(events.length).toBe(1);
-  expect(events[0]?.type).toBe("final_text");
-  const finalText =
-    events[0] && "text" in events[0] ? events[0].text : "";
-  expect(finalText).toContain("<symbolic_control>");
+  expect(events).toEqual([
+    {
+      type: "final_text",
+      text: "buffered output",
+    },
+  ]);
 });

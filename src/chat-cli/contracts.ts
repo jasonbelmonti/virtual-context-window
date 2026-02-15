@@ -5,11 +5,6 @@ import type {
   TelemetryEvent,
   VirtualContextMessage,
 } from "../engine";
-import type {
-  WriteIntentMode,
-  WriteToolSchemaVersion,
-  WriteTransport,
-} from "../integrations/langchain";
 import type { AutoSymbolMode, RecognitionScoreBand } from "../recognition";
 
 export type TraceMode = "off" | "on";
@@ -41,13 +36,6 @@ export type ChatTurnTrace = {
   contextPackText: string;
   rawModelContent: string;
   visibleContent: string;
-  writeIntent: {
-    mode: WriteIntentMode;
-    transport: WriteTransport;
-    satisfied: boolean;
-    toolCallDetected: boolean;
-    schemaVersion: WriteToolSchemaVersion;
-  };
   assistant: {
     provider: string;
     model: string;
@@ -78,6 +66,28 @@ export type ChatTurnTrace = {
     postModelMs: number;
     retrievalStrategy: "lexical_v1" | "hybrid_v2";
     retrievalDegraded: boolean;
+    passive?: {
+      pressureRatio: number;
+      pressurePeak: number;
+      pressureState: "normal" | "compact";
+      compactionDrainAttempted: boolean;
+      compactionDrainWaitMs: number;
+      compactionDrainTimedOut: boolean;
+      compactionTriggered: boolean;
+      compactionReason: "high_watermark" | "below_threshold" | "none";
+      compactionJobsTriggered: number;
+      compactionSkippedReason:
+        | "none"
+        | "in_flight"
+        | "low_pressure"
+        | "no_candidates"
+        | "extractor_error";
+      extractorCalls: number;
+      proposalsCount: number;
+      committedSymbolsCount: number;
+      hydratedSymbolsCount: number;
+      ignoredModelEventCount: number;
+    };
   };
 };
 
@@ -98,10 +108,9 @@ export type ChatCliStateView = {
 
 export type ChatCliCommand =
   | { type: "help" }
-  | { type: "trace"; action: "on" | "off" | "view" | "raw" }
+  | { type: "trace"; action: "on" | "off" | "view" | "raw" | "pack" | "tape" }
   | { type: "stream"; action: "on" | "off" | "status" }
   | { type: "auto"; action: "on" | "off" | "shadow" | "status" }
-  | { type: "experiment"; mode: "vcw-only" | "chat-only" }
   | { type: "history"; action: "clear" }
   | { type: "remember"; content: string }
   | { type: "state" }

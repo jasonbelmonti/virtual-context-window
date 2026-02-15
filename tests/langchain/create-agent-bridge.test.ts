@@ -1,7 +1,6 @@
 import { expect, test } from "bun:test";
 import {
   buildVcwCreateAgentMiddlewareSpec,
-  convertCreateAgentToolArgsToUpsertEvents,
   toLangChainAgentMiddleware,
 } from "../../src/integrations/langchain";
 
@@ -109,28 +108,4 @@ test("toLangChainAgentMiddleware passes wrapModelCall config to the middleware f
 
   expect(factoryCalls).toEqual(["a", "b"]);
   expect(middlewareObjects).toEqual([{ id: "mw-a" }, { id: "mw-b" }]);
-});
-
-test("convertCreateAgentToolArgsToUpsertEvents returns validated upsert events", () => {
-  const events = convertCreateAgentToolArgsToUpsertEvents({
-    assistant_response: "done",
-    symbol_events: [
-      {
-        type: "upsert_symbol",
-        content: "remember this",
-        kind: "memory",
-      },
-    ],
-  });
-
-  expect(events).toEqual([
-    {
-      type: "upsert_symbol",
-      content: "remember this",
-      kind: "memory",
-      symbol_id: undefined,
-      summary: undefined,
-      key_hint: undefined,
-    },
-  ]);
 });

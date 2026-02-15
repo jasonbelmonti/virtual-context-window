@@ -20,23 +20,6 @@ function createDeterministicIncidentAssistant(
   return async (input) => {
     const userText =
       input.request.messages.findLast((message) => message.role === "user")?.content ?? "";
-    const metadata = input.request.metadata as
-      | { writeIntent?: { mode?: string } }
-      | undefined;
-
-    if (metadata?.writeIntent?.mode === "strict") {
-      const payload = {
-        symbol_events: [
-          {
-            type: "upsert_symbol",
-            summary: "demo_fact",
-            content: userText,
-            kind: "note",
-          },
-        ],
-      };
-      return `Acknowledged.\n<symbolic_control>${JSON.stringify(payload)}</symbolic_control>`;
-    }
 
     const missionLike =
       /incident-response brief/iu.test(userText) ||
@@ -49,7 +32,7 @@ function createDeterministicIncidentAssistant(
 
     const hasMemory =
       input.contextPackText.includes(scenario.expectedToken) ||
-      input.threadId.includes("vcw_only");
+      input.threadId.includes("compaction_on");
 
     if (!hasMemory) {
       return [
@@ -84,7 +67,7 @@ function createDeterministicIncidentAssistant(
   };
 }
 
-function lane(metrics: ShowdownLaneMetric[], id: "chat_only" | "vcw_only"): ShowdownLaneMetric {
+function lane(metrics: ShowdownLaneMetric[], id: "compaction_off" | "compaction_on"): ShowdownLaneMetric {
   const found = metrics.find((metric) => metric.lane === id);
   if (!found) {
     throw new Error(`missing_lane:${id}`);
@@ -113,15 +96,14 @@ test("incident showdown records chat lane failure and vcw lane pass with strict 
     historyLimit: 1,
     distractorTurns: scenario.distractorPrompts.length,
     stream: false,
-    strict: false,
     maxRetries: 1,
     outputDir,
     mock: true,
     scenario,
     assistantGenerate: createDeterministicIncidentAssistant(scenario),
     gateToolNameOverrides: {
-      chat_only: ["vcw_web_search"],
-      vcw_only: ["vcw_web_search", "vcw_search_symbols"],
+      compaction_off: ["vcw_web_search"],
+      compaction_on: ["vcw_web_search", "vcw_search_symbols"],
     },
     progressReporter: (event) => {
       progressEvents.push({
@@ -133,8 +115,8 @@ test("incident showdown records chat lane failure and vcw lane pass with strict 
     },
   });
 
-  const chatOnly = lane(result.metrics, "chat_only");
-  const vcwOnly = lane(result.metrics, "vcw_only");
+  const chatOnly = lane(result.metrics, "compaction_off");
+  const vcwOnly = lane(result.metrics, "compaction_on");
 
   expect(chatOnly.answerCorrect).toBe(false);
   expect(chatOnly.requiredToolCallsSatisfied).toBe(false);
@@ -151,10 +133,10 @@ test("incident showdown records chat lane failure and vcw lane pass with strict 
 
   await stat(path.join(outputDir, "summary.md"));
   await stat(path.join(outputDir, "metrics.json"));
-  await stat(path.join(outputDir, "transcript-chat-only.txt"));
-  await stat(path.join(outputDir, "transcript-vcw-only.txt"));
-  await stat(path.join(outputDir, "brief-chat-only.md"));
-  await stat(path.join(outputDir, "brief-vcw-only.md"));
+  await stat(path.join(outputDir, "transcript-compaction-off.txt"));
+  await stat(path.join(outputDir, "transcript-compaction-on.txt"));
+  await stat(path.join(outputDir, "brief-compaction-off.md"));
+  await stat(path.join(outputDir, "brief-compaction-on.md"));
   await stat(path.join(outputDir, "timeline.jsonl"));
 
   const metricsRaw = await readFile(path.join(outputDir, "metrics.json"), "utf8");
@@ -170,14 +152,6 @@ test("incident showdown records chat lane failure and vcw lane pass with strict 
   expect(
     progressEvents.some(
       (event) => event.kind === "lane" && event.message.includes("mission attempt"),
-    ),
-  ).toBe(true);
-  expect(
-    progressEvents.some(
-      (event) =>
-        event.kind === "projection" &&
-        event.message.includes("control envelope accepted") &&
-        event.detail?.includes("origin=MODEL_RENDERED"),
     ),
   ).toBe(true);
 });
@@ -197,20 +171,19 @@ test("mission retry loop runs until max retries when required tools remain missi
     historyLimit: 1,
     distractorTurns: scenario.distractorPrompts.length,
     stream: false,
-    strict: false,
     maxRetries: 2,
     outputDir,
     mock: true,
     scenario,
     assistantGenerate: createDeterministicIncidentAssistant(scenario),
     gateToolNameOverrides: {
-      chat_only: [],
-      vcw_only: [],
+      compaction_off: [],
+      compaction_on: [],
     },
   });
 
-  const chatOnly = lane(result.metrics, "chat_only");
-  const vcwOnly = lane(result.metrics, "vcw_only");
+  const chatOnly = lane(result.metrics, "compaction_off");
+  const vcwOnly = lane(result.metrics, "compaction_on");
 
   expect(chatOnly.requiredToolCallsSatisfied).toBe(false);
   expect(vcwOnly.requiredToolCallsSatisfied).toBe(false);

@@ -4,26 +4,14 @@ import {
   modelCallLimitMiddleware,
   toolCallLimitMiddleware,
 } from "langchain";
-import type {
-  AssistantGenerateFn,
-  AssistantGenerateInput,
-  AssistantGenerateStreamEvent,
-} from "../../engine/hooks";
+import type { AssistantGenerateFn } from "../../engine/hooks";
 import {
-  createLangChainAssistantGenerate,
-  resolveWriteIntentFromMetadata,
-} from "./assistant";
-import { buildVcwCreateAgentMiddlewareSpec, toLangChainAgentMiddleware } from "./create-agent-bridge";
-import { createVcwAgentTools, executeVcwAgentToolCall } from "./agent-tools";
-import {
-  buildDeterministicControlEnvelope,
-  convertWriteToolArgsToPayload,
-} from "./write-tool-bridge";
-import {
-  DEFAULT_RECOGNIZER_CONFIG,
   parseAutoSymbolMetadataEnvelope,
+  type RecognitionScoring,
 } from "../../recognition";
-import type { RecognitionScoring } from "../../recognition";
+import { createLangChainAssistantGenerate } from "./assistant";
+import { buildVcwCreateAgentMiddlewareSpec, toLangChainAgentMiddleware } from "./create-agent-bridge";
+import { createVcwAgentTools } from "./agent-tools";
 import type {
   CreateLangChainAgentRuntimeInput,
   LangChainAgentMetadata,
@@ -73,17 +61,9 @@ type ResolvedAutoSymbolMetadata = {
   triggered: boolean;
   confidence: number;
   reason: string;
-  events: Array<{
-    type: "upsert_symbol";
-    symbol_id?: string;
-    summary?: string;
-    content: string;
-    kind?: "memory" | "fact" | "plan" | "note";
-    key_hint?: string;
-  }>;
+  eventCount: number;
   suppressed: boolean;
   scoring?: RecognitionScoring;
-  valid: boolean;
 };
 
 function topScoringFeatures(scoring: RecognitionScoring | undefined): string[] {
@@ -98,14 +78,6 @@ function topScoringFeatures(scoring: RecognitionScoring | undefined): string[] {
     .map((item) => `${item.feature}:${item.contribution > 0 ? "+" : ""}${item.contribution.toFixed(2)}`);
 }
 
-function isAutoWriteDecision(auto: ResolvedAutoSymbolMetadata): boolean {
-  if (auto.scoring) {
-    return auto.scoring.band === "write";
-  }
-
-  return auto.confidence >= DEFAULT_RECOGNIZER_CONFIG.activeMinScore;
-}
-
 function resolveAutoSymbolMetadata(
   requestMetadata: Record<string, unknown> | undefined,
 ): ResolvedAutoSymbolMetadata | undefined {
@@ -114,47 +86,15 @@ function resolveAutoSymbolMetadata(
     return undefined;
   }
 
-  if (!parsed.valid) {
-      return {
-        mode: parsed.mode,
-        triggered: parsed.triggered,
-        confidence: parsed.confidence,
-        reason: parsed.reason,
-        events: [],
-        suppressed: parsed.suppressed,
-        scoring: parsed.scoring,
-        valid: false,
-      };
-  }
-
-  try {
-    const events = convertWriteToolArgsToPayload({
-      assistant_response: "",
-      symbol_events: parsed.events,
-    }).symbol_events;
-
-    return {
-      mode: parsed.mode,
-      triggered: parsed.triggered,
-      confidence: parsed.confidence,
-      reason: parsed.reason,
-      events,
-      suppressed: parsed.suppressed,
-      scoring: parsed.scoring,
-      valid: true,
-    };
-  } catch {
-    return {
-      mode: parsed.mode,
-      triggered: parsed.triggered,
-      confidence: parsed.confidence,
-      reason: parsed.reason,
-      events: [],
-      suppressed: parsed.suppressed,
-      scoring: parsed.scoring,
-      valid: false,
-    };
-  }
+  return {
+    mode: parsed.mode,
+    triggered: parsed.triggered,
+    confidence: parsed.confidence,
+    reason: parsed.reason,
+    eventCount: parsed.events.length,
+    suppressed: parsed.suppressed,
+    scoring: parsed.scoring,
+  };
 }
 
 function extractContentText(content: unknown): string {
@@ -322,46 +262,6 @@ function collectAgentLoopMetadata(result: unknown): {
   };
 }
 
-function extractStreamEventTextDelta(event: Record<string, unknown>): string {
-  const eventName = typeof event.event === "string" ? event.event : "";
-  if (eventName !== "on_chat_model_stream" && eventName !== "on_llm_stream") {
-    return "";
-  }
-
-  const eventData = asObject(event.data);
-  const chunk = eventData?.chunk;
-  const chunkObject = asObject(chunk);
-  const content =
-    chunkObject && "content" in chunkObject
-      ? extractContentText(chunkObject.content)
-      : extractContentText(chunk);
-
-  if (content.length > 0) {
-    return content;
-  }
-
-  if (typeof chunk === "string") {
-    return chunk;
-  }
-
-  return "";
-}
-
-function extractStreamEventOutput(
-  event: Record<string, unknown>,
-): unknown {
-  const eventName = typeof event.event === "string" ? event.event : "";
-  if (!eventName.endsWith("_end")) {
-    return undefined;
-  }
-
-  const eventData = asObject(event.data);
-  if (!eventData || !("output" in eventData)) {
-    return undefined;
-  }
-  return eventData.output;
-}
-
 function assignModelOutputText(result: unknown, outputText: string): unknown {
   const resultObject = asObject(result);
   if (!resultObject) {
@@ -398,7 +298,6 @@ function buildSystemPrompt(input: Parameters<AssistantGenerateFn>[0]): string {
     "Tooling policy:",
     "- Use vcw_search_symbols, vcw_list_symbols, and vcw_get_symbol for memory read operations.",
     "- Use vcw_web_search when fresh world knowledge is needed.",
-    "- Do not perform memory writes with tools in this mode.",
     "- Keep final user response concise and clear.",
     "",
     "Runtime context:",
@@ -410,154 +309,6 @@ function buildSystemPrompt(input: Parameters<AssistantGenerateFn>[0]): string {
   ].join("\n");
 }
 
-function toErrorMessage(error: unknown): string {
-  if (error instanceof Error && error.message) {
-    return error.message;
-  }
-  return String(error);
-}
-
-function isRecoverableAgentFailure(message: string): boolean {
-  return (
-    /GRAPH_RECURSION_LIMIT/iu.test(message) ||
-    /recursion limit/iu.test(message) ||
-    /tool_call_limit_exceeded/iu.test(message) ||
-    /model_call_limit_exceeded/iu.test(message) ||
-    /langchain_agent_output_missing_text/iu.test(message) ||
-    /langchain_model_output_missing_text/iu.test(message)
-  );
-}
-
-function findLatestUserMessageText(input: Parameters<AssistantGenerateFn>[0]): string {
-  for (let index = input.request.messages.length - 1; index >= 0; index -= 1) {
-    const message = input.request.messages[index];
-    if (!message) {
-      continue;
-    }
-    if (message.role === "user") {
-      return message.content;
-    }
-  }
-
-  return "";
-}
-
-function shouldAttemptWebSearch(latestUserText: string): boolean {
-  return /(vcw_web_search|web search|fresh external reference|source:)/iu.test(
-    latestUserText,
-  );
-}
-
-function extractQuotedWebSearchQuery(latestUserText: string): string | null {
-  const match = latestUserText.match(/use web search query:\s*["“](.+?)["”]/iu);
-  if (!match || !match[1]) {
-    return null;
-  }
-  const query = match[1].trim();
-  return query.length > 0 ? query : null;
-}
-
-function summarizeToolResult(value: unknown, maxChars = 1600): string {
-  try {
-    const serialized = JSON.stringify(value, null, 2);
-    if (serialized.length <= maxChars) {
-      return serialized;
-    }
-    return `${serialized.slice(0, maxChars)}\n...<truncated>`;
-  } catch {
-    return String(value);
-  }
-}
-
-type RecoveredSymbol = {
-  symbolId: string;
-  summary: string;
-  content: string;
-  kind: string;
-};
-
-function toRecoveredSymbols(value: unknown): RecoveredSymbol[] {
-  const objectValue = asObject(value);
-  const maybeHits = Array.isArray(objectValue?.hits)
-    ? objectValue.hits
-    : Array.isArray(objectValue?.symbols)
-      ? objectValue.symbols
-      : [];
-  const symbols: RecoveredSymbol[] = [];
-  const seen = new Set<string>();
-
-  for (const item of maybeHits) {
-    const entry = asObject(item);
-    const symbolId = typeof entry?.symbolId === "string" ? entry.symbolId : "";
-    if (!symbolId || seen.has(symbolId)) {
-      continue;
-    }
-    seen.add(symbolId);
-    symbols.push({
-      symbolId,
-      summary: typeof entry?.summary === "string" ? entry.summary : "",
-      content: typeof entry?.content === "string" ? entry.content : "",
-      kind: typeof entry?.kind === "string" ? entry.kind : "",
-    });
-  }
-
-  return symbols;
-}
-
-function extractFactValue(content: string): string {
-  const match = content.match(/fact value:\s*([^\n.]+)/iu);
-  if (!match || !match[1]) {
-    return content;
-  }
-  return match[1].trim();
-}
-
-function buildEmergencyFallbackAnswer(options: {
-  latestUserText: string;
-  symbolDetails: RecoveredSymbol[];
-  webSearchResult: unknown;
-}): string {
-  const memoryLines = options.symbolDetails
-    .slice(0, 8)
-    .map((symbol) => {
-      const value = extractFactValue(symbol.content || symbol.summary || symbol.symbolId);
-      return `- ${value}`;
-    });
-
-  const webResult = asObject(options.webSearchResult);
-  const webHits = Array.isArray(webResult?.hits) ? webResult.hits : [];
-  let sourceUrl = "https://example.com/recovery-fallback";
-  for (const item of webHits) {
-    const hit = asObject(item);
-    if (typeof hit?.url === "string" && hit.url.length > 0) {
-      sourceUrl = hit.url;
-      break;
-    }
-  }
-
-  const memorySection =
-    memoryLines.length > 0 ? memoryLines.join("\n") : "- No memory entries recovered.";
-
-  return [
-    "## Situation",
-    "Recovered response generated from deterministic fallback after agent loop instability.",
-    memorySection,
-    "## Timeline",
-    "- T+0: agent loop failed and fallback mode activated",
-    "- T+1: memory/web tools executed deterministically",
-    "## Hypothesis",
-    "- local model tool loop instability under recursion pressure",
-    "## Mitigations",
-    "- switched to single-pass synthesis from tool outputs",
-    "## Next 30m",
-    "- retry mission turn with stronger tool-capable model if available",
-    `Source: ${sourceUrl}`,
-    "",
-    "User request snapshot:",
-    options.latestUserText.trim() || "(empty)",
-  ].join("\n");
-}
-
 function createDefaultAgentRuntime(
   input: CreateLangChainAgentRuntimeInput,
 ): LangChainAgentRuntime {
@@ -565,7 +316,7 @@ function createDefaultAgentRuntime(
     model: input.model,
     baseUrl: input.baseUrl,
     temperature: input.temperature,
-    streaming: true,
+    streaming: false,
   });
 
   const agent = createAgent({
@@ -587,204 +338,6 @@ function createDefaultAgentRuntime(
         messages: invokeInput.messages,
       } as never);
     },
-    streamEvents: (invokeInput, options) => {
-      const configuredAgent =
-        options?.recursionLimit !== undefined
-          ? agent.withConfig({
-              recursionLimit: options.recursionLimit,
-            })
-          : agent;
-
-      return configuredAgent.streamEvents(
-        {
-          messages: invokeInput.messages,
-        } as never,
-      );
-    },
-  };
-}
-
-type AgentRecoveryOutput = {
-  outputText: string;
-  toolCallCount: number;
-  toolNames: string[];
-  reason: string;
-};
-
-function sanitizeRecoveryMetadata(
-  metadata: unknown,
-): Record<string, unknown> | undefined {
-  const objectValue = asObject(metadata);
-  if (!objectValue) {
-    return undefined;
-  }
-
-  const sanitized: Record<string, unknown> = {
-    ...objectValue,
-  };
-  delete sanitized.writeIntent;
-  delete sanitized.vcwWriteIntent;
-  delete sanitized.vcwAutoSymbol;
-
-  return Object.keys(sanitized).length > 0 ? sanitized : undefined;
-}
-
-function stripTrailingSymbolicControlEnvelope(text: string): string {
-  return text.replace(/\s*<symbolic_control>[\s\S]*<\/symbolic_control>\s*$/u, "").trim();
-}
-
-async function runAgentRecoveryFallback(options: {
-  input: Parameters<AssistantGenerateFn>[0];
-  systemPrompt: string;
-  toolContext: VcwAgentToolContext;
-  strictWriteGenerate: AssistantGenerateFn;
-  failureMessage: string;
-}): Promise<AgentRecoveryOutput> {
-  const latestUserText = findLatestUserMessageText(options.input);
-  const searchQuery =
-    options.input.query.queryText.trim() ||
-    latestUserText.trim() ||
-    "recent user request";
-  const toolNames: string[] = [];
-  const seenToolNames = new Set<string>();
-  let toolCallCount = 0;
-  const sections: string[] = [];
-  const symbolDetails: RecoveredSymbol[] = [];
-  let webSearchResult: unknown = { hits: [] };
-
-  const callRecoveryTool = async (
-    toolName: "vcw_search_symbols" | "vcw_get_symbol" | "vcw_list_symbols" | "vcw_web_search",
-    rawInput: unknown,
-  ): Promise<unknown> => {
-    toolCallCount += 1;
-    if (!seenToolNames.has(toolName)) {
-      seenToolNames.add(toolName);
-      toolNames.push(toolName);
-    }
-    return executeVcwAgentToolCall(options.toolContext, toolName, rawInput);
-  };
-
-  const symbolResult = await callRecoveryTool("vcw_search_symbols", {
-    query: searchQuery,
-    limit: 6,
-  });
-  const searchedSymbols = toRecoveredSymbols(symbolResult);
-  const candidateSymbolIds = searchedSymbols.map((item) => item.symbolId);
-  for (const symbolId of candidateSymbolIds.slice(0, 8)) {
-    const getResult = await callRecoveryTool("vcw_get_symbol", {
-      symbol_id: symbolId,
-    });
-    const objectValue = asObject(getResult);
-    const symbol = asObject(objectValue?.symbol);
-    if (!objectValue?.found || !symbol || typeof symbol.symbolId !== "string") {
-      continue;
-    }
-    symbolDetails.push({
-      symbolId: symbol.symbolId,
-      summary: typeof symbol.summary === "string" ? symbol.summary : "",
-      content: typeof symbol.content === "string" ? symbol.content : "",
-      kind: typeof symbol.kind === "string" ? symbol.kind : "",
-    });
-  }
-
-  if (symbolDetails.length === 0) {
-    const listResult = await callRecoveryTool("vcw_list_symbols", {
-      limit: 8,
-    });
-    const listed = toRecoveredSymbols(listResult);
-    for (const entry of listed) {
-      const getResult = await callRecoveryTool("vcw_get_symbol", {
-        symbol_id: entry.symbolId,
-      });
-      const objectValue = asObject(getResult);
-      const symbol = asObject(objectValue?.symbol);
-      if (!objectValue?.found || !symbol || typeof symbol.symbolId !== "string") {
-        continue;
-      }
-      symbolDetails.push({
-        symbolId: symbol.symbolId,
-        summary: typeof symbol.summary === "string" ? symbol.summary : "",
-        content: typeof symbol.content === "string" ? symbol.content : "",
-        kind: typeof symbol.kind === "string" ? symbol.kind : "",
-      });
-      if (symbolDetails.length >= 8) {
-        break;
-      }
-    }
-  }
-
-  sections.push(
-    [
-      "VCW_SEARCH_SYMBOLS_RESULT:",
-      summarizeToolResult(symbolResult),
-      "VCW_SYMBOL_DETAILS_RESULT:",
-      summarizeToolResult(symbolDetails),
-    ].join("\n"),
-  );
-
-  if (shouldAttemptWebSearch(latestUserText)) {
-    const webQuery = extractQuotedWebSearchQuery(latestUserText) ?? searchQuery;
-    webSearchResult = await callRecoveryTool("vcw_web_search", {
-      query: webQuery,
-      limit: 3,
-    });
-    sections.push(
-      [
-        "VCW_WEB_SEARCH_RESULT:",
-        summarizeToolResult(webSearchResult),
-      ].join("\n"),
-    );
-  }
-
-  const recoverySystemPrompt = [
-    options.systemPrompt,
-    "",
-    "Fallback mode:",
-    `- The agent loop failed with: ${options.failureMessage}`,
-    "- Use the provided tool-result blocks as authoritative context.",
-    "- Do not mention fallback mode in the final answer.",
-    "- Return the best possible final answer now.",
-    "",
-    ...sections,
-  ].join("\n");
-
-  try {
-    const outputText = await options.strictWriteGenerate({
-      ...options.input,
-      request: {
-        ...options.input.request,
-        systemPrompt: recoverySystemPrompt,
-        metadata: sanitizeRecoveryMetadata(options.input.request.metadata),
-      },
-    });
-
-    const sanitizedOutputText = stripTrailingSymbolicControlEnvelope(outputText);
-    if (sanitizedOutputText.length > 0) {
-      return {
-        outputText: sanitizedOutputText,
-        toolCallCount,
-        toolNames,
-        reason: options.failureMessage,
-      };
-    }
-  } catch (error) {
-    const fallbackError = toErrorMessage(error);
-    if (!isRecoverableAgentFailure(fallbackError)) {
-      throw error;
-    }
-  }
-
-  const synthetic = buildEmergencyFallbackAnswer({
-    latestUserText,
-    symbolDetails,
-    webSearchResult,
-  });
-
-  return {
-    outputText: synthetic,
-    toolCallCount,
-    toolNames,
-    reason: options.failureMessage,
   };
 }
 
@@ -824,107 +377,15 @@ export function createLangChainAgentAssistantGenerate(
     DEFAULT_AGENT_RECURSION_LIMIT,
   );
   const retrievalStrategy = options.retrievalStrategy ?? "hybrid_v2";
-  let strictWriteToolCallDetected = false;
 
   if (!model) {
     throw new Error("missing_env:VCW_OLLAMA_MODEL");
   }
 
-  const strictWriteGenerate =
-    options.strictWriteGenerate ??
-    createLangChainAssistantGenerate({
-      model,
-      baseUrl,
-      temperature,
-      env,
-      middleware: options.middleware,
-      onResultMetadata: (metadata) => {
-        strictWriteToolCallDetected = metadata.toolCallDetected;
-      },
-      ...options.strictWriteAssistantOptions,
-    });
-
-  const runTurn = async (
-    input: AssistantGenerateInput,
-    streamSink?: (delta: string) => void | Promise<void>,
-  ): Promise<string> => {
-    const writeIntentMode = resolveWriteIntentFromMetadata(input.request);
+  const generate = (async (input) => {
     const autoSymbolMetadata = resolveAutoSymbolMetadata(
       asObject(input.request.metadata),
     );
-    if (writeIntentMode === "strict") {
-      strictWriteToolCallDetected = false;
-      const startedAtMs = now();
-      let streamChunkCount = 0;
-      let streamedTextChars = 0;
-      let streamProvider: "none" | "langchain_stream" | "buffered" = "none";
-      let streamBuffered = false;
-      let output = "";
-
-      if (streamSink && strictWriteGenerate.stream) {
-        let sawFinalText = false;
-        for await (const event of strictWriteGenerate.stream(input)) {
-          if (event.type === "text_delta") {
-            output += event.delta;
-            streamChunkCount += 1;
-            streamedTextChars += event.delta.length;
-            streamProvider = "langchain_stream";
-            await streamSink(event.delta);
-            continue;
-          }
-          if (event.type === "final_text") {
-            output = event.text;
-            sawFinalText = true;
-          }
-        }
-        if (!sawFinalText && output.length === 0) {
-          output = await strictWriteGenerate(input);
-        }
-      } else {
-        output = await strictWriteGenerate(input);
-      }
-
-      if (streamSink && streamChunkCount === 0) {
-        streamBuffered = true;
-        streamProvider = "buffered";
-      }
-      const durationMs = now() - startedAtMs;
-
-      await notifyResultMetadata(options.onResultMetadata, {
-        provider: "langchain_create_agent_ollama",
-        model,
-        baseUrl,
-        durationMs,
-        streamEnabled: streamSink !== undefined,
-        streamChunkCount,
-        streamedTextChars,
-        streamBuffered,
-        streamProvider,
-        agentModelCallCount: 1,
-        agentToolCallCount: strictWriteToolCallDetected ? 1 : 0,
-        agentToolNames: strictWriteToolCallDetected ? ["emit_symbol_events"] : [],
-        agentLoopDurationMs: durationMs,
-        writeIntentMode: "strict",
-        writeTransport: "function_call_bridge",
-        writeIntentSatisfied: true,
-        toolCallDetected: strictWriteToolCallDetected,
-        writeToolSchemaVersion: "v1",
-        autoMode: autoSymbolMetadata?.mode,
-        autoTriggered: autoSymbolMetadata?.triggered,
-        autoConfidence: autoSymbolMetadata?.confidence,
-        autoReason: autoSymbolMetadata?.reason,
-        autoEventCount: autoSymbolMetadata?.events.length ?? 0,
-        autoSuppressed: autoSymbolMetadata?.suppressed,
-        autoScore: autoSymbolMetadata?.scoring?.probability,
-        autoScoreBand: autoSymbolMetadata?.scoring?.band,
-        autoScorerVersion: autoSymbolMetadata?.scoring?.scorerVersion,
-        autoOverrideApplied: autoSymbolMetadata?.scoring?.overrideApplied,
-        autoTopFeatures: topScoringFeatures(autoSymbolMetadata?.scoring),
-      });
-
-      return output;
-    }
-
     const startedAtMs = now();
     const systemPrompt = buildSystemPrompt(input);
 
@@ -958,34 +419,44 @@ export function createLangChainAgentAssistantGenerate(
           return "";
         },
         assignModelOutputText,
-        model: {
-          name: model,
+        resolveResultMetadata: ({ durationMs }) => ({
+          provider: "langchain_create_agent_ollama",
+          model,
           baseUrl,
-        },
-        now,
+          durationMs,
+          streamEnabled: false,
+          streamChunkCount: 0,
+          streamedTextChars: 0,
+          streamBuffered: false,
+          streamProvider: "none",
+          agentModelCallCount: 0,
+          agentToolCallCount: 0,
+          agentToolNames: [],
+          agentLoopDurationMs: durationMs,
+          toolCallDetected: false,
+          autoMode: autoSymbolMetadata?.mode,
+          autoTriggered: autoSymbolMetadata?.triggered,
+          autoConfidence: autoSymbolMetadata?.confidence,
+          autoReason: autoSymbolMetadata?.reason,
+          autoEventCount: autoSymbolMetadata?.eventCount ?? 0,
+          autoSuppressed: autoSymbolMetadata?.suppressed,
+          autoScore: autoSymbolMetadata?.scoring?.probability,
+          autoScoreBand: autoSymbolMetadata?.scoring?.band,
+          autoScorerVersion: autoSymbolMetadata?.scoring?.scorerVersion,
+          autoOverrideApplied: autoSymbolMetadata?.scoring?.overrideApplied,
+          autoTopFeatures: topScoringFeatures(autoSymbolMetadata?.scoring),
+        }),
       },
     });
 
     const middleware = [
-      modelCallLimitMiddleware({
-        runLimit: maxModelCalls,
-        exitBehavior: "error",
-      }),
+      modelCallLimitMiddleware(maxModelCalls),
       toolCallLimitMiddleware({
-        runLimit: maxToolCalls,
-        exitBehavior: "error",
+        threadLimit: maxToolCalls,
       }),
       ...toLangChainAgentMiddleware(bridgeSpecs),
     ];
 
-    const invokeMessages = input.request.messages.map((message) => ({
-      role: toRole(message.role),
-      content: message.content,
-    }));
-    invokeMessages.unshift({
-      role: "system",
-      content: systemPrompt,
-    });
     const runtime = (options.createAgentRuntime ?? createDefaultAgentRuntime)({
       model,
       baseUrl,
@@ -994,218 +465,42 @@ export function createLangChainAgentAssistantGenerate(
       tools,
     });
 
-    let visibleText = "";
-    let streamChunkCount = 0;
-    let streamedTextChars = 0;
-    let streamProvider: "none" | "langchain_stream" | "buffered" = "none";
-    let streamBuffered = false;
-    let loopStats = {
-      agentModelCallCount: 0,
-      agentToolCallCount: 0,
-      agentToolNames: [] as string[],
-    };
-
-    try {
-      if (streamSink && runtime.streamEvents) {
-        let streamResult: unknown = undefined;
-        let streamedVisibleText = "";
-        const streamedToolNames = new Set<string>();
-        const streamedLoopStats = {
-          agentModelCallCount: 0,
-          agentToolCallCount: 0,
-          agentToolNames: [] as string[],
-        };
-
-        for await (const eventValue of runtime.streamEvents(
-          {
-            messages: invokeMessages,
-          },
-          {
-            recursionLimit,
-          },
-        )) {
-          const event = asObject(eventValue);
-          if (!event) {
-            continue;
-          }
-          const eventName = typeof event.event === "string" ? event.event : "";
-          if (eventName === "on_chat_model_start" || eventName === "on_llm_start") {
-            streamedLoopStats.agentModelCallCount += 1;
-          } else if (eventName === "on_tool_start") {
-            streamedLoopStats.agentToolCallCount += 1;
-            const toolName = typeof event.name === "string" ? event.name : "";
-            if (toolName && !streamedToolNames.has(toolName)) {
-              streamedToolNames.add(toolName);
-              streamedLoopStats.agentToolNames.push(toolName);
-            }
-          }
-
-          const delta = extractStreamEventTextDelta(event);
-          if (delta.length > 0) {
-            streamedVisibleText += delta;
-            streamChunkCount += 1;
-            streamedTextChars += delta.length;
-            streamProvider = "langchain_stream";
-            await streamSink(delta);
-          }
-
-          const maybeOutput = extractStreamEventOutput(event);
-          if (maybeOutput !== undefined) {
-            streamResult = maybeOutput;
-          }
-        }
-
-        if (streamResult !== undefined) {
-          try {
-            visibleText = extractFinalAssistantText(streamResult);
-            loopStats = collectAgentLoopMetadata(streamResult);
-          } catch {
-            // Fall through to streamed text and inferred loop stats.
-          }
-        }
-
-        if (!visibleText.trim() && streamedVisibleText.trim()) {
-          visibleText = streamedVisibleText;
-        }
-        if (!visibleText.trim() && !streamedVisibleText.trim()) {
-          const invokeResult = await runtime.invoke(
-            {
-              messages: invokeMessages,
-            },
-            {
-              recursionLimit,
-            },
-          );
-          visibleText = extractFinalAssistantText(invokeResult);
-          loopStats = collectAgentLoopMetadata(invokeResult);
-        }
-        if (
-          loopStats.agentModelCallCount === 0 &&
-          streamedLoopStats.agentModelCallCount > 0
-        ) {
-          loopStats.agentModelCallCount = streamedLoopStats.agentModelCallCount;
-        }
-        if (
-          loopStats.agentToolCallCount === 0 &&
-          streamedLoopStats.agentToolCallCount > 0
-        ) {
-          loopStats.agentToolCallCount = streamedLoopStats.agentToolCallCount;
-        }
-        if (
-          loopStats.agentToolNames.length === 0 &&
-          streamedLoopStats.agentToolNames.length > 0
-        ) {
-          loopStats.agentToolNames = streamedLoopStats.agentToolNames;
-        }
-
-        if (streamChunkCount === 0) {
-          streamBuffered = true;
-          streamProvider = "buffered";
-        }
-      } else {
-        const result = await runtime.invoke(
-          {
-            messages: invokeMessages,
-          },
-          {
-            recursionLimit,
-          },
-        );
-        visibleText = extractFinalAssistantText(result);
-        loopStats = collectAgentLoopMetadata(result);
-        if (streamSink) {
-          streamBuffered = true;
-          streamProvider = "buffered";
-        }
-      }
-    } catch (error) {
-      const failureMessage = toErrorMessage(error);
-      if (!isRecoverableAgentFailure(failureMessage)) {
-        throw error;
-      }
-
-      const recovered = await runAgentRecoveryFallback({
-        input,
-        systemPrompt,
-        toolContext,
-        strictWriteGenerate,
-        failureMessage,
-      });
-      visibleText = recovered.outputText;
-      loopStats = {
-        agentModelCallCount: 1,
-        agentToolCallCount: recovered.toolCallCount,
-        agentToolNames: recovered.toolNames,
-      };
-      if (streamSink && streamChunkCount === 0) {
-        streamBuffered = true;
-        streamProvider = "buffered";
-      }
-    }
-
-    if (!visibleText.trim()) {
-      visibleText = "I couldn't produce a complete answer this turn. Please retry.";
-    }
+    const result = await runtime.invoke(
+      {
+        messages: input.request.messages.map((message) => ({
+          role: toRole(message.role),
+          content: message.content,
+        })),
+      },
+      {
+        recursionLimit,
+      },
+    );
 
     const durationMs = now() - startedAtMs;
-    const expectsAutoWrite = Boolean(
-      writeIntentMode === "auto" &&
-        autoSymbolMetadata?.valid &&
-        autoSymbolMetadata.mode === "active" &&
-        autoSymbolMetadata.triggered &&
-        !autoSymbolMetadata.suppressed &&
-        autoSymbolMetadata.events.length > 0 &&
-        isAutoWriteDecision(autoSymbolMetadata),
-    );
-    const shouldApplyAutoControl = expectsAutoWrite;
-    const outputText = shouldApplyAutoControl
-      ? buildDeterministicControlEnvelope({
-          assistant_response: visibleText,
-          symbol_events: autoSymbolMetadata!.events,
-        })
-      : visibleText;
-    const writeTransport = shouldApplyAutoControl
-      ? "detector_bridge"
-      : "plain_text";
-    const writeIntentSatisfied =
-      writeIntentMode !== "auto"
-        ? true
-        : !autoSymbolMetadata
-          ? true
-          : !autoSymbolMetadata.valid
-            ? false
-            : autoSymbolMetadata.mode === "active" &&
-                autoSymbolMetadata.triggered &&
-                !autoSymbolMetadata.suppressed
-              ? expectsAutoWrite
-                ? shouldApplyAutoControl
-                : true
-              : true;
+    const outputText = extractFinalAssistantText(result);
+    const loopMetadata = collectAgentLoopMetadata(result);
 
     await notifyResultMetadata(options.onResultMetadata, {
       provider: "langchain_create_agent_ollama",
       model,
       baseUrl,
       durationMs,
-      streamEnabled: streamSink !== undefined,
-      streamChunkCount,
-      streamedTextChars,
-      streamBuffered,
-      streamProvider,
-      agentModelCallCount: loopStats.agentModelCallCount,
-      agentToolCallCount: loopStats.agentToolCallCount,
-      agentToolNames: loopStats.agentToolNames,
+      streamEnabled: false,
+      streamChunkCount: 0,
+      streamedTextChars: 0,
+      streamBuffered: false,
+      streamProvider: "none",
+      agentModelCallCount: loopMetadata.agentModelCallCount,
+      agentToolCallCount: loopMetadata.agentToolCallCount,
+      agentToolNames: loopMetadata.agentToolNames,
       agentLoopDurationMs: durationMs,
-      writeIntentMode,
-      writeTransport,
-      writeIntentSatisfied,
-      toolCallDetected: false,
-      writeToolSchemaVersion: "v1",
+      toolCallDetected: loopMetadata.agentToolCallCount > 0,
       autoMode: autoSymbolMetadata?.mode,
       autoTriggered: autoSymbolMetadata?.triggered,
       autoConfidence: autoSymbolMetadata?.confidence,
       autoReason: autoSymbolMetadata?.reason,
-      autoEventCount: autoSymbolMetadata?.events.length ?? 0,
+      autoEventCount: autoSymbolMetadata?.eventCount ?? 0,
       autoSuppressed: autoSymbolMetadata?.suppressed,
       autoScore: autoSymbolMetadata?.scoring?.probability,
       autoScoreBand: autoSymbolMetadata?.scoring?.band,
@@ -1215,70 +510,35 @@ export function createLangChainAgentAssistantGenerate(
     });
 
     return outputText;
-  };
-
-  const generate = (async (input: AssistantGenerateInput) => {
-    return runTurn(input);
   }) as AssistantGenerateFn;
 
   generate.stream = async function* (input) {
-    const queue: AssistantGenerateStreamEvent[] = [];
-    let waitingResolver: (() => void) | null = null;
-    let runComplete = false;
-    let runError: unknown;
-
-    const flushWaitingResolver = () => {
-      const resolver = waitingResolver;
-      waitingResolver = null;
-      if (resolver) {
-        resolver();
-      }
+    const output = await generate(input);
+    yield {
+      type: "final_text",
+      text: output,
     };
-
-    const enqueue = (event: AssistantGenerateStreamEvent) => {
-      queue.push(event);
-      flushWaitingResolver();
-    };
-
-    const runPromise = (async () => {
-      try {
-        const output = await runTurn(input, async (delta) => {
-          enqueue({
-            type: "text_delta",
-            delta,
-          });
-        });
-        enqueue({
-          type: "final_text",
-          text: output,
-        });
-      } catch (error) {
-        runError = error;
-      } finally {
-        runComplete = true;
-        flushWaitingResolver();
-      }
-    })();
-
-    while (!runComplete || queue.length > 0) {
-      if (queue.length === 0) {
-        await new Promise<void>((resolve) => {
-          waitingResolver = resolve;
-        });
-        continue;
-      }
-
-      const event = queue.shift();
-      if (event) {
-        yield event;
-      }
-    }
-
-    await runPromise;
-    if (runError) {
-      throw runError;
-    }
   };
 
   return generate;
+}
+
+export function createLangChainAgentRecoveryGenerate(
+  options: VcwAgentAssistantOptions,
+): AssistantGenerateFn {
+  // Compatibility alias kept internal to reduce surface changes for local callers.
+  return createLangChainAgentAssistantGenerate(options);
+}
+
+export function createLangChainStrictFallbackGenerate(
+  options: VcwAgentAssistantOptions,
+): AssistantGenerateFn {
+  return createLangChainAssistantGenerate({
+    model: options.model,
+    baseUrl: options.baseUrl,
+    temperature: options.temperature,
+    env: options.env,
+    middleware: options.middleware,
+    onResultMetadata: undefined,
+  });
 }

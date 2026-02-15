@@ -14,6 +14,10 @@ export type RenderLaneMetric = {
   focusedInjectedCount: number;
   recallInjectedCount: number;
   symbolTableCount: number;
+  pressurePeak: number;
+  pressureFinal: number;
+  compactionJobsTriggered: number;
+  committedSymbolsCount: number;
   attemptsUsed: number;
   failureReasons: string[];
 };
@@ -22,14 +26,13 @@ export type RenderRunSummary = {
   runId: string;
   provider: string;
   scenario: string;
-  strictMode: boolean;
   runDurationMs: number;
   outputDir: string;
   metrics: RenderLaneMetric[];
 };
 
 function laneLabel(lane: ShowdownLane): string {
-  return lane === "chat_only" ? "CHAT ONLY" : "VCW ONLY";
+  return lane === "compaction_off" ? "COMPACTION OFF" : "COMPACTION ON";
 }
 
 function statusText(passed: boolean): string {
@@ -57,18 +60,12 @@ export function renderLaneEvent(
   message: string,
   detail?: string,
 ): string {
-  const prefix = lane === "chat_only" ? chalk.yellow("[chat_only]") : chalk.blue("[vcw_only]");
+  const prefix =
+    lane === "compaction_off"
+      ? chalk.yellow("[compaction_off]")
+      : chalk.blue("[compaction_on]");
   const suffix = detail ? ` ${chalk.gray(detail)}` : "";
   return `${prefix} ${message}${suffix}`;
-}
-
-export function renderProjectionEvent(
-  lane: ShowdownLane,
-  detail: string,
-): string {
-  const lanePrefix = lane === "chat_only" ? chalk.yellow("[chat_only]") : chalk.blue("[vcw_only]");
-  const badge = chalk.bgCyan.black(" PROJECTION ACCEPTED ");
-  return `${lanePrefix} ${badge} ${chalk.cyan(detail)}`;
 }
 
 export function renderFinalScoreboard(summary: RenderRunSummary): string {
@@ -85,6 +82,10 @@ export function renderFinalScoreboard(summary: RenderRunSummary): string {
       "focus",
       "recall",
       "symbols",
+      "peak",
+      "final",
+      "jobs",
+      "commits",
       "tries",
       "Reasons",
     ],
@@ -109,6 +110,10 @@ export function renderFinalScoreboard(summary: RenderRunSummary): string {
       metric.focusedInjectedCount,
       metric.recallInjectedCount,
       metric.symbolTableCount,
+      metric.pressurePeak.toFixed(2),
+      metric.pressureFinal.toFixed(2),
+      metric.compactionJobsTriggered,
+      metric.committedSymbolsCount,
       metric.attemptsUsed,
       formatFailureReasons(metric.failureReasons),
     ]);
@@ -119,7 +124,6 @@ export function renderFinalScoreboard(summary: RenderRunSummary): string {
     `runId=${summary.runId}`,
     `provider=${summary.provider}`,
     `scenario=${summary.scenario}`,
-    `strictMode=${summary.strictMode}`,
     `runDurationMs=${summary.runDurationMs.toFixed(2)}`,
     `artifacts=${summary.outputDir}`,
   ].join("\n");

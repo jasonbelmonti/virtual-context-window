@@ -1,24 +1,16 @@
 import type {
   AssistantGenerateFn,
   AssistantGenerateInput,
-  AssistantGenerateStreamEvent,
 } from "../../engine/hooks";
 import {
-  DEFAULT_RECOGNIZER_CONFIG,
   parseAutoSymbolMetadataEnvelope,
   type RecognitionScoring,
 } from "../../recognition";
 import {
-  buildDeterministicControlEnvelope,
-  convertWriteToolArgsToPayload,
-} from "../langchain/write-tool-bridge";
-import {
   VCW_AGENT_TOOL_DEFINITIONS,
   executeVcwAgentToolCall,
 } from "../langchain/agent-tools";
-import { resolveWriteIntentFromMetadata } from "../langchain/assistant";
-import type { VcwLangChainMiddleware, WriteIntentMode } from "../langchain/contracts";
-import { createOpenAIResponsesAssistantGenerate } from "./assistant";
+import type { VcwLangChainMiddleware } from "../langchain/contracts";
 import type {
   CreateOpenAIClient,
   OpenAIResponsesAgentAssistantOptions,
@@ -44,10 +36,6 @@ function asObject(value: unknown): Record<string, unknown> | undefined {
   }
 
   return value as Record<string, unknown>;
-}
-
-function isAsyncIterable(value: unknown): value is AsyncIterable<unknown> {
-  return !!value && typeof value === "object" && Symbol.asyncIterator in value;
 }
 
 function parseBoundedInt(value: string | undefined, fallback: number): number {
@@ -283,122 +271,14 @@ function buildOpenAITools(): Array<Record<string, unknown>> {
   }));
 }
 
-type StreamedCallResult = {
-  response: unknown;
-  streamChunkCount: number;
-  streamedTextChars: number;
-  streamProvider: "none" | "sse" | "buffered";
-  streamBuffered: boolean;
-};
-
-async function invokeAgentResponse(options: {
-  client: OpenAIResponsesClientLike;
-  params: Record<string, unknown>;
-  streamMode: boolean;
-  streamSink?: (delta: string) => void | Promise<void>;
-}): Promise<StreamedCallResult> {
-  if (!options.streamMode) {
-    const response = await options.client.responses.create({
-      ...options.params,
-      stream: false,
-    });
-    return {
-      response,
-      streamChunkCount: 0,
-      streamedTextChars: 0,
-      streamProvider: "none",
-      streamBuffered: false,
-    };
-  }
-
-  const responseOrStream = await options.client.responses.create({
-    ...options.params,
-    stream: true,
-  });
-
-  if (!isAsyncIterable(responseOrStream)) {
-    return {
-      response: responseOrStream,
-      streamChunkCount: 0,
-      streamedTextChars: 0,
-      streamProvider: "buffered",
-      streamBuffered: true,
-    };
-  }
-
-  let streamChunkCount = 0;
-  let streamedTextChars = 0;
-  let streamedText = "";
-  const pendingDeltas: string[] = [];
-  let responsePayload: unknown;
-  let completedResponseReceived = false;
-
-  for await (const eventValue of responseOrStream) {
-    const event = asObject(eventValue);
-    if (!event) {
-      continue;
-    }
-
-    if (
-      event.type === "response.output_text.delta" &&
-      typeof event.delta === "string"
-    ) {
-      streamedText += event.delta;
-      pendingDeltas.push(event.delta);
-      continue;
-    }
-
-    if (event.type === "response.completed") {
-      responsePayload = event.response;
-      completedResponseReceived = true;
-    }
-  }
-
-  if (!responsePayload) {
-    responsePayload = {
-      output_text: streamedText,
-    };
-  }
-
-  const shouldEmitDeltas =
-    completedResponseReceived &&
-    extractToolCalls(responsePayload).length === 0 &&
-    options.streamSink !== undefined;
-  const streamSink = options.streamSink;
-
-  if (shouldEmitDeltas && streamSink) {
-    for (const delta of pendingDeltas) {
-      await streamSink(delta);
-      streamChunkCount += 1;
-      streamedTextChars += delta.length;
-    }
-  }
-
-  return {
-    response: responsePayload,
-    streamChunkCount,
-    streamedTextChars,
-    streamProvider: "sse",
-    streamBuffered: false,
-  };
-}
-
 type ResolvedAutoSymbolMetadata = {
   mode: "off" | "shadow" | "active";
   triggered: boolean;
   confidence: number;
   reason: string;
-  events: Array<{
-    type: "upsert_symbol";
-    symbol_id?: string;
-    summary?: string;
-    content: string;
-    kind?: "memory" | "fact" | "plan" | "note";
-    key_hint?: string;
-  }>;
+  eventCount: number;
   suppressed: boolean;
   scoring?: RecognitionScoring;
-  valid: boolean;
 };
 
 function topScoringFeatures(scoring: RecognitionScoring | undefined): string[] {
@@ -416,14 +296,6 @@ function topScoringFeatures(scoring: RecognitionScoring | undefined): string[] {
     );
 }
 
-function isAutoWriteDecision(auto: ResolvedAutoSymbolMetadata): boolean {
-  if (auto.scoring) {
-    return auto.scoring.band === "write";
-  }
-
-  return auto.confidence >= DEFAULT_RECOGNIZER_CONFIG.activeMinScore;
-}
-
 function resolveAutoSymbolMetadata(
   requestMetadata: Record<string, unknown> | undefined,
 ): ResolvedAutoSymbolMetadata | undefined {
@@ -432,47 +304,15 @@ function resolveAutoSymbolMetadata(
     return undefined;
   }
 
-  if (!parsed.valid) {
-    return {
-      mode: parsed.mode,
-      triggered: parsed.triggered,
-      confidence: parsed.confidence,
-      reason: parsed.reason,
-      events: [],
-      suppressed: parsed.suppressed,
-      scoring: parsed.scoring,
-      valid: false,
-    };
-  }
-
-  try {
-    const events = convertWriteToolArgsToPayload({
-      assistant_response: "",
-      symbol_events: parsed.events,
-    }).symbol_events;
-
-    return {
-      mode: parsed.mode,
-      triggered: parsed.triggered,
-      confidence: parsed.confidence,
-      reason: parsed.reason,
-      events,
-      suppressed: parsed.suppressed,
-      scoring: parsed.scoring,
-      valid: true,
-    };
-  } catch {
-    return {
-      mode: parsed.mode,
-      triggered: parsed.triggered,
-      confidence: parsed.confidence,
-      reason: parsed.reason,
-      events: [],
-      suppressed: parsed.suppressed,
-      scoring: parsed.scoring,
-      valid: false,
-    };
-  }
+  return {
+    mode: parsed.mode,
+    triggered: parsed.triggered,
+    confidence: parsed.confidence,
+    reason: parsed.reason,
+    eventCount: parsed.events.length,
+    suppressed: parsed.suppressed,
+    scoring: parsed.scoring,
+  };
 }
 
 async function runBeforeMiddleware(
@@ -613,100 +453,13 @@ export function createOpenAIResponsesAgentAssistantGenerate(
     baseUrl,
   });
 
-  let strictWriteToolCallDetected = false;
-  const strictWriteGenerate =
-    options.strictWriteGenerate ??
-    createOpenAIResponsesAssistantGenerate({
-      model,
-      baseUrl,
-      apiKey,
-      temperature,
-      env,
-      middleware: options.middleware,
-      onResultMetadata: (metadata) => {
-        strictWriteToolCallDetected = metadata.toolCallDetected;
-      },
-      ...options.strictWriteAssistantOptions,
-      createClient: options.createClient,
-    });
-
   const runTurn = async (
     input: AssistantGenerateInput,
     streamMode: boolean,
-    streamSink?: (delta: string) => void | Promise<void>,
   ): Promise<string> => {
-    const writeIntentMode = resolveWriteIntentFromMetadata(input.request);
     const autoSymbolMetadata = resolveAutoSymbolMetadata(
       asObject(input.request.metadata),
     );
-
-    if (writeIntentMode === "strict") {
-      strictWriteToolCallDetected = false;
-      const startedAtMs = now();
-      let streamChunkCount = 0;
-      let streamedTextChars = 0;
-      let output = "";
-
-      if (streamMode && strictWriteGenerate.stream) {
-        let sawFinalText = false;
-        for await (const event of strictWriteGenerate.stream(input)) {
-          if (event.type === "text_delta") {
-            output += event.delta;
-            streamChunkCount += 1;
-            streamedTextChars += event.delta.length;
-            if (streamSink) {
-              await streamSink(event.delta);
-            }
-            continue;
-          }
-          if (event.type === "final_text") {
-            output = event.text;
-            sawFinalText = true;
-          }
-        }
-        if (!sawFinalText && output.length === 0) {
-          output = await strictWriteGenerate(input);
-        }
-      } else {
-        output = await strictWriteGenerate(input);
-      }
-      const durationMs = now() - startedAtMs;
-
-      await notifyResultMetadata(options.onResultMetadata, {
-        provider: "openai_responses",
-        model,
-        baseUrl,
-        durationMs,
-        streamEnabled: streamMode,
-        streamChunkCount,
-        streamedTextChars,
-        streamBuffered: streamMode && streamChunkCount === 0,
-        streamProvider:
-          !streamMode ? "none" : streamChunkCount > 0 ? "sse" : "buffered",
-        agentModelCallCount: 1,
-        agentToolCallCount: strictWriteToolCallDetected ? 1 : 0,
-        agentToolNames: strictWriteToolCallDetected ? ["emit_symbol_events"] : [],
-        agentLoopDurationMs: durationMs,
-        writeIntentMode: "strict",
-        writeTransport: "function_call_bridge",
-        writeIntentSatisfied: true,
-        toolCallDetected: strictWriteToolCallDetected,
-        writeToolSchemaVersion: "v1",
-        autoMode: autoSymbolMetadata?.mode,
-        autoTriggered: autoSymbolMetadata?.triggered,
-        autoConfidence: autoSymbolMetadata?.confidence,
-        autoReason: autoSymbolMetadata?.reason,
-        autoEventCount: autoSymbolMetadata?.events.length ?? 0,
-        autoSuppressed: autoSymbolMetadata?.suppressed,
-        autoScore: autoSymbolMetadata?.scoring?.probability,
-        autoScoreBand: autoSymbolMetadata?.scoring?.band,
-        autoScorerVersion: autoSymbolMetadata?.scoring?.scorerVersion,
-        autoOverrideApplied: autoSymbolMetadata?.scoring?.overrideApplied,
-        autoTopFeatures: topScoringFeatures(autoSymbolMetadata?.scoring),
-      });
-
-      return output;
-    }
 
     const prompt = buildAgentPrompt(input);
     const startedAtMs = now();
@@ -739,10 +492,6 @@ export function createOpenAIResponsesAgentAssistantGenerate(
       const toolNames = new Set<string>();
       let currentResponse: unknown;
       let currentResponseId: string | undefined;
-      let streamChunkCount = 0;
-      let streamedTextChars = 0;
-      let streamProvider: "none" | "sse" | "buffered" = "none";
-      let streamBuffered = false;
 
       while (true) {
         modelCallCount += 1;
@@ -751,31 +500,14 @@ export function createOpenAIResponsesAgentAssistantGenerate(
         }
 
         if (modelCallCount === 1) {
-          const callResult = await invokeAgentResponse({
-            client,
-            streamMode,
-            streamSink,
-            params: {
-              model,
-              input: prompt,
-              temperature,
-              tools,
-              parallel_tool_calls: false,
-            },
+          currentResponse = await client.responses.create({
+            model,
+            input: prompt,
+            temperature,
+            tools,
+            parallel_tool_calls: false,
+            stream: false,
           });
-          currentResponse = callResult.response;
-          streamChunkCount += callResult.streamChunkCount;
-          streamedTextChars += callResult.streamedTextChars;
-          if (callResult.streamProvider === "sse") {
-            streamProvider = "sse";
-          } else if (
-            streamProvider !== "sse" &&
-            callResult.streamProvider === "buffered"
-          ) {
-            streamProvider = "buffered";
-          }
-          streamBuffered =
-            streamBuffered || callResult.streamBuffered;
         } else {
           if (!currentResponseId) {
             throw new Error("openai_agent_previous_response_missing_id");
@@ -807,32 +539,15 @@ export function createOpenAIResponsesAgentAssistantGenerate(
             break;
           }
 
-          const callResult = await invokeAgentResponse({
-            client,
-            streamMode,
-            streamSink,
-            params: {
-              model,
-              previous_response_id: currentResponseId,
-              input: outputs,
-              temperature,
-              tools,
-              parallel_tool_calls: false,
-            },
+          currentResponse = await client.responses.create({
+            model,
+            previous_response_id: currentResponseId,
+            input: outputs,
+            temperature,
+            tools,
+            parallel_tool_calls: false,
+            stream: false,
           });
-          currentResponse = callResult.response;
-          streamChunkCount += callResult.streamChunkCount;
-          streamedTextChars += callResult.streamedTextChars;
-          if (callResult.streamProvider === "sse") {
-            streamProvider = "sse";
-          } else if (
-            streamProvider !== "sse" &&
-            callResult.streamProvider === "buffered"
-          ) {
-            streamProvider = "buffered";
-          }
-          streamBuffered =
-            streamBuffered || callResult.streamBuffered;
         }
 
         const currentObject = asObject(currentResponse);
@@ -846,17 +561,6 @@ export function createOpenAIResponsesAgentAssistantGenerate(
       }
 
       const visibleText = extractResponseText(currentResponse);
-      const expectsAutoWrite = Boolean(
-        writeIntentMode === "auto" &&
-          autoSymbolMetadata?.valid &&
-          autoSymbolMetadata.mode === "active" &&
-          autoSymbolMetadata.triggered &&
-          !autoSymbolMetadata.suppressed &&
-          autoSymbolMetadata.events.length > 0 &&
-          isAutoWriteDecision(autoSymbolMetadata),
-      );
-      const shouldApplyAutoControl = expectsAutoWrite;
-
       const durationMs = now() - startedAtMs;
       const baseMetadata: OpenAIResponsesAgentResultMetadata = {
         provider: "openai_responses",
@@ -864,39 +568,20 @@ export function createOpenAIResponsesAgentAssistantGenerate(
         baseUrl,
         durationMs,
         streamEnabled: streamMode,
-        streamChunkCount,
-        streamedTextChars,
-        streamBuffered: streamMode ? streamBuffered : false,
-        streamProvider: streamMode ? streamProvider : "none",
+        streamChunkCount: 0,
+        streamedTextChars: 0,
+        streamBuffered: streamMode,
+        streamProvider: streamMode ? "buffered" : "none",
         agentModelCallCount: modelCallCount,
         agentToolCallCount: toolCallCount,
         agentToolNames: [...toolNames],
         agentLoopDurationMs: durationMs,
-        writeIntentMode,
-        writeTransport: shouldApplyAutoControl
-          ? "detector_bridge"
-          : "plain_text",
-        writeIntentSatisfied:
-          writeIntentMode !== "auto"
-            ? true
-            : !autoSymbolMetadata
-              ? true
-              : !autoSymbolMetadata.valid
-                ? false
-                : autoSymbolMetadata.mode === "active" &&
-                    autoSymbolMetadata.triggered &&
-                    !autoSymbolMetadata.suppressed
-                  ? expectsAutoWrite
-                    ? shouldApplyAutoControl
-                    : true
-                  : true,
-        toolCallDetected: false,
-        writeToolSchemaVersion: "v1",
+        toolCallDetected: toolCallCount > 0,
         autoMode: autoSymbolMetadata?.mode,
         autoTriggered: autoSymbolMetadata?.triggered,
         autoConfidence: autoSymbolMetadata?.confidence,
         autoReason: autoSymbolMetadata?.reason,
-        autoEventCount: autoSymbolMetadata?.events.length ?? 0,
+        autoEventCount: autoSymbolMetadata?.eventCount ?? 0,
         autoSuppressed: autoSymbolMetadata?.suppressed,
         autoScore: autoSymbolMetadata?.scoring?.probability,
         autoScoreBand: autoSymbolMetadata?.scoring?.band,
@@ -905,19 +590,12 @@ export function createOpenAIResponsesAgentAssistantGenerate(
         autoTopFeatures: topScoringFeatures(autoSymbolMetadata?.scoring),
       };
 
-      const processedVisibleText = await runAfterMiddleware(
+      const outputText = await runAfterMiddleware(
         middleware,
         middlewareContext,
         visibleText,
         baseMetadata,
       );
-
-      const outputText = shouldApplyAutoControl
-        ? buildDeterministicControlEnvelope({
-            assistant_response: processedVisibleText,
-            symbol_events: autoSymbolMetadata!.events,
-          })
-        : processedVisibleText;
 
       await notifyResultMetadata(options.onResultMetadata, baseMetadata);
       return outputText;
@@ -933,62 +611,11 @@ export function createOpenAIResponsesAgentAssistantGenerate(
   }) as AssistantGenerateFn;
 
   generate.stream = async function* (input: AssistantGenerateInput) {
-    const queue: AssistantGenerateStreamEvent[] = [];
-    let waitingResolver: (() => void) | null = null;
-    let runComplete = false;
-    let runError: unknown;
-
-    const flushWaitingResolver = () => {
-      const resolver = waitingResolver;
-      waitingResolver = null;
-      if (resolver) {
-        resolver();
-      }
+    const output = await runTurn(input, true);
+    yield {
+      type: "final_text",
+      text: output,
     };
-
-    const enqueue = (event: AssistantGenerateStreamEvent) => {
-      queue.push(event);
-      flushWaitingResolver();
-    };
-
-    const runPromise = (async () => {
-      try {
-        const output = await runTurn(input, true, async (delta) => {
-          enqueue({
-            type: "text_delta",
-            delta,
-          });
-        });
-        enqueue({
-          type: "final_text",
-          text: output,
-        });
-      } catch (error) {
-        runError = error;
-      } finally {
-        runComplete = true;
-        flushWaitingResolver();
-      }
-    })();
-
-    while (!runComplete || queue.length > 0) {
-      if (queue.length === 0) {
-        await new Promise<void>((resolve) => {
-          waitingResolver = resolve;
-        });
-        continue;
-      }
-
-      const event = queue.shift();
-      if (event) {
-        yield event;
-      }
-    }
-
-    await runPromise;
-    if (runError) {
-      throw runError;
-    }
   };
 
   return generate;

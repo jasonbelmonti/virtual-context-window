@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { InMemorySymbolStore } from "../../src/engine";
-import { applyPassiveCommitPolicy, type CompressionProposal } from "../../src/engine-v2";
+import { applyPassiveCommitPolicy, type CompressionProposal } from "../../src/engine";
 
 function makeProposal(overrides?: Partial<CompressionProposal>): CompressionProposal {
   return {

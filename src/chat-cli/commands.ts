@@ -43,13 +43,20 @@ export function parseSlashCommand(input: string): CommandParseResult {
 
     case "trace": {
       const action = restTokens[0]?.toLowerCase();
-      if (action === "on" || action === "off" || action === "view" || action === "raw") {
+      if (
+        action === "on" ||
+        action === "off" ||
+        action === "view" ||
+        action === "raw" ||
+        action === "pack" ||
+        action === "tape"
+      ) {
         return { ok: true, command: { type: "trace", action } };
       }
 
       return {
         ok: false,
-        error: "usage: /trace on|off|view|raw",
+        error: "usage: /trace on|off|view|raw|pack|tape",
       };
     }
 
@@ -97,23 +104,6 @@ export function parseSlashCommand(input: string): CommandParseResult {
     case "state":
       return { ok: true, command: { type: "state" } };
 
-    case "experiment": {
-      const mode = restTokens[0]?.toLowerCase();
-      if (mode === "vcw-only" || mode === "chat-only") {
-        return {
-          ok: true,
-          command: {
-            type: "experiment",
-            mode,
-          },
-        };
-      }
-
-      return {
-        ok: false,
-        error: "usage: /experiment vcw-only|chat-only",
-      };
-    }
 
     case "history": {
       const action = restTokens[0]?.toLowerCase();
@@ -244,12 +234,11 @@ export function formatHelpText(): string {
   return [
     "Commands:",
     "  /help                Show this help",
-    "  /trace on|off|view|raw   Toggle trace, print last trace, or print last raw model output",
+    "  /trace on|off|view|raw|pack|tape Toggle trace and inspect trace/raw/pack/tape",
     "  /stream on|off|status  Toggle streaming output in this session",
     "  /auto on|off|shadow|status  Configure passive symbol recognition mode",
-    "  /experiment vcw-only|chat-only  Quick context-mode reset helpers",
     "  /history clear       Clear conversation history for current thread only",
-    "  /remember <text>     Strict write-intent memory turn",
+    "  /remember <text>     Deterministic memory upsert",
     "  /state               Show current CLI state",
     "  /symbols [limit]     List symbols in the current thread",
     "  /symbols clear       Clear symbols for current thread only",
