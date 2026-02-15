@@ -12,7 +12,7 @@ import {
   type ShowdownLaneGateResult,
 } from "./demo-showdown-gates";
 import {
-  buildSentinelWriteText,
+  buildSentinelSeedTurnText,
   createShowdownScenario,
   type ShowdownLane,
   type ShowdownScenario,
@@ -484,33 +484,30 @@ async function executeLane(options: {
   });
 
   for (const [index, fact] of options.scenario.sentinels.entries()) {
-    const writeText = buildSentinelWriteText(fact);
-    pushCommand(`/remember ${writeText}`);
-    const remember = await runtime.executeCommand({
-      type: "remember",
-      content: writeText,
-    });
-    pushAssistant(remember.output ?? "");
+    const seedTurnText = buildSentinelSeedTurnText(fact);
+    pushUser(seedTurnText);
+    const seedTurn = await runtime.processUserMessage(seedTurnText);
+    pushAssistant(seedTurn.content);
 
     emitProgress(options.progressReporter, {
       kind: "lane",
       lane: options.lane,
-      message: "seed memory",
+      message: "seed tape",
       detail: `${index + 1}/${options.scenario.sentinels.length} ${fact.key}`,
     });
   }
   timelinePush(
     options.timeline,
     "seed",
-    "durable memory seeded",
+    "incident seed events appended to tape",
     options.lane,
-    { symbolSeedCount: options.scenario.sentinels.length },
+    { seedTurnCount: options.scenario.sentinels.length },
   );
   emitProgress(options.progressReporter, {
     kind: "lane",
     lane: options.lane,
-    message: "memory seed complete",
-    detail: `symbols=${options.scenario.sentinels.length}`,
+    message: "seed tape complete",
+    detail: `turns=${options.scenario.sentinels.length}`,
   });
 
   for (const [index, prompt] of options.scenario.distractorPrompts.entries()) {
@@ -959,6 +956,7 @@ export async function runShowdown(
     ...env,
     VCW_PASSIVE_HIGH_WATERMARK: "0.999",
     VCW_PASSIVE_LOW_WATERMARK: "0.95",
+    VCW_PASSIVE_PACK_TOTAL_CHARS: env.VCW_PASSIVE_PACK_TOTAL_CHARS ?? "600",
   };
 
   let compactionOff: LaneExecutionResult;
@@ -1000,6 +998,7 @@ export async function runShowdown(
     ...env,
     VCW_PASSIVE_HIGH_WATERMARK: "0.8",
     VCW_PASSIVE_LOW_WATERMARK: "0.6",
+    VCW_PASSIVE_PACK_TOTAL_CHARS: env.VCW_PASSIVE_PACK_TOTAL_CHARS ?? "320",
   };
 
   let compactionOn: LaneExecutionResult;

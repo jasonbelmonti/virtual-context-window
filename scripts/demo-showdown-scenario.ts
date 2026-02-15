@@ -175,12 +175,13 @@ export function scoreAnswer(answerText: string, expectedToken: string): boolean 
   return containsExactTokenIgnoreCase(answerText, expectedToken);
 }
 
-export function buildSentinelWriteText(fact: ShowdownSentinelFact): string {
+export function buildSentinelSeedTurnText(fact: ShowdownSentinelFact): string {
   return [
-    `Fact key: ${fact.key}.`,
-    `Fact value: ${fact.value}.`,
-    "Store this as durable memory and keep the value exact.",
-  ].join(" ");
+    "Incident seed event (log and acknowledge).",
+    `Field: ${fact.key}`,
+    `Value: ${fact.value}`,
+    "Reply with exactly: seeded",
+  ].join("\n");
 }
 
 export function createShowdownScenario(
