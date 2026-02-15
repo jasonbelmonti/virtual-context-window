@@ -63,10 +63,13 @@ export type AgentLifecycleEvent =
       seq: number;
       timestampMs: number;
       type: "compaction_candidates";
+      triggerSource: "none" | "pressure" | "age_backfill";
       pressureRatio: number;
       pressureState: "normal" | "compact";
       compactionTriggered: boolean;
       compactionReason: "high_watermark" | "below_threshold" | "none";
+      ageBackfillEligibleCount: number;
+      ageBackfillCooldownTurns: number;
       scheduleResult:
         | "none"
         | "in_flight"
@@ -125,11 +128,14 @@ export type AgentTurnTrace = {
       pressureRatio: number;
       pressurePeak: number;
       pressureState: "normal" | "compact";
+      compactionTriggerSource: "none" | "pressure" | "age_backfill";
       compactionDrainAttempted: boolean;
       compactionDrainWaitMs: number;
       compactionDrainTimedOut: boolean;
       compactionTriggered: boolean;
       compactionReason: "high_watermark" | "below_threshold" | "none";
+      ageBackfillEligibleCount: number;
+      ageBackfillCooldownTurns: number;
       compactionJobsTriggered: number;
       compactionSkippedReason:
         | "none"
@@ -141,6 +147,7 @@ export type AgentTurnTrace = {
       proposalsCount: number;
       committedSymbolsCount: number;
       hydratedSymbolsCount: number;
+      fallbackCommitUsed: boolean;
       ignoredModelEventCount: number;
     };
   };

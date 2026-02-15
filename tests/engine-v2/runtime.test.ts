@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import {
-  createVirtualContextEngine,
   createVirtualContextEnginePassive,
+  type EmbeddingProvider,
   InMemorySymbolStore,
   type AssistantGenerateFn,
   type CompressionExtractor,
@@ -10,6 +10,87 @@ import {
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
+
+test("v2 passive hybrid retrieval forwards query embeddings when provider is configured", async () => {
+  const store = new InMemorySymbolStore();
+  await store.upsert("thread-hybrid-embed", {
+    summary: "pager owner",
+    content: "on-call owner is Casey",
+    kind: "fact",
+  });
+
+  const originalSearchWithOptions = store.searchWithOptions?.bind(store);
+  let capturedQueryEmbedding: number[] | undefined;
+  store.searchWithOptions = async (threadId, queryText, k, options) => {
+    capturedQueryEmbedding = options.queryEmbedding;
+    return originalSearchWithOptions!(threadId, queryText, k, options);
+  };
+
+  const embeddingProvider: EmbeddingProvider = {
+    async embed() {
+      return {
+        vector: [0.15, -0.02, 0.88],
+        model: "mock-embed",
+        provider: "mock",
+        latencyMs: 1,
+      };
+    },
+  };
+
+  const engine = createVirtualContextEnginePassive({
+    assistantGenerate: async () => "ack",
+    store,
+    embeddingProvider,
+    retrievalStrategy: "hybrid_v2",
+    packBudget: {
+      totalChars: 420,
+      recentLiteralPairCount: 2,
+    },
+  });
+
+  const response = await engine.processTurn({
+    threadId: "thread-hybrid-embed",
+    messages: [{ role: "user", content: "who is on-call owner?" }],
+  });
+
+  expect(capturedQueryEmbedding).toEqual([0.15, -0.02, 0.88]);
+  expect(response.diagnostics.retrievalDegraded).toBe(false);
+});
+
+test("v2 passive hybrid retrieval fails open when query embedding generation fails", async () => {
+  const store = new InMemorySymbolStore();
+  await store.upsert("thread-hybrid-embed-fail", {
+    summary: "pager owner",
+    content: "on-call owner is Casey",
+    kind: "fact",
+  });
+
+  const embeddingProvider: EmbeddingProvider = {
+    async embed() {
+      throw new Error("embedding_backend_unavailable");
+    },
+  };
+
+  const engine = createVirtualContextEnginePassive({
+    assistantGenerate: async () => "ack",
+    store,
+    embeddingProvider,
+    retrievalStrategy: "hybrid_v2",
+    packBudget: {
+      totalChars: 420,
+      recentLiteralPairCount: 2,
+    },
+  });
+
+  const response = await engine.processTurn({
+    threadId: "thread-hybrid-embed-fail",
+    messages: [{ role: "user", content: "who is on-call owner?" }],
+  });
+
+  expect(response.content).toBe("ack");
+  expect(response.diagnostics.generationCallCount).toBe(1);
+  expect(response.diagnostics.retrievalDegraded).toBe(true);
+});
 
 test("v2 passive compaction is async, ignores model-origin writes, and keeps one-call invariant", async () => {
   const store = new InMemorySymbolStore();
@@ -59,7 +140,6 @@ test("v2 passive compaction is async, ignores model-origin writes, and keeps one
     packBudget: {
       totalChars: 140,
       recentLiteralPairCount: 2,
-      recentLiteralItemMaxChars: 90,
     },
   });
 
@@ -124,8 +204,20 @@ test("v2 passive compaction improves recall under pressure vs baseline v1", asyn
     return `ack ${userText}`;
   };
 
-  const baseline = createVirtualContextEngine({
+  const baseline = createVirtualContextEnginePassive({
     assistantGenerate,
+    store: new InMemorySymbolStore(),
+    extractor: {
+      async extract() {
+        return [];
+      },
+    },
+    highWatermark: 0.2,
+    lowWatermark: 0.1,
+    packBudget: {
+      totalChars: 420,
+      recentLiteralPairCount: 100,
+    },
   });
 
   const passiveStore = new InMemorySymbolStore();
@@ -164,7 +256,6 @@ test("v2 passive compaction improves recall under pressure vs baseline v1", asyn
     packBudget: {
       totalChars: 420,
       recentLiteralPairCount: 2,
-      recentLiteralItemMaxChars: 90,
     },
   });
 
@@ -205,6 +296,114 @@ test("v2 passive compaction improves recall under pressure vs baseline v1", asyn
   expect(passiveFinal.diagnostics.generationCallCount).toBe(1);
 });
 
+test("v2 passive age-backfill recovers latest fact under low pressure with windowed history", async () => {
+  const expectedToken = "VCW-AGE-7781";
+  const assistantGenerate: AssistantGenerateFn = async (input) => {
+    const userText =
+      input.request.messages.findLast((message) => message.role === "user")?.content ?? "";
+
+    if (/latest deployment token/iu.test(userText)) {
+      return input.contextPackText.includes(expectedToken) ? expectedToken : "UNKNOWN";
+    }
+
+    return `ack ${userText}`;
+  };
+
+  const baseline = createVirtualContextEnginePassive({
+    assistantGenerate,
+    store: new InMemorySymbolStore(),
+    extractor: {
+      async extract() {
+        return [];
+      },
+    },
+    highWatermark: 0.95,
+    lowWatermark: 0.7,
+    packBudget: {
+      totalChars: 1_800,
+      recentLiteralPairCount: 100,
+      recallK: 3,
+    },
+  });
+
+  const passiveStore = new InMemorySymbolStore();
+  const extractor: CompressionExtractor = {
+    async extract(input) {
+      const proposals = [];
+      for (const entry of input.entries) {
+        const match = entry.content.match(/VCW-AGE-[A-Z0-9]+/u);
+        if (!match) {
+          continue;
+        }
+        proposals.push({
+          summary: "deployment token",
+          content: `latest deployment token ${match[0]}`,
+          kind: "fact" as const,
+          confidence: 0.95,
+          evidenceSpans: [
+            {
+              entryId: entry.entryId,
+              startOffset: entry.offsetStart,
+              endOffset: entry.offsetEnd,
+            },
+          ],
+        });
+      }
+      return proposals;
+    },
+  };
+
+  const passive = createVirtualContextEnginePassive({
+    assistantGenerate,
+    store: passiveStore,
+    extractor,
+    highWatermark: 0.95,
+    lowWatermark: 0.7,
+    packBudget: {
+      totalChars: 1_800,
+      recentLiteralPairCount: 1,
+      recallK: 3,
+    },
+  });
+
+  const threadBaseline = "thread-baseline-age-backfill";
+  const threadPassive = "thread-passive-age-backfill";
+  const turns = [
+    `incident update latest deployment token is ${expectedToken}`,
+    "distractor update turn one with verbose detail",
+    "distractor update turn two with verbose detail",
+    "distractor update turn three with verbose detail",
+    "distractor update turn four with verbose detail",
+  ];
+
+  for (const turn of turns) {
+    await baseline.processTurn({
+      threadId: threadBaseline,
+      messages: [{ role: "user", content: turn }],
+    });
+    await passive.processTurn({
+      threadId: threadPassive,
+      messages: [{ role: "user", content: turn }],
+    });
+  }
+
+  await sleep(60);
+
+  const baselineFinal = await baseline.processTurn({
+    threadId: threadBaseline,
+    messages: [{ role: "user", content: "what is the latest deployment token" }],
+  });
+  const passiveFinal = await passive.processTurn({
+    threadId: threadPassive,
+    messages: [{ role: "user", content: "what is the latest deployment token" }],
+  });
+
+  expect(baselineFinal.content).toBe("UNKNOWN");
+  expect(passiveFinal.content).toBe(expectedToken);
+  expect(passiveFinal.diagnostics.passive?.compactionJobsTriggered).toBeGreaterThan(0);
+  expect(passiveFinal.diagnostics.generationCallCount).toBe(1);
+});
+
 test("v2 passive reports no_candidates when pressure triggers without compactable tape entries", async () => {
   const threadId = "thread-passive-no-candidates";
   const store = new InMemorySymbolStore();
@@ -231,7 +430,6 @@ test("v2 passive reports no_candidates when pressure triggers without compactabl
     packBudget: {
       totalChars: 140,
       recentLiteralPairCount: 2,
-      recentLiteralItemMaxChars: 80,
       recallK: 4,
     },
   });
@@ -290,7 +488,6 @@ test("v2 passive skip reason reflects the current scheduling decision, not stale
     packBudget: {
       totalChars: 140,
       recentLiteralPairCount: 2,
-      recentLiteralItemMaxChars: 80,
       recallK: 4,
     },
   });
@@ -355,7 +552,6 @@ test("v2 passive waits for in-flight compaction before pre-model retrieval", asy
     packBudget: {
       totalChars: 120,
       recentLiteralPairCount: 1,
-      recentLiteralItemMaxChars: 90,
     },
     compactionDrainTimeoutMs: 600,
     waitForCompactionDrain: true,
@@ -418,7 +614,6 @@ test("v2 passive compaction drain timeout does not block the turn", async () => 
     packBudget: {
       totalChars: 120,
       recentLiteralPairCount: 1,
-      recentLiteralItemMaxChars: 90,
     },
     compactionDrainTimeoutMs: 60,
     waitForCompactionDrain: true,

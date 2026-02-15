@@ -1,4 +1,5 @@
 import type {
+  EmbeddingProvider,
   EngineStage,
   RetrievalStrategy,
   SymbolRecordKind,
@@ -66,7 +67,6 @@ export type PassivePackBudget = {
   focusedItemMaxChars: number;
   recallItemMaxChars: number;
   recallK: number;
-  recentLiteralItemMaxChars: number;
   recentLiteralPairCount: number;
 };
 
@@ -109,23 +109,28 @@ export type PassiveTurnDiagnostics = {
   pressureRatio: number;
   pressurePeak: number;
   pressureState: "normal" | "compact";
+  compactionTriggerSource: "none" | "pressure" | "age_backfill";
   compactionDrainAttempted: boolean;
   compactionDrainWaitMs: number;
   compactionDrainTimedOut: boolean;
   compactionTriggered: boolean;
   compactionReason: "high_watermark" | "below_threshold" | "none";
+  ageBackfillEligibleCount: number;
+  ageBackfillCooldownTurns: number;
   compactionJobsTriggered: number;
   compactionSkippedReason: "none" | "in_flight" | "low_pressure" | "no_candidates" | "extractor_error";
   extractorCalls: number;
   proposalsCount: number;
   committedSymbolsCount: number;
   hydratedSymbolsCount: number;
+  fallbackCommitUsed: boolean;
   ignoredModelEventCount: number;
 };
 
 export type PassiveKernelOptions = {
   assistantGenerate: AssistantGenerateFn;
   store: SymbolStore;
+  embeddingProvider?: EmbeddingProvider;
   telemetry?: TelemetrySink;
   retrievalStrategy?: RetrievalStrategy;
   now?: () => number;
@@ -153,6 +158,9 @@ export type PassiveThreadCounters = {
   compactionInFlight: boolean;
   compactionJob: Promise<void> | null;
   lastCompactionOutcome: "none" | "no_candidates" | "extractor_error";
+  lastCompactionTriggerSource: "none" | "pressure" | "age_backfill";
+  lastAgeBackfillScheduledTurn: number;
+  lastFallbackCommitUsed: boolean;
 };
 
 export interface PassiveVirtualContextEngine extends VirtualContextEngine {}

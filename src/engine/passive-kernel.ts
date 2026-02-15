@@ -49,7 +49,6 @@ const DEFAULT_BUDGET: PassivePackBudget = {
   focusedItemMaxChars: 1_200,
   recallItemMaxChars: 800,
   recallK: 4,
-  recentLiteralItemMaxChars: 260,
   recentLiteralPairCount: 2,
 };
 
@@ -58,6 +57,7 @@ const DEFAULT_LOW_WATERMARK = 0.6;
 const DEFAULT_EXTRACTOR_TIMEOUT_MS = 1_200;
 const DEFAULT_MAX_COMPACTION_PROPOSALS = 4;
 const DEFAULT_COMPACTION_DRAIN_TIMEOUT_MS = 1_200;
+const AGE_BACKFILL_COOLDOWN_TURNS = 2;
 
 const defaultNow = () => Date.now();
 const defaultClock = () => performance.now();
@@ -166,6 +166,9 @@ function createThreadState(): ThreadState {
     compactionInFlight: false,
     compactionJob: null,
     lastCompactionOutcome: "none",
+    lastCompactionTriggerSource: "none",
+    lastAgeBackfillScheduledTurn: 0,
+    lastFallbackCommitUsed: false,
   };
 }
 
@@ -175,6 +178,7 @@ async function selectHydratedCandidates(options: {
   queryTokens: string[];
   retrievalStrategy: "lexical_v1" | "hybrid_v2";
   store: PassiveKernelOptions["store"];
+  embeddingProvider?: PassiveKernelOptions["embeddingProvider"];
   recallK: number;
 }): Promise<{
   candidateSymbolIds: string[];
@@ -183,6 +187,7 @@ async function selectHydratedCandidates(options: {
   lexicalCandidateCount: number;
   vectorCandidateCount: number;
   rerankedCandidateCount: number;
+  retrievalDegraded: boolean;
 }> {
   const candidateLimit = Math.max(4, options.recallK * 2);
 
@@ -190,21 +195,54 @@ async function selectHydratedCandidates(options: {
   let lexicalCandidateCount = 0;
   let vectorCandidateCount = 0;
   let rerankedCandidateCount = 0;
+  let retrievalDegraded =
+    options.retrievalStrategy === "hybrid_v2" && !options.embeddingProvider;
+  let queryEmbedding: number[] | undefined;
+
+  if (
+    options.retrievalStrategy === "hybrid_v2" &&
+    options.embeddingProvider &&
+    options.queryText.trim().length > 0
+  ) {
+    try {
+      const embedded = await options.embeddingProvider.embed({
+        model: "",
+        input: options.queryText,
+        traceId: options.threadId,
+      });
+      if (embedded.vector.length > 0) {
+        queryEmbedding = embedded.vector;
+      } else {
+        retrievalDegraded = true;
+      }
+    } catch {
+      retrievalDegraded = true;
+    }
+  }
 
   if (options.store.searchWithOptions) {
-    const searched = await options.store.searchWithOptions(
-      options.threadId,
-      options.queryText,
-      candidateLimit,
-      {
-        strategy: options.retrievalStrategy,
-        queryTokens: options.queryTokens,
-      },
-    );
-    ids = searched.ids;
-    lexicalCandidateCount = searched.diagnostics.lexicalCandidateCount;
-    vectorCandidateCount = searched.diagnostics.vectorCandidateCount;
-    rerankedCandidateCount = searched.diagnostics.rerankedCandidateCount;
+    try {
+      const searched = await options.store.searchWithOptions(
+        options.threadId,
+        options.queryText,
+        candidateLimit,
+        {
+          strategy: options.retrievalStrategy,
+          queryTokens: options.queryTokens,
+          queryEmbedding,
+        },
+      );
+      ids = searched.ids;
+      lexicalCandidateCount = searched.diagnostics.lexicalCandidateCount;
+      vectorCandidateCount = searched.diagnostics.vectorCandidateCount;
+      rerankedCandidateCount = searched.diagnostics.rerankedCandidateCount;
+    } catch {
+      retrievalDegraded = true;
+      ids = await options.store.search(options.threadId, options.queryText, candidateLimit);
+      lexicalCandidateCount = ids.length;
+      vectorCandidateCount = 0;
+      rerankedCandidateCount = ids.length;
+    }
   } else {
     ids = await options.store.search(options.threadId, options.queryText, candidateLimit);
     lexicalCandidateCount = ids.length;
@@ -246,6 +284,7 @@ async function selectHydratedCandidates(options: {
     lexicalCandidateCount,
     vectorCandidateCount,
     rerankedCandidateCount,
+    retrievalDegraded,
   };
 }
 
@@ -335,10 +374,16 @@ export function createVirtualContextEnginePassive(
     threadId: string,
     queryText: string,
     candidates: ReturnType<typeof tape.listUnsymbolizedCompactionCandidates>,
-  ): Promise<"none" | "no_candidates" | "extractor_error"> {
+  ): Promise<{
+    status: "none" | "no_candidates" | "extractor_error";
+    fallbackCommitUsed: boolean;
+  }> {
     const state = getThreadState(threadId);
     if (candidates.length === 0) {
-      return "no_candidates";
+      return {
+        status: "no_candidates",
+        fallbackCommitUsed: false,
+      };
     }
 
     state.extractorCalls += 1;
@@ -354,61 +399,80 @@ export function createVirtualContextEnginePassive(
       timeoutMs,
     });
 
-    let proposals = extraction.proposals;
-    if (extraction.failed || extraction.timeout || proposals.length === 0) {
+    const commitProposals = async (proposals: typeof extraction.proposals): Promise<number> => {
+      if (proposals.length === 0) {
+        return 0;
+      }
+
+      state.proposalsCount += proposals.length;
+      const commit = await applyPassiveCommitPolicy({
+        threadId,
+        store: options.store,
+        proposals,
+        maxProposals: maxCompactionProposals,
+        candidateEntries: candidates.map((entry) => ({
+          entryId: entry.entryId,
+          offsetStart: entry.offsetStart,
+          offsetEnd: entry.offsetEnd,
+        })),
+      });
+      state.committedSymbolsCount += commit.committedSymbolsCount;
+
+      for (const committed of commit.committedRecords) {
+        const entryIds = [...new Set(committed.evidenceSpans.map((span) => span.entryId))];
+        if (entryIds.length === 0) {
+          continue;
+        }
+        tape.markCompressed(
+          threadId,
+          committed.symbolId,
+          entryIds,
+          committed.evidenceSpans,
+        );
+      }
+
+      return commit.committedSymbolsCount;
+    };
+
+    const primaryProposals = extraction.proposals;
+    let committedSymbols = await commitProposals(primaryProposals);
+    let fallbackCommitUsed = false;
+    const shouldAttemptFallback =
+      extraction.failed ||
+      extraction.timeout ||
+      primaryProposals.length === 0;
+
+    if (shouldAttemptFallback) {
+      fallbackCommitUsed = true;
       try {
         const fallbackProposals = await fallbackExtractor.extract(extractionInput);
-        if (fallbackProposals.length > 0) {
-          proposals = fallbackProposals;
-        } else if (extraction.failed || extraction.timeout) {
-          return "extractor_error";
-        }
+        committedSymbols += await commitProposals(fallbackProposals);
       } catch {
-        if (extraction.failed || extraction.timeout) {
-          return "extractor_error";
-        }
+        // Deterministic fallback is best-effort by policy.
       }
     }
 
-    state.proposalsCount += proposals.length;
-
-    const commit = await applyPassiveCommitPolicy({
-      threadId,
-      store: options.store,
-      proposals,
-      maxProposals: maxCompactionProposals,
-      candidateEntries: candidates.map((entry) => ({
-        entryId: entry.entryId,
-        offsetStart: entry.offsetStart,
-        offsetEnd: entry.offsetEnd,
-      })),
-    });
-    state.committedSymbolsCount += commit.committedSymbolsCount;
-
-    for (const committed of commit.committedRecords) {
-      const entryIds = [...new Set(committed.evidenceSpans.map((span) => span.entryId))];
-      if (entryIds.length === 0) {
-        continue;
-      }
-      tape.markCompressed(
-        threadId,
-        committed.symbolId,
-        entryIds,
-        committed.evidenceSpans,
-      );
+    if ((extraction.failed || extraction.timeout) && committedSymbols === 0) {
+      return {
+        status: "extractor_error",
+        fallbackCommitUsed,
+      };
     }
 
-    return "none";
+    return {
+      status: "none",
+      fallbackCommitUsed,
+    };
   }
 
   function scheduleCompaction(
     threadId: string,
     queryText: string,
-    shouldTrigger: boolean,
+    triggerSource: "none" | "pressure" | "age_backfill",
     candidates: ReturnType<typeof tape.listUnsymbolizedCompactionCandidates>,
   ): "none" | "in_flight" | "low_pressure" | "no_candidates" | "extractor_error" {
     const state = getThreadState(threadId);
-    if (!shouldTrigger) {
+    if (triggerSource === "none") {
       return "low_pressure";
     }
 
@@ -418,20 +482,29 @@ export function createVirtualContextEnginePassive(
 
     if (candidates.length === 0) {
       state.lastCompactionOutcome = "no_candidates";
+      state.lastCompactionTriggerSource = triggerSource;
+      state.lastFallbackCommitUsed = false;
       return "no_candidates";
     }
 
+    state.lastCompactionTriggerSource = triggerSource;
+    if (triggerSource === "age_backfill") {
+      state.lastAgeBackfillScheduledTurn = tape.getTurn(threadId);
+    }
     state.compactionInFlight = true;
     state.compactionJobsTriggered += 1;
     const compactionJob = (async () => {
       try {
-        state.lastCompactionOutcome = await runCompactionJob(
+        const outcome = await runCompactionJob(
           threadId,
           queryText,
           candidates,
         );
+        state.lastCompactionOutcome = outcome.status;
+        state.lastFallbackCommitUsed = outcome.fallbackCommitUsed;
       } catch {
         state.lastCompactionOutcome = "extractor_error";
+        state.lastFallbackCommitUsed = false;
       } finally {
         state.compactionInFlight = false;
         if (state.compactionJob === compactionJob) {
@@ -516,6 +589,9 @@ export function createVirtualContextEnginePassive(
     const preModelStart = clock();
     await markStage("ResolveIdentity", threadId, executeOptions?.streamEvents);
     const compactionDrain = await waitForCompactionDrainIfNeeded(threadId);
+    const fallbackCommitUsedThisTurn = compactionDrain.attempted && !compactionDrain.timedOut
+      ? state.lastFallbackCommitUsed
+      : false;
 
     await markStage("BuildTurnQuery", threadId, executeOptions?.streamEvents);
     const query = await queryBuilder({
@@ -524,10 +600,6 @@ export function createVirtualContextEnginePassive(
     });
 
     await markStage("InjectContextPack", threadId, executeOptions?.streamEvents);
-    const recentEntries = tape.listRecentLiteralEntries(
-      threadId,
-      budget.recentLiteralPairCount,
-    );
     const symbolIndex = await options.store.list(threadId);
     const hydrated = await selectHydratedCandidates({
       threadId,
@@ -535,13 +607,13 @@ export function createVirtualContextEnginePassive(
       queryTokens: query.queryTokens,
       retrievalStrategy,
       store: options.store,
+      embeddingProvider: options.embeddingProvider,
       recallK: budget.recallK,
     });
 
     const compiled = compilePassiveContextPack({
       queryText: query.queryText,
       turnsUsed: query.turnsUsed,
-      recentEntries,
       symbolIndex: symbolIndex.map((item) => ({
         symbolId: item.symbolId,
         summary: item.summary,
@@ -590,7 +662,7 @@ export function createVirtualContextEnginePassive(
         recallInjectedCount: compiled.recallInjectedCount,
         trustedSymbolRefsEnabled,
         trustedRefIdsUsed: 0,
-        retrievalDegraded: false,
+        retrievalDegraded: hydrated.retrievalDegraded,
       },
       executeOptions?.streamEvents,
     );
@@ -709,20 +781,37 @@ export function createVirtualContextEnginePassive(
       budget.recentLiteralPairCount,
       6,
     );
+    const ageBackfillEligibleCount = compactionCandidates.length;
+    const currentTurn = tape.getTurn(threadId);
+    const turnsSinceLastAgeBackfill = state.lastAgeBackfillScheduledTurn > 0
+      ? currentTurn - state.lastAgeBackfillScheduledTurn
+      : Number.POSITIVE_INFINITY;
+    const ageBackfillCooldownTurns = Number.isFinite(turnsSinceLastAgeBackfill)
+      ? Math.max(0, AGE_BACKFILL_COOLDOWN_TURNS - turnsSinceLastAgeBackfill)
+      : 0;
+    const ageBackfillReady = ageBackfillEligibleCount > 0 && ageBackfillCooldownTurns === 0;
+    const compactionTriggerSource: "none" | "pressure" | "age_backfill" = compiled.compactionTriggered
+      ? "pressure"
+      : ageBackfillReady
+        ? "age_backfill"
+        : "none";
     const scheduledCompactionReason = scheduleCompaction(
       threadId,
       query.queryText,
-      compiled.compactionTriggered,
+      compactionTriggerSource,
       compactionCandidates,
     );
     if (executeOptions?.streamEvents) {
       await executeOptions.streamEvents({
         type: "compaction_candidates",
         threadId,
+        triggerSource: compactionTriggerSource,
         pressureRatio: compiled.pressureRatio,
         pressureState: compiled.pressureState,
         compactionTriggered: compiled.compactionTriggered,
         compactionReason: compiled.compactionReason,
+        ageBackfillEligibleCount,
+        ageBackfillCooldownTurns,
         scheduleResult: scheduledCompactionReason,
         candidateEntries: compactionCandidates.map((entry) => ({
           entryId: entry.entryId,
@@ -737,17 +826,21 @@ export function createVirtualContextEnginePassive(
       pressureRatio: compiled.pressureRatio,
       pressurePeak: state.pressurePeak,
       pressureState: compiled.pressureState,
+      compactionTriggerSource,
       compactionDrainAttempted: compactionDrain.attempted,
       compactionDrainWaitMs: compactionDrain.waitMs,
       compactionDrainTimedOut: compactionDrain.timedOut,
       compactionTriggered: compiled.compactionTriggered,
       compactionReason: compiled.compactionReason,
+      ageBackfillEligibleCount,
+      ageBackfillCooldownTurns,
       compactionJobsTriggered: state.compactionJobsTriggered,
       compactionSkippedReason: scheduledCompactionReason,
       extractorCalls: state.extractorCalls,
       proposalsCount: state.proposalsCount,
       committedSymbolsCount: state.committedSymbolsCount,
       hydratedSymbolsCount: compiled.hydratedSymbolsCount,
+      fallbackCommitUsed: fallbackCommitUsedThisTurn,
       ignoredModelEventCount,
     };
 
@@ -791,7 +884,7 @@ export function createVirtualContextEnginePassive(
           preModelMs,
           postModelMs,
           retrievalStrategy,
-          retrievalDegraded: false,
+          retrievalDegraded: hydrated.retrievalDegraded,
           passive: passiveDiagnostics,
         },
       },
@@ -890,6 +983,8 @@ export function createVirtualContextEnginePassive(
           compactMode: state.compactMode,
           compactionInFlight: state.compactionInFlight,
           lastCompactionOutcome: state.lastCompactionOutcome,
+          lastCompactionTriggerSource: state.lastCompactionTriggerSource,
+          lastFallbackCommitUsed: state.lastFallbackCommitUsed,
           counters: {
             compactionJobsTriggered: state.compactionJobsTriggered,
             extractorCalls: state.extractorCalls,

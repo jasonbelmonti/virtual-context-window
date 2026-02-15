@@ -1,4 +1,5 @@
 import type {
+  EmbeddingProvider,
   EngineStage,
   RetrievalStrategy,
   SymbolStore,
@@ -15,6 +16,7 @@ export type { EngineStage } from "./contracts";
 export type EngineKernelOptions = {
   assistantGenerate: AssistantGenerateFn;
   store?: SymbolStore;
+  embeddingProvider?: EmbeddingProvider;
   retrievalStrategy?: RetrievalStrategy;
   telemetry?: TelemetrySink;
   now?: () => number;
@@ -46,6 +48,7 @@ export function createVirtualContextEngine(
   return createVirtualContextEnginePassive({
     assistantGenerate: options.assistantGenerate,
     store,
+    embeddingProvider: options.embeddingProvider,
     telemetry: options.telemetry,
     retrievalStrategy: options.retrievalStrategy,
     now: options.now,
