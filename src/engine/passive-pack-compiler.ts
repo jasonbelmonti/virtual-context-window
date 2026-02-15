@@ -77,7 +77,7 @@ function renderPack(input: {
   let recallIncluded = 0;
 
   const appendSection = (
-    title: "SYMBOL INDEX" | "FOCUSED MEMORY" | "SEMANTIC RECALL" | "RECENT LITERALS",
+    title: "SYMBOL INDEX" | "RELEVANT MEMORY" | "RECENT LITERALS",
     items: string[],
     onIncluded?: () => void,
   ) => {
@@ -121,39 +121,44 @@ function renderPack(input: {
 
   const focusedLines = input.hydratedFocused.map((item) => {
     const content = truncateDeterministic(item.content, input.budget.focusedItemMaxChars);
-    return `- [hydrated] ${item.symbolId}: ${content}\n`;
+    return `- [relevance:high] ${item.symbolId}: ${content}\n`;
   });
 
   const recallLines = input.hydratedRecall.slice(0, input.budget.recallK).map((item) => {
     const content = truncateDeterministic(item.content, input.budget.recallItemMaxChars);
-    return `- ${item.symbolId}: ${content}\n`;
+    return `- [relevance:medium] ${item.symbolId}: ${content}\n`;
   });
   const recentLines = input.recentEntries.map((entry) => {
     const content = truncateDeterministic(entry.content, input.budget.recentLiteralItemMaxChars);
     return `- [${entry.role}] ${entry.entryId}: ${content}\n`;
   });
 
-  const appendFocused = () =>
-    appendSection("FOCUSED MEMORY", focusedLines, () => {
-      focusedIncluded += 1;
-    });
-  const appendRecall = () =>
-    appendSection("SEMANTIC RECALL", recallLines, () => {
+  const memoryLines = [
+    ...focusedLines.map((line) => ({ line, source: "focused" as const })),
+    ...recallLines.map((line) => ({ line, source: "recall" as const })),
+  ];
+  let memoryIncludedCursor = 0;
+  const appendMemory = () =>
+    appendSection("RELEVANT MEMORY", memoryLines.map((item) => item.line), () => {
+      const includedItem = memoryLines[memoryIncludedCursor];
+      memoryIncludedCursor += 1;
+      if (includedItem?.source === "focused") {
+        focusedIncluded += 1;
+        return;
+      }
       recallIncluded += 1;
     });
   const appendRecent = () => appendSection("RECENT LITERALS", recentLines);
   const appendIndex = () => appendSection("SYMBOL INDEX", indexLines);
 
   if (input.prioritizeHydrated) {
-    appendFocused();
-    appendRecall();
+    appendMemory();
     appendRecent();
     appendIndex();
   } else {
     appendRecent();
     appendIndex();
-    appendFocused();
-    appendRecall();
+    appendMemory();
   }
 
   const text = lines.join("").trimEnd();

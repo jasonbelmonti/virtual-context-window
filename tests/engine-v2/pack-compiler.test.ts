@@ -17,7 +17,7 @@ function entry(id: string, content: string): EventTapeEntry {
 
 test("pack compiler hides hydrated symbols from index and enforces budget", () => {
   const budget = {
-    totalChars: 260,
+    totalChars: 500,
     symbolIndexLimit: 6,
     indexItemMaxChars: 80,
     focusedItemMaxChars: 90,
@@ -53,16 +53,17 @@ test("pack compiler hides hydrated symbols from index and enforces budget", () =
       },
     ],
     budget,
-    highWatermark: 0.9,
-    lowWatermark: 0.6,
+    highWatermark: 2,
+    lowWatermark: 1,
     compactMode: false,
     lexicalCandidateCount: 3,
     vectorCandidateCount: 1,
     rerankedCandidateCount: 3,
   });
 
-  expect(result.text).toContain("FOCUSED MEMORY");
-  expect(result.text).toContain("SEMANTIC RECALL");
+  expect(result.text).toContain("RELEVANT MEMORY");
+  expect(result.text).toContain("[relevance:high] sym_focus:");
+  expect(result.text).toContain("[relevance:medium] sym_recall:");
   expect(result.text).toContain("RECENT LITERALS");
   expect(result.text).toContain("- [user] evt_1: we saw unlock code during incident");
   expect(result.text).toContain("- sym_other:");
