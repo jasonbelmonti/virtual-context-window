@@ -164,3 +164,35 @@ test("runtime emits lifecycle events for retrieval and compaction candidates", a
     lifecycleEvents,
   );
 });
+
+test("agent runtime forwards history window metadata into passive diagnostics", async () => {
+  const runtime = new AgentCliRuntime({
+    mock: true,
+    passiveHotOverlapTurns: 1,
+  });
+
+  await runtime.executeCommand({
+    type: "history_limit",
+    turns: 5,
+  });
+  const turn = await runtime.processUserMessage("metadata alignment check");
+
+  expect(turn.trace.diagnostics.passive?.historyWindowTurns).toBe(5);
+  expect(turn.trace.diagnostics.passive?.hotWindowOverlapTurns).toBe(1);
+  expect(turn.trace.diagnostics.passive?.effectiveHotWindowPairs).toBe(4);
+});
+
+test("agent runtime surfaces configured age cadence in passive diagnostics", async () => {
+  const runtime = new AgentCliRuntime({
+    mock: true,
+    passiveAgeCadence: 3,
+  });
+
+  await runtime.processUserMessage("turn one");
+  const second = await runtime.processUserMessage("turn two");
+  const third = await runtime.processUserMessage("turn three");
+
+  expect(second.trace.diagnostics.passive?.ageBackfillCooldownTurnsConfigured).toBe(3);
+  expect(second.trace.diagnostics.passive?.compactionTriggerSource).toBe("age_backfill");
+  expect(third.trace.diagnostics.passive?.ageBackfillCooldownTurns).toBe(2);
+});

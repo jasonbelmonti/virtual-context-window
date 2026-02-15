@@ -49,6 +49,9 @@ const DEFAULT_SYMBOL_LIST_LIMIT = 20;
 const DEFAULT_AUTO_ACTIVE_MIN_SCORE = 0.84;
 const DEFAULT_AUTO_SHADOW_MIN_SCORE = 0.5;
 const DEFAULT_AUTO_MAX_EVENTS_PER_TURN = 1;
+const DEFAULT_PASSIVE_HOT_OVERLAP_TURNS = 1;
+const DEFAULT_PASSIVE_MAX_COMPACTION_PROPOSALS = 3;
+const DEFAULT_PASSIVE_AGE_BACKFILL_COOLDOWN_TURNS = 3;
 
 type AgentProvider = "ollama" | "openai_responses";
 type AgentAssistantMetadata =
@@ -190,6 +193,9 @@ export type AgentCliRuntimeOptions = {
   provider?: AgentProvider;
   streamEnabled?: boolean;
   traceEnabled?: boolean;
+  passiveHotOverlapTurns?: number;
+  passiveMaxWrites?: number;
+  passiveAgeCadence?: number;
   threadId?: string;
   env?: Record<string, string | undefined>;
   assistantGenerate?: AssistantGenerateFn;
@@ -229,6 +235,9 @@ export class AgentCliRuntime {
   private traceEnabled: boolean;
   private autoSymbolMode: AutoSymbolMode;
   private historyTurnLimit: number | null;
+  private readonly passiveHotOverlapTurns: number;
+  private readonly passiveMaxCompactionProposals: number;
+  private readonly passiveAgeBackfillCooldownTurns: number;
   private readonly recognizerConfig: RecognizerConfig;
   private threadId: string;
   private activeStages: EngineStage[] | null = null;
@@ -256,6 +265,24 @@ export class AgentCliRuntime {
     this.traceEnabled = options.traceEnabled ?? false;
     this.autoSymbolMode = parseAutoSymbolMode(env.VCW_AUTO_SYMBOL_MODE, "active");
     this.historyTurnLimit = parseOptionalPositiveInt(env.VCW_HISTORY_MAX_TURNS);
+    this.passiveHotOverlapTurns =
+      options.passiveHotOverlapTurns ??
+      parsePositiveInt(
+        env.VCW_PASSIVE_HOT_OVERLAP_TURNS,
+        DEFAULT_PASSIVE_HOT_OVERLAP_TURNS,
+      );
+    this.passiveMaxCompactionProposals =
+      options.passiveMaxWrites ??
+      parsePositiveInt(
+        env.VCW_PASSIVE_MAX_COMPACTION_PROPOSALS,
+        DEFAULT_PASSIVE_MAX_COMPACTION_PROPOSALS,
+      );
+    this.passiveAgeBackfillCooldownTurns =
+      options.passiveAgeCadence ??
+      parsePositiveInt(
+        env.VCW_PASSIVE_AGE_BACKFILL_COOLDOWN_TURNS,
+        DEFAULT_PASSIVE_AGE_BACKFILL_COOLDOWN_TURNS,
+      );
     this.recognizerConfig = {
       activeMinScore: parsePositiveFloat(
         env.VCW_AUTO_SYMBOL_ACTIVE_MIN_SCORE,
@@ -453,6 +480,9 @@ export class AgentCliRuntime {
       retrievalStrategy: "hybrid_v2",
       highWatermark: passiveHighWatermark,
       lowWatermark: passiveLowWatermark,
+      maxCompactionProposals: this.passiveMaxCompactionProposals,
+      hotWindowOverlapTurns: this.passiveHotOverlapTurns,
+      ageBackfillCooldownTurns: this.passiveAgeBackfillCooldownTurns,
       packBudget: {
         totalChars: parsePositiveInt(env.VCW_PASSIVE_PACK_TOTAL_CHARS, 420),
         recentLiteralPairCount: 2,
@@ -615,11 +645,17 @@ export class AgentCliRuntime {
         pressureRatio: number;
         pressurePeak: number;
         pressureState: "normal" | "compact";
+        historyWindowTurns: number;
+        hotWindowOverlapTurns: number;
+        effectiveHotWindowPairs: number;
         compactionDrainAttempted: boolean;
         compactionDrainWaitMs: number;
         compactionDrainTimedOut: boolean;
         compactionTriggered: boolean;
         compactionReason: "high_watermark" | "below_threshold" | "none";
+        ageBackfillEligibleCount: number;
+        ageBackfillCooldownTurns: number;
+        ageBackfillCooldownTurnsConfigured: number;
         compactionJobsTriggered: number;
         compactionSkippedReason:
           | "none"
@@ -631,6 +667,8 @@ export class AgentCliRuntime {
         proposalsCount: number;
         committedSymbolsCount: number;
         hydratedSymbolsCount: number;
+        maxCompactionProposalsConfigured: number;
+        fallbackCommitUsed: boolean;
         ignoredModelEventCount: number;
       };
     };
@@ -735,13 +773,16 @@ export class AgentCliRuntime {
     const historyForRequest = this.getWindowedHistory(thread.messages);
     const requestMessages = [...historyForRequest, { role: "user" as const, content: text }];
     const autoDecision = await this.buildAutoDecision(text);
-    const metadata: Record<string, unknown> | undefined = this.autoSymbolMode !== "off"
-      ? {
-          vcwAutoSymbol: toAutoSymbolMetadataEnvelope(
-            autoDecision ?? this.emptyAutoDecision(),
-          ),
-        }
-      : undefined;
+    const metadata: Record<string, unknown> = {};
+    if (this.autoSymbolMode !== "off") {
+      metadata.vcwAutoSymbol = toAutoSymbolMetadataEnvelope(
+        autoDecision ?? this.emptyAutoDecision(),
+      );
+    }
+    if (this.historyTurnLimit && this.historyTurnLimit > 0) {
+      metadata.vcwHistoryTurnLimit = this.historyTurnLimit;
+    }
+    const requestMetadata = Object.keys(metadata).length > 0 ? metadata : undefined;
 
     this.activeStages = [];
     this.activeTelemetry = [];
@@ -756,7 +797,7 @@ export class AgentCliRuntime {
       const request = {
         threadId: this.threadId,
         messages: requestMessages,
-        metadata,
+        metadata: requestMetadata,
       };
       let response:
         | {
@@ -774,6 +815,9 @@ export class AgentCliRuntime {
                 pressurePeak: number;
                 pressureState: "normal" | "compact";
                 compactionTriggerSource: "none" | "pressure" | "age_backfill";
+                historyWindowTurns: number;
+                hotWindowOverlapTurns: number;
+                effectiveHotWindowPairs: number;
                 compactionDrainAttempted: boolean;
                 compactionDrainWaitMs: number;
                 compactionDrainTimedOut: boolean;
@@ -781,6 +825,7 @@ export class AgentCliRuntime {
                 compactionReason: "high_watermark" | "below_threshold" | "none";
                 ageBackfillEligibleCount: number;
                 ageBackfillCooldownTurns: number;
+                ageBackfillCooldownTurnsConfigured: number;
                 compactionJobsTriggered: number;
                 compactionSkippedReason:
                   | "none"
@@ -792,6 +837,7 @@ export class AgentCliRuntime {
                 proposalsCount: number;
                 committedSymbolsCount: number;
                 hydratedSymbolsCount: number;
+                maxCompactionProposalsConfigured: number;
                 fallbackCommitUsed: boolean;
                 ignoredModelEventCount: number;
               };
@@ -829,6 +875,8 @@ export class AgentCliRuntime {
               compactionReason: event.compactionReason,
               ageBackfillEligibleCount: event.ageBackfillEligibleCount,
               ageBackfillCooldownTurns: event.ageBackfillCooldownTurns,
+              historyWindowTurns: event.historyWindowTurns,
+              effectiveHotWindowPairs: event.effectiveHotWindowPairs,
               scheduleResult: event.scheduleResult,
               candidateEntries: event.candidateEntries,
             });
@@ -967,6 +1015,9 @@ export class AgentCliRuntime {
             `stream=${state.streamEnabled ? "on" : "off"}`,
             `autoSymbolMode=${state.autoSymbolMode}`,
             `historyTurnLimit=${state.historyTurnLimit ?? "off"}`,
+            `passiveHotOverlapTurns=${this.passiveHotOverlapTurns}`,
+            `passiveMaxCompactionProposals=${this.passiveMaxCompactionProposals}`,
+            `passiveAgeBackfillCooldownTurns=${this.passiveAgeBackfillCooldownTurns}`,
             `messageCount=${state.messageCount}`,
             `symbolCount=${symbolCount}`,
             `compactMode=${inspection?.passive.compactMode ?? false}`,

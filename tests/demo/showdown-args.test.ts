@@ -12,6 +12,9 @@ test("parseShowdownArgs applies upgraded defaults", () => {
   expect(parsed.scenario).toBe("incident_response");
   expect(parsed.maxRetries).toBe(2);
   expect(parsed.runs).toBe(1);
+  expect(parsed.passiveHotOverlapTurns).toBeUndefined();
+  expect(parsed.passiveMaxWrites).toBeUndefined();
+  expect(parsed.passiveAgeCadence).toBeUndefined();
   expect(parsed.seed).toBeUndefined();
   expect(parsed.outputDir).toBeUndefined();
 });
@@ -36,6 +39,12 @@ test("parseShowdownArgs parses explicit overrides", () => {
     "seed-123",
     "--output-dir",
     "/tmp/demo-dir",
+    "--passive-hot-overlap",
+    "1",
+    "--passive-max-writes",
+    "3",
+    "--passive-age-cadence",
+    "3",
   ]);
 
   expect(parsed.provider).toBe("openai_responses");
@@ -45,6 +54,9 @@ test("parseShowdownArgs parses explicit overrides", () => {
   expect(parsed.scenario).toBe("incident_response");
   expect(parsed.maxRetries).toBe(4);
   expect(parsed.runs).toBe(5);
+  expect(parsed.passiveHotOverlapTurns).toBe(1);
+  expect(parsed.passiveMaxWrites).toBe(3);
+  expect(parsed.passiveAgeCadence).toBe(3);
   expect(parsed.seed).toBe("seed-123");
   expect(parsed.outputDir).toBe("/tmp/demo-dir");
 });

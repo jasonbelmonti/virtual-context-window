@@ -109,6 +109,9 @@ export type PassiveTurnDiagnostics = {
   pressureRatio: number;
   pressurePeak: number;
   pressureState: "normal" | "compact";
+  historyWindowTurns: number;
+  hotWindowOverlapTurns: number;
+  effectiveHotWindowPairs: number;
   compactionTriggerSource: "none" | "pressure" | "age_backfill";
   compactionDrainAttempted: boolean;
   compactionDrainWaitMs: number;
@@ -117,12 +120,14 @@ export type PassiveTurnDiagnostics = {
   compactionReason: "high_watermark" | "below_threshold" | "none";
   ageBackfillEligibleCount: number;
   ageBackfillCooldownTurns: number;
+  ageBackfillCooldownTurnsConfigured: number;
   compactionJobsTriggered: number;
   compactionSkippedReason: "none" | "in_flight" | "low_pressure" | "no_candidates" | "extractor_error";
   extractorCalls: number;
   proposalsCount: number;
   committedSymbolsCount: number;
   hydratedSymbolsCount: number;
+  maxCompactionProposalsConfigured: number;
   fallbackCommitUsed: boolean;
   ignoredModelEventCount: number;
 };
@@ -142,6 +147,8 @@ export type PassiveKernelOptions = {
   highWatermark?: number;
   lowWatermark?: number;
   maxCompactionProposals?: number;
+  hotWindowOverlapTurns?: number;
+  ageBackfillCooldownTurns?: number;
   packBudget?: Partial<PassivePackBudget>;
   maxEventTapeEntriesPerThread?: number;
   compactionDrainTimeoutMs?: number;
@@ -161,6 +168,8 @@ export type PassiveThreadCounters = {
   lastCompactionTriggerSource: "none" | "pressure" | "age_backfill";
   lastAgeBackfillScheduledTurn: number;
   lastFallbackCommitUsed: boolean;
+  lastHistoryWindowTurns: number;
+  lastEffectiveHotWindowPairs: number;
 };
 
 export interface PassiveVirtualContextEngine extends VirtualContextEngine {}

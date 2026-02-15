@@ -38,7 +38,8 @@ export const VCW_AGENT_TOOL_DEFINITIONS: VcwAgentToolDefinition[] = [
   },
   {
     name: "vcw_get_symbol",
-    description: "Get a symbol by id from the current thread.",
+    description:
+      "Get a symbol by id from the current thread. Only use IDs returned by vcw_list_symbols or vcw_search_symbols.",
     schema: {
       type: "object",
       additionalProperties: false,
@@ -243,8 +244,14 @@ async function executeGetSymbol(
 
   const record = await context.store.get(context.threadId, symbolId);
   if (!record) {
+    const listed = await context.store.list(context.threadId);
     return {
       found: false,
+      requestedSymbolId: symbolId,
+      availableCount: listed.length,
+      suggestedSymbolIds: listed.slice(0, 5).map((item) => item.symbolId),
+      guidance:
+        "Symbol not found in current thread. Call vcw_list_symbols or vcw_search_symbols first and only use returned IDs.",
     };
   }
 

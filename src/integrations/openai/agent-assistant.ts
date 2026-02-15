@@ -87,6 +87,7 @@ function buildAgentPrompt(input: AssistantGenerateInput): string {
     "",
     "### TOOL_POLICY",
     "- Use VCW tools for memory reads and web lookup.",
+    "- Call vcw_get_symbol only for IDs returned by vcw_list_symbols or vcw_search_symbols in this turn.",
     "- Never fabricate tool results.",
     "- Keep user-facing answers concise and factual.",
     "",

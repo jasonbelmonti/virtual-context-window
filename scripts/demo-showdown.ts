@@ -31,6 +31,9 @@ export type ShowdownCliOptions = {
   historyLimit: number;
   distractorTurns: number;
   stream: boolean;
+  passiveHotOverlapTurns?: number;
+  passiveMaxWrites?: number;
+  passiveAgeCadence?: number;
   outputDir?: string;
   scenario: ShowdownScenarioKind;
   maxRetries: number;
@@ -131,6 +134,9 @@ type RunShowdownOptions = {
   historyLimit: number;
   distractorTurns: number;
   stream: boolean;
+  passiveHotOverlapTurns?: number;
+  passiveMaxWrites?: number;
+  passiveAgeCadence?: number;
   outputDir: string;
   scenarioKind?: ShowdownScenarioKind;
   maxRetries?: number;
@@ -275,6 +281,33 @@ export function parseShowdownArgs(argv: string[]): ShowdownCliOptions {
         throw new Error("invalid_output_dir:empty");
       }
       parsed.outputDir = value;
+      index += 1;
+      continue;
+    }
+
+    if (token === "--passive-hot-overlap") {
+      parsed.passiveHotOverlapTurns = parsePositiveInt(
+        argv[index + 1] ?? "",
+        "passive_hot_overlap",
+      );
+      index += 1;
+      continue;
+    }
+
+    if (token === "--passive-max-writes") {
+      parsed.passiveMaxWrites = parsePositiveInt(
+        argv[index + 1] ?? "",
+        "passive_max_writes",
+      );
+      index += 1;
+      continue;
+    }
+
+    if (token === "--passive-age-cadence") {
+      parsed.passiveAgeCadence = parsePositiveInt(
+        argv[index + 1] ?? "",
+        "passive_age_cadence",
+      );
       index += 1;
       continue;
     }
@@ -1135,6 +1168,21 @@ export async function runShowdown(
       options.env?.VCW_AGENT_MAX_TOOL_CALLS ??
       process.env.VCW_AGENT_MAX_TOOL_CALLS ??
       DEFAULT_TOOL_CALL_LIMIT,
+    VCW_PASSIVE_HOT_OVERLAP_TURNS:
+      options.passiveHotOverlapTurns !== undefined
+        ? String(options.passiveHotOverlapTurns)
+        : options.env?.VCW_PASSIVE_HOT_OVERLAP_TURNS ??
+          process.env.VCW_PASSIVE_HOT_OVERLAP_TURNS,
+    VCW_PASSIVE_MAX_COMPACTION_PROPOSALS:
+      options.passiveMaxWrites !== undefined
+        ? String(options.passiveMaxWrites)
+        : options.env?.VCW_PASSIVE_MAX_COMPACTION_PROPOSALS ??
+          process.env.VCW_PASSIVE_MAX_COMPACTION_PROPOSALS,
+    VCW_PASSIVE_AGE_BACKFILL_COOLDOWN_TURNS:
+      options.passiveAgeCadence !== undefined
+        ? String(options.passiveAgeCadence)
+        : options.env?.VCW_PASSIVE_AGE_BACKFILL_COOLDOWN_TURNS ??
+          process.env.VCW_PASSIVE_AGE_BACKFILL_COOLDOWN_TURNS,
   };
 
   const startedAt = performance.now();
@@ -1267,6 +1315,9 @@ export async function runShowdownCli(argv: string[]): Promise<number> {
       maxRetries: parsed.maxRetries,
       runs: parsed.runs,
       seed: parsed.seed,
+      passiveHotOverlapTurns: parsed.passiveHotOverlapTurns,
+      passiveMaxWrites: parsed.passiveMaxWrites,
+      passiveAgeCadence: parsed.passiveAgeCadence,
       progressReporter,
     });
 

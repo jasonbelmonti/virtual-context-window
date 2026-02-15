@@ -55,6 +55,19 @@ test("agent tools list/get/search symbols for the current thread", async () => {
   expect(get.found).toBe(true);
   expect(get.symbol?.symbolId).toBe("sym_1");
 
+  const missing = (await findTool(tools, "vcw_get_symbol").invoke({
+    symbol_id: "sym_missing",
+  })) as {
+    found: boolean;
+    requestedSymbolId?: string;
+    suggestedSymbolIds?: string[];
+    guidance?: string;
+  };
+  expect(missing.found).toBe(false);
+  expect(missing.requestedSymbolId).toBe("sym_missing");
+  expect(missing.suggestedSymbolIds?.length).toBeGreaterThan(0);
+  expect(missing.guidance).toContain("only use returned IDs");
+
   const search = (await findTool(tools, "vcw_search_symbols").invoke({
     query: "reinventing core business",
     limit: 3,

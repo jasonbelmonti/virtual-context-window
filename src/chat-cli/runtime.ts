@@ -46,6 +46,9 @@ const DEFAULT_SYMBOL_LIST_LIMIT = 20;
 const DEFAULT_AUTO_ACTIVE_MIN_SCORE = 0.84;
 const DEFAULT_AUTO_SHADOW_MIN_SCORE = 0.5;
 const DEFAULT_AUTO_MAX_EVENTS_PER_TURN = 1;
+const DEFAULT_PASSIVE_HOT_OVERLAP_TURNS = 1;
+const DEFAULT_PASSIVE_MAX_COMPACTION_PROPOSALS = 3;
+const DEFAULT_PASSIVE_AGE_BACKFILL_COOLDOWN_TURNS = 3;
 
 type ChatProvider = "ollama" | "openai_responses";
 type AssistantTraceMetadata =
@@ -211,6 +214,9 @@ export type ChatCliRuntimeOptions = {
   streamEnabled?: boolean;
   traceEnabled?: boolean;
   trustedSymbolRefs?: boolean;
+  passiveHotOverlapTurns?: number;
+  passiveMaxWrites?: number;
+  passiveAgeCadence?: number;
   threadId?: string;
   env?: Record<string, string | undefined>;
   assistantGenerate?: AssistantGenerateFn;
@@ -226,6 +232,9 @@ export class ChatCliRuntime {
   private traceEnabled: boolean;
   private trustedSymbolRefs: boolean;
   private autoSymbolMode: AutoSymbolMode;
+  private readonly passiveHotOverlapTurns: number;
+  private readonly passiveMaxCompactionProposals: number;
+  private readonly passiveAgeBackfillCooldownTurns: number;
   private readonly recognizerConfig: RecognizerConfig;
   private threadId: string;
   private activeStages: EngineStage[] | null = null;
@@ -251,6 +260,24 @@ export class ChatCliRuntime {
       env.VCW_AUTO_SYMBOL_MODE,
       "shadow",
     );
+    this.passiveHotOverlapTurns =
+      options.passiveHotOverlapTurns ??
+      parsePositiveInt(
+        env.VCW_PASSIVE_HOT_OVERLAP_TURNS,
+        DEFAULT_PASSIVE_HOT_OVERLAP_TURNS,
+      );
+    this.passiveMaxCompactionProposals =
+      options.passiveMaxWrites ??
+      parsePositiveInt(
+        env.VCW_PASSIVE_MAX_COMPACTION_PROPOSALS,
+        DEFAULT_PASSIVE_MAX_COMPACTION_PROPOSALS,
+      );
+    this.passiveAgeBackfillCooldownTurns =
+      options.passiveAgeCadence ??
+      parsePositiveInt(
+        env.VCW_PASSIVE_AGE_BACKFILL_COOLDOWN_TURNS,
+        DEFAULT_PASSIVE_AGE_BACKFILL_COOLDOWN_TURNS,
+      );
     this.recognizerConfig = {
       activeMinScore: parsePositiveFloat(
         env.VCW_AUTO_SYMBOL_ACTIVE_MIN_SCORE,
@@ -355,6 +382,9 @@ export class ChatCliRuntime {
       retrievalStrategy: "hybrid_v2",
       highWatermark: passiveHighWatermark,
       lowWatermark: passiveLowWatermark,
+      maxCompactionProposals: this.passiveMaxCompactionProposals,
+      hotWindowOverlapTurns: this.passiveHotOverlapTurns,
+      ageBackfillCooldownTurns: this.passiveAgeBackfillCooldownTurns,
       packBudget: {
         totalChars: parsePositiveInt(env.VCW_PASSIVE_PACK_TOTAL_CHARS, 420),
         recentLiteralPairCount: 2,
@@ -502,11 +532,17 @@ export class ChatCliRuntime {
         pressureRatio: number;
         pressurePeak: number;
         pressureState: "normal" | "compact";
+        historyWindowTurns: number;
+        hotWindowOverlapTurns: number;
+        effectiveHotWindowPairs: number;
         compactionDrainAttempted: boolean;
         compactionDrainWaitMs: number;
         compactionDrainTimedOut: boolean;
         compactionTriggered: boolean;
         compactionReason: "high_watermark" | "below_threshold" | "none";
+        ageBackfillEligibleCount: number;
+        ageBackfillCooldownTurns: number;
+        ageBackfillCooldownTurnsConfigured: number;
         compactionJobsTriggered: number;
         compactionSkippedReason:
           | "none"
@@ -518,6 +554,8 @@ export class ChatCliRuntime {
         proposalsCount: number;
         committedSymbolsCount: number;
         hydratedSymbolsCount: number;
+        maxCompactionProposalsConfigured: number;
+        fallbackCommitUsed: boolean;
         ignoredModelEventCount: number;
       };
     };
@@ -624,6 +662,9 @@ export class ChatCliRuntime {
                 pressurePeak: number;
                 pressureState: "normal" | "compact";
                 compactionTriggerSource: "none" | "pressure" | "age_backfill";
+                historyWindowTurns: number;
+                hotWindowOverlapTurns: number;
+                effectiveHotWindowPairs: number;
                 compactionDrainAttempted: boolean;
                 compactionDrainWaitMs: number;
                 compactionDrainTimedOut: boolean;
@@ -631,6 +672,7 @@ export class ChatCliRuntime {
                 compactionReason: "high_watermark" | "below_threshold" | "none";
                 ageBackfillEligibleCount: number;
                 ageBackfillCooldownTurns: number;
+                ageBackfillCooldownTurnsConfigured: number;
                 compactionJobsTriggered: number;
                 compactionSkippedReason:
                   | "none"
@@ -642,6 +684,7 @@ export class ChatCliRuntime {
                 proposalsCount: number;
                 committedSymbolsCount: number;
                 hydratedSymbolsCount: number;
+                maxCompactionProposalsConfigured: number;
                 fallbackCommitUsed: boolean;
                 ignoredModelEventCount: number;
               };
@@ -815,6 +858,9 @@ export class ChatCliRuntime {
             `stream=${state.streamEnabled ? "on" : "off"}`,
             `trustedSymbolRefs=${state.trustedSymbolRefs}`,
             `autoSymbolMode=${state.autoSymbolMode}`,
+            `passiveHotOverlapTurns=${this.passiveHotOverlapTurns}`,
+            `passiveMaxCompactionProposals=${this.passiveMaxCompactionProposals}`,
+            `passiveAgeBackfillCooldownTurns=${this.passiveAgeBackfillCooldownTurns}`,
             `messageCount=${state.messageCount}`,
             `symbolCount=${symbolCount}`,
             `activeMode=${activeMode}`,

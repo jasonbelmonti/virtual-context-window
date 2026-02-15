@@ -22,7 +22,7 @@ test("fallback commit path is used when extractor yields no proposals", async ()
     lowWatermark: 0.7,
     packBudget: {
       totalChars: 1_600,
-      recentLiteralPairCount: 1,
+      recentLiteralPairCount: 2,
       recallK: 3,
     },
   });
@@ -87,7 +87,7 @@ test("fallback is not used when primary proposals are present but rejected by co
     lowWatermark: 0.7,
     packBudget: {
       totalChars: 1_600,
-      recentLiteralPairCount: 1,
+      recentLiteralPairCount: 2,
       recallK: 3,
     },
   });

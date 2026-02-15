@@ -57,7 +57,8 @@ const DEFAULT_LOW_WATERMARK = 0.6;
 const DEFAULT_EXTRACTOR_TIMEOUT_MS = 1_200;
 const DEFAULT_MAX_COMPACTION_PROPOSALS = 4;
 const DEFAULT_COMPACTION_DRAIN_TIMEOUT_MS = 1_200;
-const AGE_BACKFILL_COOLDOWN_TURNS = 2;
+const DEFAULT_AGE_BACKFILL_COOLDOWN_TURNS = 3;
+const DEFAULT_HOT_WINDOW_OVERLAP_TURNS = 1;
 
 const defaultNow = () => Date.now();
 const defaultClock = () => performance.now();
@@ -71,6 +72,31 @@ function normalizeWatermark(value: number, fallback: number): number {
     return fallback;
   }
   return value;
+}
+
+function normalizePositiveInt(value: number | undefined, fallback: number): number {
+  if (!Number.isFinite(value) || (value ?? 0) <= 0) {
+    return fallback;
+  }
+  return Math.floor(value as number);
+}
+
+function resolveHistoryWindowTurns(
+  request: VirtualContextTurnRequest,
+  fallback: number,
+): number {
+  const metadata = request.metadata as Record<string, unknown> | undefined;
+  const raw = metadata?.vcwHistoryTurnLimit;
+  if (typeof raw === "number" && Number.isFinite(raw) && raw > 0) {
+    return Math.floor(raw);
+  }
+  if (typeof raw === "string") {
+    const parsed = Number.parseInt(raw, 10);
+    if (Number.isFinite(parsed) && parsed > 0) {
+      return parsed;
+    }
+  }
+  return Math.max(0, fallback);
 }
 
 function getLastUserText(request: VirtualContextTurnRequest): string {
@@ -169,6 +195,11 @@ function createThreadState(): ThreadState {
     lastCompactionTriggerSource: "none",
     lastAgeBackfillScheduledTurn: 0,
     lastFallbackCommitUsed: false,
+    lastHistoryWindowTurns: DEFAULT_BUDGET.recentLiteralPairCount,
+    lastEffectiveHotWindowPairs: Math.max(
+      0,
+      DEFAULT_BUDGET.recentLiteralPairCount - DEFAULT_HOT_WINDOW_OVERLAP_TURNS,
+    ),
   };
 }
 
@@ -179,6 +210,7 @@ async function selectHydratedCandidates(options: {
   retrievalStrategy: "lexical_v1" | "hybrid_v2";
   store: PassiveKernelOptions["store"];
   embeddingProvider?: PassiveKernelOptions["embeddingProvider"];
+  symbolIndexCount: number;
   recallK: number;
 }): Promise<{
   candidateSymbolIds: string[];
@@ -195,9 +227,21 @@ async function selectHydratedCandidates(options: {
   let lexicalCandidateCount = 0;
   let vectorCandidateCount = 0;
   let rerankedCandidateCount = 0;
-  let retrievalDegraded =
-    options.retrievalStrategy === "hybrid_v2" && !options.embeddingProvider;
+  let retrievalDegraded = false;
   let queryEmbedding: number[] | undefined;
+
+  // Nothing to retrieve: skip embedding calls and search work.
+  if (options.symbolIndexCount <= 0 || options.recallK <= 0) {
+    return {
+      candidateSymbolIds: [],
+      focused: [],
+      recall: [],
+      lexicalCandidateCount: 0,
+      vectorCandidateCount: 0,
+      rerankedCandidateCount: 0,
+      retrievalDegraded: false,
+    };
+  }
 
   if (
     options.retrievalStrategy === "hybrid_v2" &&
@@ -354,6 +398,14 @@ export function createVirtualContextEnginePassive(
   const maxCompactionProposals = Math.max(
     1,
     options.maxCompactionProposals ?? DEFAULT_MAX_COMPACTION_PROPOSALS,
+  );
+  const hotWindowOverlapTurns = normalizePositiveInt(
+    options.hotWindowOverlapTurns,
+    DEFAULT_HOT_WINDOW_OVERLAP_TURNS,
+  );
+  const ageBackfillCooldownTurnsConfigured = normalizePositiveInt(
+    options.ageBackfillCooldownTurns,
+    DEFAULT_AGE_BACKFILL_COOLDOWN_TURNS,
   );
   const budget: PassivePackBudget = {
     ...DEFAULT_BUDGET,
@@ -578,6 +630,16 @@ export function createVirtualContextEnginePassive(
     const state = getThreadState(threadId);
 
     tape.startTurn(threadId);
+    const historyWindowTurns = resolveHistoryWindowTurns(
+      request,
+      budget.recentLiteralPairCount,
+    );
+    const effectiveHotWindowPairs = Math.max(
+      0,
+      historyWindowTurns - hotWindowOverlapTurns,
+    );
+    state.lastHistoryWindowTurns = historyWindowTurns;
+    state.lastEffectiveHotWindowPairs = effectiveHotWindowPairs;
 
     if (executeOptions?.streamEvents) {
       await executeOptions.streamEvents({
@@ -608,6 +670,7 @@ export function createVirtualContextEnginePassive(
       retrievalStrategy,
       store: options.store,
       embeddingProvider: options.embeddingProvider,
+      symbolIndexCount: symbolIndex.length,
       recallK: budget.recallK,
     });
 
@@ -778,7 +841,7 @@ export function createVirtualContextEnginePassive(
 
     const compactionCandidates = tape.listUnsymbolizedCompactionCandidates(
       threadId,
-      budget.recentLiteralPairCount,
+      effectiveHotWindowPairs,
       6,
     );
     const ageBackfillEligibleCount = compactionCandidates.length;
@@ -787,7 +850,7 @@ export function createVirtualContextEnginePassive(
       ? currentTurn - state.lastAgeBackfillScheduledTurn
       : Number.POSITIVE_INFINITY;
     const ageBackfillCooldownTurns = Number.isFinite(turnsSinceLastAgeBackfill)
-      ? Math.max(0, AGE_BACKFILL_COOLDOWN_TURNS - turnsSinceLastAgeBackfill)
+      ? Math.max(0, ageBackfillCooldownTurnsConfigured - turnsSinceLastAgeBackfill)
       : 0;
     const ageBackfillReady = ageBackfillEligibleCount > 0 && ageBackfillCooldownTurns === 0;
     const compactionTriggerSource: "none" | "pressure" | "age_backfill" = compiled.compactionTriggered
@@ -801,6 +864,15 @@ export function createVirtualContextEnginePassive(
       compactionTriggerSource,
       compactionCandidates,
     );
+    const scheduleResultForEvent:
+      | "scheduled"
+      | "none"
+      | "in_flight"
+      | "low_pressure"
+      | "no_candidates"
+      | "extractor_error" = scheduledCompactionReason === "none"
+      ? "scheduled"
+      : scheduledCompactionReason;
     if (executeOptions?.streamEvents) {
       await executeOptions.streamEvents({
         type: "compaction_candidates",
@@ -812,7 +884,9 @@ export function createVirtualContextEnginePassive(
         compactionReason: compiled.compactionReason,
         ageBackfillEligibleCount,
         ageBackfillCooldownTurns,
-        scheduleResult: scheduledCompactionReason,
+        historyWindowTurns,
+        effectiveHotWindowPairs,
+        scheduleResult: scheduleResultForEvent,
         candidateEntries: compactionCandidates.map((entry) => ({
           entryId: entry.entryId,
           role: entry.role,
@@ -826,6 +900,9 @@ export function createVirtualContextEnginePassive(
       pressureRatio: compiled.pressureRatio,
       pressurePeak: state.pressurePeak,
       pressureState: compiled.pressureState,
+      historyWindowTurns,
+      hotWindowOverlapTurns,
+      effectiveHotWindowPairs,
       compactionTriggerSource,
       compactionDrainAttempted: compactionDrain.attempted,
       compactionDrainWaitMs: compactionDrain.waitMs,
@@ -834,12 +911,14 @@ export function createVirtualContextEnginePassive(
       compactionReason: compiled.compactionReason,
       ageBackfillEligibleCount,
       ageBackfillCooldownTurns,
+      ageBackfillCooldownTurnsConfigured,
       compactionJobsTriggered: state.compactionJobsTriggered,
       compactionSkippedReason: scheduledCompactionReason,
       extractorCalls: state.extractorCalls,
       proposalsCount: state.proposalsCount,
       committedSymbolsCount: state.committedSymbolsCount,
       hydratedSymbolsCount: compiled.hydratedSymbolsCount,
+      maxCompactionProposalsConfigured: maxCompactionProposals,
       fallbackCommitUsed: fallbackCommitUsedThisTurn,
       ignoredModelEventCount,
     };
@@ -968,7 +1047,7 @@ export function createVirtualContextEnginePassive(
       const hydrationLeases = tape.listHydrationLeases(threadId);
       const pendingCandidates = tape.listUnsymbolizedCompactionCandidates(
         threadId,
-        budget.recentLiteralPairCount,
+        state.lastEffectiveHotWindowPairs,
         6,
       );
 

@@ -120,6 +120,9 @@ function renderPassiveSliding(trace: AgentTurnTrace): string {
     ["pressureRatio", passive.pressureRatio.toFixed(3)],
     ["pressurePeak", passive.pressurePeak.toFixed(3)],
     ["pressureState", passive.pressureState],
+    ["historyWindowTurns", passive.historyWindowTurns],
+    ["hotWindowOverlapTurns", passive.hotWindowOverlapTurns],
+    ["effectiveHotWindowPairs", passive.effectiveHotWindowPairs],
     ["compactionTriggerSource", passive.compactionTriggerSource],
     ["compactionDrainAttempted", passive.compactionDrainAttempted],
     ["compactionDrainWaitMs", passive.compactionDrainWaitMs.toFixed(2)],
@@ -128,12 +131,14 @@ function renderPassiveSliding(trace: AgentTurnTrace): string {
     ["compactionReason", passive.compactionReason],
     ["ageBackfillEligibleCount", passive.ageBackfillEligibleCount],
     ["ageBackfillCooldownTurns", passive.ageBackfillCooldownTurns],
+    ["ageBackfillCooldownTurnsConfigured", passive.ageBackfillCooldownTurnsConfigured],
     ["compactionJobsTriggered", passive.compactionJobsTriggered],
     ["compactionSkippedReason", passive.compactionSkippedReason],
     ["extractorCalls", passive.extractorCalls],
     ["proposalsCount", passive.proposalsCount],
     ["committedSymbolsCount", passive.committedSymbolsCount],
     ["hydratedSymbolsCount", passive.hydratedSymbolsCount],
+    ["maxCompactionProposalsConfigured", passive.maxCompactionProposalsConfigured],
     ["fallbackCommitUsed", passive.fallbackCommitUsed],
     ["ignoredModelEventCount", passive.ignoredModelEventCount],
   ]);
@@ -180,7 +185,7 @@ function renderLifecycle(trace: AgentTurnTrace): string {
         "compaction_candidates",
         `source=${event.triggerSource} trigger=${event.compactionTriggered} reason=${event.compactionReason} schedule=${event.scheduleResult} pressure=${event.pressureRatio.toFixed(
           3,
-        )} ageEligible=${event.ageBackfillEligibleCount} ageCooldownTurns=${event.ageBackfillCooldownTurns} candidates=${event.candidateEntries
+        )} hotWindowTurns=${event.historyWindowTurns} effectiveHotPairs=${event.effectiveHotWindowPairs} ageEligible=${event.ageBackfillEligibleCount} ageCooldownTurns=${event.ageBackfillCooldownTurns} candidates=${event.candidateEntries
           .map((entry) => entry.entryId)
           .join(",") || "(none)"} sample=${samples || "(none)"}`,
       ]);

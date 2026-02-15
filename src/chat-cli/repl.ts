@@ -12,6 +12,9 @@ export type ParsedChatCliArgs = {
   mock: boolean;
   provider?: "ollama" | "openai_responses";
   stream: boolean;
+  passiveHotOverlapTurns?: number;
+  passiveMaxWrites?: number;
+  passiveAgeCadence?: number;
   threadId?: string;
   trustedSymbolRefs?: boolean;
   help: boolean;
@@ -19,6 +22,14 @@ export type ParsedChatCliArgs = {
 
 function writeLine(write: (text: string) => void, text: string): void {
   write(text);
+}
+
+function parsePositiveIntArg(value: string | undefined, label: string): number {
+  const parsed = Number.parseInt(value ?? "", 10);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    throw new Error(`invalid_${label}:${value ?? ""}`);
+  }
+  return parsed;
 }
 
 export function parseChatCliArgs(argv: string[]): ParsedChatCliArgs {
@@ -75,6 +86,33 @@ export function parseChatCliArgs(argv: string[]): ParsedChatCliArgs {
       continue;
     }
 
+    if (token === "--passive-hot-overlap") {
+      parsed.passiveHotOverlapTurns = parsePositiveIntArg(
+        argv[index + 1],
+        "passive_hot_overlap",
+      );
+      index += 1;
+      continue;
+    }
+
+    if (token === "--passive-max-writes") {
+      parsed.passiveMaxWrites = parsePositiveIntArg(
+        argv[index + 1],
+        "passive_max_writes",
+      );
+      index += 1;
+      continue;
+    }
+
+    if (token === "--passive-age-cadence") {
+      parsed.passiveAgeCadence = parsePositiveIntArg(
+        argv[index + 1],
+        "passive_age_cadence",
+      );
+      index += 1;
+      continue;
+    }
+
     if (token === "--trust") {
       const value = (argv[index + 1] ?? "").toLowerCase();
       if (value === "on" || value === "true") {
@@ -98,8 +136,8 @@ export function parseChatCliArgs(argv: string[]): ParsedChatCliArgs {
 export function formatChatCliUsage(): string {
   return [
     "Usage:",
-    "  bun run chat:interactive [--mock] [--provider ollama|openai] [--stream|--no-stream] [--trace] [--thread <id>] [--trust on|off]",
-    "  bun run chat:interactive --once \"hello\" [--mock] [--provider ollama|openai] [--stream|--no-stream] [--trace]",
+    "  bun run chat:interactive [--mock] [--provider ollama|openai] [--stream|--no-stream] [--trace] [--thread <id>] [--trust on|off] [--passive-hot-overlap <n>] [--passive-max-writes <n>] [--passive-age-cadence <n>]",
+    "  bun run chat:interactive --once \"hello\" [--mock] [--provider ollama|openai] [--stream|--no-stream] [--trace] [--passive-hot-overlap <n>] [--passive-max-writes <n>] [--passive-age-cadence <n>]",
   ].join("\n");
 }
 
@@ -128,6 +166,9 @@ export async function runInteractiveChatCli(
       streamEnabled: options.stream,
       traceEnabled: options.trace,
       trustedSymbolRefs: options.trustedSymbolRefs,
+      passiveHotOverlapTurns: options.passiveHotOverlapTurns,
+      passiveMaxWrites: options.passiveMaxWrites,
+      passiveAgeCadence: options.passiveAgeCadence,
       threadId: options.threadId,
       env: options.env,
       assistantGenerate: options.assistantGenerate,

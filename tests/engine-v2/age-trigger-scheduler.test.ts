@@ -41,9 +41,10 @@ test("age backfill schedules compaction under low pressure and respects cooldown
     lowWatermark: 0.7,
     packBudget: {
       totalChars: 1_600,
-      recentLiteralPairCount: 1,
+      recentLiteralPairCount: 2,
       recallK: 3,
     },
+    ageBackfillCooldownTurns: 3,
   });
 
   await engine.processTurn({
@@ -63,10 +64,11 @@ test("age backfill schedules compaction under low pressure and respects cooldown
   expect(turn2.diagnostics.passive?.compactionTriggerSource).toBe("age_backfill");
   expect(turn2.diagnostics.passive?.ageBackfillEligibleCount).toBeGreaterThan(0);
   expect(turn2.diagnostics.passive?.ageBackfillCooldownTurns).toBe(0);
+  expect(turn2.diagnostics.passive?.ageBackfillCooldownTurnsConfigured).toBe(3);
   expect(turn2.diagnostics.passive?.compactionSkippedReason).toBe("none");
 
   expect(turn3.diagnostics.passive?.compactionTriggerSource).toBe("none");
   expect(turn3.diagnostics.passive?.ageBackfillEligibleCount).toBeGreaterThan(0);
-  expect(turn3.diagnostics.passive?.ageBackfillCooldownTurns).toBeGreaterThan(0);
+  expect(turn3.diagnostics.passive?.ageBackfillCooldownTurns).toBe(2);
   expect(turn3.diagnostics.passive?.compactionSkippedReason).toBe("low_pressure");
 });
