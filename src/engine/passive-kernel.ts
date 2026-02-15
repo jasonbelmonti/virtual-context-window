@@ -492,7 +492,8 @@ export function createVirtualContextEnginePassive(
     const shouldAttemptFallback =
       extraction.failed ||
       extraction.timeout ||
-      primaryProposals.length === 0;
+      primaryProposals.length === 0 ||
+      committedSymbols === 0;
 
     if (shouldAttemptFallback) {
       fallbackCommitUsed = true;
@@ -651,9 +652,7 @@ export function createVirtualContextEnginePassive(
     const preModelStart = clock();
     await markStage("ResolveIdentity", threadId, executeOptions?.streamEvents);
     const compactionDrain = await waitForCompactionDrainIfNeeded(threadId);
-    const fallbackCommitUsedThisTurn = compactionDrain.attempted && !compactionDrain.timedOut
-      ? state.lastFallbackCommitUsed
-      : false;
+    const fallbackCommitUsedThisTurn = state.lastFallbackCommitUsed;
 
     await markStage("BuildTurnQuery", threadId, executeOptions?.streamEvents);
     const query = await queryBuilder({

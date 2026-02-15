@@ -105,7 +105,7 @@ test("history limit constrains model context to last N turns while preserving sy
     type: "history",
     action: "status",
   });
-  expect(defaultStatus.output).toContain("historyTurnLimit=off");
+  expect(defaultStatus.output).toContain("historyTurnLimit=5");
 
   const setLimit = await runtime.executeCommand({
     type: "history_limit",
@@ -188,11 +188,16 @@ test("agent runtime surfaces configured age cadence in passive diagnostics", asy
     passiveAgeCadence: 3,
   });
 
-  await runtime.processUserMessage("turn one");
+  await runtime.executeCommand({
+    type: "history_limit",
+    turns: 1,
+  });
+  const first = await runtime.processUserMessage("turn one");
   const second = await runtime.processUserMessage("turn two");
   const third = await runtime.processUserMessage("turn three");
 
-  expect(second.trace.diagnostics.passive?.ageBackfillCooldownTurnsConfigured).toBe(3);
-  expect(second.trace.diagnostics.passive?.compactionTriggerSource).toBe("age_backfill");
-  expect(third.trace.diagnostics.passive?.ageBackfillCooldownTurns).toBe(2);
+  expect(first.trace.diagnostics.passive?.ageBackfillCooldownTurnsConfigured).toBe(3);
+  expect(first.trace.diagnostics.passive?.compactionTriggerSource).toBe("age_backfill");
+  expect(second.trace.diagnostics.passive?.ageBackfillCooldownTurns).toBe(2);
+  expect(third.trace.diagnostics.passive?.ageBackfillCooldownTurns).toBe(1);
 });

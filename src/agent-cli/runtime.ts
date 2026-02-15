@@ -49,6 +49,7 @@ const DEFAULT_SYMBOL_LIST_LIMIT = 20;
 const DEFAULT_AUTO_ACTIVE_MIN_SCORE = 0.84;
 const DEFAULT_AUTO_SHADOW_MIN_SCORE = 0.5;
 const DEFAULT_AUTO_MAX_EVENTS_PER_TURN = 1;
+const DEFAULT_HISTORY_TURN_LIMIT = 5;
 const DEFAULT_PASSIVE_HOT_OVERLAP_TURNS = 1;
 const DEFAULT_PASSIVE_MAX_COMPACTION_PROPOSALS = 3;
 const DEFAULT_PASSIVE_AGE_BACKFILL_COOLDOWN_TURNS = 3;
@@ -264,7 +265,8 @@ export class AgentCliRuntime {
     this.streamEnabled = options.streamEnabled ?? true;
     this.traceEnabled = options.traceEnabled ?? false;
     this.autoSymbolMode = parseAutoSymbolMode(env.VCW_AUTO_SYMBOL_MODE, "active");
-    this.historyTurnLimit = parseOptionalPositiveInt(env.VCW_HISTORY_MAX_TURNS);
+    this.historyTurnLimit = parseOptionalPositiveInt(env.VCW_HISTORY_MAX_TURNS)
+      ?? DEFAULT_HISTORY_TURN_LIMIT;
     this.passiveHotOverlapTurns =
       options.passiveHotOverlapTurns ??
       parsePositiveInt(

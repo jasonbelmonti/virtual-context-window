@@ -52,7 +52,7 @@ test("fallback commit path is used when extractor yields no proposals", async ()
   expect(symbols.length).toBeGreaterThan(0);
 });
 
-test("fallback is not used when primary proposals are present but rejected by commit policy", async () => {
+test("fallback is used when primary proposals are present but all rejected by commit policy", async () => {
   const threadId = "thread-fallback-rejected-primary";
   const store = new InMemorySymbolStore();
   const extractor: CompressionExtractor = {
@@ -109,7 +109,7 @@ test("fallback is not used when primary proposals are present but rejected by co
   const snapshot = await engine.inspectThread?.(threadId);
   const symbols = await store.list(threadId);
 
-  expect(turn3.diagnostics.passive?.fallbackCommitUsed).toBe(false);
-  expect(snapshot?.passive.lastFallbackCommitUsed).toBe(false);
-  expect(symbols.length).toBe(0);
+  expect(turn3.diagnostics.passive?.fallbackCommitUsed).toBe(true);
+  expect(snapshot?.passive.lastFallbackCommitUsed).toBe(true);
+  expect(symbols.length).toBeGreaterThan(0);
 });

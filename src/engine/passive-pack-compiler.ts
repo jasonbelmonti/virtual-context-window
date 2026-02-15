@@ -137,11 +137,11 @@ function renderPack(input: {
     [...input.hydratedFocused, ...input.hydratedRecall].map((record) => record.symbolId),
   );
   const indexLines = input.symbolIndex
+    .filter((item) => !hydratedIds.has(item.symbolId))
     .slice(0, input.budget.symbolIndexLimit)
     .map((item) => {
       const summary = truncateDeterministic(item.summary, dynamicIndexMaxChars);
-      const hydratedTag = hydratedIds.has(item.symbolId) ? "[hydrated] " : "";
-      return `- ${hydratedTag}${item.symbolId}: ${summary}\n`;
+      return `- ${item.symbolId}: ${summary}\n`;
     });
 
   const focusedLines = input.hydratedFocused.map((item) => {

@@ -51,8 +51,8 @@ test("pack compiler renders hydrated relevance and symbol index within budget", 
   expect(result.text).not.toContain("RECENT LITERALS");
   expect(result.text).not.toContain("evt_1");
   expect(result.text).toContain("- sym_other:");
-  expect(result.text).toContain("- [hydrated] sym_focus:");
-  expect(result.text).toContain("- [hydrated] sym_recall:");
+  expect(result.text).not.toContain("- sym_focus: focused symbol");
+  expect(result.text).not.toContain("- sym_recall: recall symbol");
   expect(result.usedChars).toBeLessThanOrEqual(budget.totalChars);
 });
 
