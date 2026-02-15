@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
-import type { MetricAggregate } from "../../src/validation/contracts";
-import { evaluateDriftChecks } from "../../src/validation/drift";
+import type { MetricAggregate } from "../../src/validation/core/contracts";
+import { evaluateDriftChecks } from "../../src/validation/core/drift";
 
 function rateMetric(key: string, rate: number): MetricAggregate {
   return {

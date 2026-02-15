@@ -73,3 +73,9 @@ Multi-run (`--runs N`):
 - Demo-local tool call budget defaults to `VCW_AGENT_MAX_TOOL_CALLS=24` unless already set.
 - Provider preflight is a simple health check; no required-tool-name probe.
 - Defaults are tuned for the target comparison: `history limit 5`, `distractor turns 20`.
+
+## Implementation Map
+- Demo runner: `scripts/demo-showdown.ts`
+- Scenario/gates/renderer: `scripts/demo-showdown-scenario.ts`, `scripts/demo-showdown-gates.ts`, `scripts/demo-showdown-renderer.ts`
+- Passive kernel internals: `src/engine/passive/*`
+- Shared CLI utilities used by both CLIs: `src/cli/shared/*`

@@ -1,5 +1,7 @@
 # Phase Runbook 9: Streaming Turn Pipeline + OpenAI Responses Provider
 
+> Repo organization note (non-breaking): engine internals now live under `src/engine/core`, `src/engine/passive`, and `src/engine/symbols`; validation internals under `src/validation/{core,scenarios,pipelines}`. Public entrypoints and commands are unchanged.
+
 ## 1) Goal and Boundaries
 ### Goal
 Add engine-level streaming plus provider-selectable OpenAI Responses support (chat + agent + embeddings) without breaking one-call invariants or existing Ollama paths.

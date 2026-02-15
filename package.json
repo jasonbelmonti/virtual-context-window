@@ -5,8 +5,8 @@
   "private": true,
   "scripts": {
     "test": "bun test",
-    "test:engine-kernel": "bun test tests/engine-v2 tests/engine/identity.test.ts tests/engine/stage-order.test.ts tests/engine/symbol-store.test.ts tests/engine/embedding-provider.test.ts",
-    "test:retrieval": "bun test tests/engine-v2/hysteresis.test.ts tests/engine-v2/pack-compiler.test.ts",
+    "test:engine-kernel": "bun test tests/engine/passive tests/engine/identity.test.ts tests/engine/stage-order.test.ts tests/engine/symbol-store.test.ts tests/engine/embedding-provider.test.ts",
+    "test:retrieval": "bun test tests/engine/passive/hysteresis.test.ts tests/engine/passive/pack-compiler.test.ts",
     "test:chat-cli": "bun test tests/chat-cli tests/langchain",
     "test:agent": "bun test tests/agent-cli tests/langchain/agent-* tests/engine/embedding-*",
     "test:stream": "bun test tests/langchain/*stream.test.ts tests/chat-cli/stream-provider.test.ts tests/agent-cli/stream-provider.test.ts",
@@ -20,6 +20,7 @@
     "validate:quick:live": "bun run scripts/validate-quick-live.ts",
     "validate:stability": "bun run scripts/validate-stability.ts",
     "validate:production": "bun run scripts/validate-production.ts",
+    "validate:gate": "bun run scripts/validate-gate.ts",
     "validate:baseline-v2": "bun run scripts/validate-baseline-v2.ts",
     "validate:phase5": "bun run scripts/validate-phase5.ts"
   },

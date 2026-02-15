@@ -19,7 +19,7 @@ import {
   createOpenAIEmbeddingProvider,
   type OpenAIResponsesAssistantResultMetadata,
 } from "../integrations/openai";
-import { createOllamaEmbeddingProvider } from "../integrations/ollama";
+import { createOllamaEmbeddingProvider } from "../integrations/ollama/embedding-provider";
 import {
   normalizeForComparison,
   parseAutoSymbolMetadataEnvelope,
@@ -31,6 +31,11 @@ import {
   type RecognitionDecision,
   type RecognizerConfig,
 } from "../recognition";
+import {
+  parseBoolean,
+  parsePositiveFloat,
+  parsePositiveInt,
+} from "../cli/shared/passive-config";
 import type {
   ChatCliCommand,
   ChatCliStateView,
@@ -93,46 +98,6 @@ function summarizeDeterministically(text: string, maxChars = 80): string {
   }
 
   return `${normalized.slice(0, maxChars - 3)}...`;
-}
-
-function parsePositiveFloat(value: string | undefined, fallback: number): number {
-  if (!value) {
-    return fallback;
-  }
-  const parsed = Number.parseFloat(value);
-  if (!Number.isFinite(parsed) || parsed <= 0) {
-    return fallback;
-  }
-  if (parsed > 1) {
-    return 1;
-  }
-  return parsed;
-}
-
-function parsePositiveInt(value: string | undefined, fallback: number): number {
-  if (!value) {
-    return fallback;
-  }
-  const parsed = Number.parseInt(value, 10);
-  if (!Number.isFinite(parsed) || parsed <= 0) {
-    return fallback;
-  }
-  return parsed;
-}
-
-function parseBoolean(value: string | undefined, fallback: boolean): boolean {
-  if (!value) {
-    return fallback;
-  }
-
-  const normalized = value.trim().toLowerCase();
-  if (normalized === "true" || normalized === "1" || normalized === "yes" || normalized === "on") {
-    return true;
-  }
-  if (normalized === "false" || normalized === "0" || normalized === "no" || normalized === "off") {
-    return false;
-  }
-  return fallback;
 }
 
 export function createMockAssistantGenerate(): AssistantGenerateFn {

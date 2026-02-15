@@ -1,37 +1,22 @@
 import { expect, test } from "bun:test";
-import { SCENARIO_CATALOG } from "../../src/validation/scenario-catalog";
-import { SCENARIO_IDS } from "../../src/validation/contracts";
+import { SCENARIO_CATALOG } from "../../src/validation/scenarios/scenario-catalog";
+import { SCENARIO_IDS } from "../../src/validation/core/contracts";
 
-test("scenario catalog includes S01-S13 exactly once", () => {
+test("scenario catalog includes P01-P14 exactly once", () => {
   const expected = [...SCENARIO_IDS].sort();
   const actual = SCENARIO_CATALOG.map((scenario) => scenario.id).sort();
   expect(actual).toEqual(expected);
 });
 
-test("scenario mode mapping matches phase 4 lock", () => {
+test("scenario profiles and mode coverage are explicitly declared", () => {
   const byId = new Map(SCENARIO_CATALOG.map((scenario) => [scenario.id, scenario]));
 
-  for (const id of [
-    "S01",
-    "S02",
-    "S03",
-    "S04",
-    "S05",
-    "S06",
-    "S07",
-    "S08",
-    "S13",
-  ] as const) {
-    const scenario = byId.get(id);
-    expect(scenario?.supportedModes).toEqual(["deterministic", "live"]);
-  }
+  expect(byId.get("P01")?.supportedModes).toEqual(["deterministic", "live"]);
+  expect(byId.get("P01")?.supportedProfiles).toEqual(["quick", "quick_live", "production"]);
 
-  for (const id of ["S09", "S10", "S11"] as const) {
-    const scenario = byId.get(id);
-    expect(scenario?.supportedModes).toEqual(["deterministic"]);
-  }
+  expect(byId.get("P04")?.supportedModes).toEqual(["deterministic"]);
+  expect(byId.get("P04")?.supportedProfiles).toEqual(["quick", "production"]);
 
-  const s12 = byId.get("S12");
-  expect(s12?.supportedModes).toEqual(["deterministic", "live"]);
-  expect(s12?.liveOptional).toBe(true);
+  expect(byId.get("P11")?.supportedProfiles).toEqual(["quick_live", "production"]);
+  expect(byId.get("P14")?.supportedModes).toEqual(["deterministic", "live"]);
 });

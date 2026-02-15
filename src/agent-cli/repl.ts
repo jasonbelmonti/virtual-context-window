@@ -1,7 +1,10 @@
 import { createInterface } from "node:readline/promises";
 import type { ReadStream, WriteStream } from "node:tty";
-import type { PreModelTelemetry, VirtualContextMessage } from "../engine";
+import type { PreModelTelemetry } from "../engine";
 import { createCliTheme, detectColorEnabled } from "../chat-cli/ui";
+import { parsePositiveIntArg, parseProviderArg } from "../cli/shared/arg-parse";
+import { renderConversationHistory } from "../cli/shared/history-render";
+import { createStreamAccumulator, renderAssistantFromStream } from "../cli/shared/stream-loop";
 import { isSlashCommand, parseSlashCommand } from "./commands";
 import type {
   AgentCliLaunchOptions,
@@ -26,14 +29,6 @@ export type ParsedAgentCliArgs = {
 
 function writeLine(write: (text: string) => void, text: string): void {
   write(text);
-}
-
-function parsePositiveIntArg(value: string | undefined, label: string): number {
-  const parsed = Number.parseInt(value ?? "", 10);
-  if (!Number.isFinite(parsed) || parsed <= 0) {
-    throw new Error(`invalid_${label}:${value ?? ""}`);
-  }
-  return parsed;
 }
 
 export function parseAgentCliArgs(argv: string[]): ParsedAgentCliArgs {
@@ -65,12 +60,7 @@ export function parseAgentCliArgs(argv: string[]): ParsedAgentCliArgs {
     }
 
     if (token === "--provider") {
-      const value = (argv[index + 1] ?? "").toLowerCase();
-      if (value === "ollama") {
-        parsed.provider = "ollama";
-      } else if (value === "openai" || value === "openai_responses") {
-        parsed.provider = "openai_responses";
-      }
+      parsed.provider = parseProviderArg(argv[index + 1]);
       index += 1;
       continue;
     }
@@ -203,33 +193,6 @@ function renderPreModelContextPack(
   ].join("\n");
 }
 
-function renderConversationHistory(
-  messages: VirtualContextMessage[],
-  historyTurnLimit: number | null,
-  theme: ReturnType<typeof createCliTheme>,
-): string {
-  const maxMessages = historyTurnLimit && historyTurnLimit > 0
-    ? historyTurnLimit * 2
-    : null;
-  const inWindowStart = maxMessages === null
-    ? 0
-    : Math.max(0, messages.length - maxMessages);
-  const lines = messages.map((message, index) => {
-    const inWindow = index >= inWindowStart;
-    const marker = inWindow ? theme.success("IN_WINDOW") : theme.subtle("OUT_OF_WINDOW");
-    const prefix = inWindow ? theme.success("●") : theme.subtle("○");
-    return `${prefix} ${marker} ${theme.value(`[${message.role}]`)} ${compactSingleLine(message.content || "(empty)", 160)}`;
-  });
-  const legend = historyTurnLimit && historyTurnLimit > 0
-    ? `window=${historyTurnLimit} turn(s), messages in window=${Math.min(messages.length, maxMessages ?? messages.length)}`
-    : "window=off (unbounded)";
-  return [
-    theme.section("CONVERSATION HISTORY"),
-    theme.subtle(legend),
-    theme.value(lines.join("\n") || "(empty)"),
-  ].join("\n");
-}
-
 function renderPostModelDiagnostics(
   trace: AgentTurnTrace,
   theme: ReturnType<typeof createCliTheme>,
@@ -351,14 +314,17 @@ export async function runInteractiveAgentCli(
 
   if (typeof options.once === "string") {
     try {
-      let streamedText = "";
       let preRendered = false;
       let contextPackRendered = false;
       let lifecycleEventsRendered = 0;
-      const streamToStdout = options.print === undefined;
+      const streamAccumulator = createStreamAccumulator({
+        streamEnabled: runtime.getStreamEnabled(),
+        printProvided: options.print !== undefined,
+        theme,
+      });
       let assistantLineOpen = false;
       const flushAssistantLine = () => {
-        if (streamToStdout && assistantLineOpen) {
+        if (streamAccumulator.streamToStdout && assistantLineOpen) {
           process.stdout.write("\n");
           assistantLineOpen = false;
         }
@@ -399,22 +365,21 @@ export async function runInteractiveAgentCli(
           : undefined,
         onAssistantDelta: runtime.getStreamEnabled()
           ? (delta: string) => {
-              streamedText += delta;
-              if (streamToStdout) {
-                process.stdout.write(theme.assistant(delta));
+              streamAccumulator.onDelta(delta);
+              if (streamAccumulator.streamToStdout) {
                 assistantLineOpen = true;
               }
             }
           : undefined,
       });
-      if (!runtime.getStreamEnabled() || streamedText.length === 0) {
-        flushAssistantLine();
-        writeLine(print, theme.assistant(turn.content));
-      } else if (!streamToStdout) {
-        writeLine(print, theme.assistant(streamedText));
-      } else {
-        flushAssistantLine();
-      }
+      renderAssistantFromStream({
+        streamEnabled: runtime.getStreamEnabled(),
+        streamedText: streamAccumulator.getText(),
+        finalContent: turn.content,
+        streamToStdout: streamAccumulator.streamToStdout,
+        theme,
+        writeLine: (text) => writeLine(print, text),
+      });
       const ignoredCallout = renderPassiveWriteIgnoredCallout(
         turn.trace,
         theme,
@@ -451,8 +416,8 @@ export async function runInteractiveAgentCli(
           print,
           renderConversationHistory(
             runtime.getConversationHistory(),
-            state.historyTurnLimit,
             theme,
+            { historyTurnLimit: state.historyTurnLimit },
           ),
         );
       }
@@ -566,14 +531,17 @@ export async function runInteractiveAgentCli(
       }
 
       try {
-        let streamedText = "";
         let preRendered = false;
         let contextPackRendered = false;
         let lifecycleEventsRendered = 0;
-        const streamToStdout = options.print === undefined;
+        const streamAccumulator = createStreamAccumulator({
+          streamEnabled: runtime.getStreamEnabled(),
+          printProvided: options.print !== undefined,
+          theme,
+        });
         let assistantLineOpen = false;
         const flushAssistantLine = () => {
-          if (streamToStdout && assistantLineOpen) {
+          if (streamAccumulator.streamToStdout && assistantLineOpen) {
             process.stdout.write("\n");
             assistantLineOpen = false;
           }
@@ -614,22 +582,21 @@ export async function runInteractiveAgentCli(
             : undefined,
           onAssistantDelta: runtime.getStreamEnabled()
             ? (delta: string) => {
-                streamedText += delta;
-                if (streamToStdout) {
-                  process.stdout.write(theme.assistant(delta));
+                streamAccumulator.onDelta(delta);
+                if (streamAccumulator.streamToStdout) {
                   assistantLineOpen = true;
                 }
               }
             : undefined,
         });
-        if (!runtime.getStreamEnabled() || streamedText.length === 0) {
-          flushAssistantLine();
-          writeLine(print, theme.assistant(result.content));
-        } else if (!streamToStdout) {
-          writeLine(print, theme.assistant(streamedText));
-        } else {
-          flushAssistantLine();
-        }
+        renderAssistantFromStream({
+          streamEnabled: runtime.getStreamEnabled(),
+          streamedText: streamAccumulator.getText(),
+          finalContent: result.content,
+          streamToStdout: streamAccumulator.streamToStdout,
+          theme,
+          writeLine: (text) => writeLine(print, text),
+        });
         const ignoredCallout = renderPassiveWriteIgnoredCallout(
           result.trace,
           theme,
@@ -663,8 +630,8 @@ export async function runInteractiveAgentCli(
             print,
             renderConversationHistory(
               runtime.getConversationHistory(),
-              state.historyTurnLimit,
               theme,
+              { historyTurnLimit: state.historyTurnLimit },
             ),
           );
         }

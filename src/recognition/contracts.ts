@@ -1,4 +1,4 @@
-import type { UpsertSymbolEvent } from "../engine/contracts";
+import type { UpsertSymbolEvent } from "../engine/core/types";
 
 export type AutoSymbolMode = "off" | "shadow" | "active";
 export type RecognitionScoreBand = "suppress" | "shadow" | "write";

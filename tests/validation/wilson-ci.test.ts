@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { computeWilsonCi95 } from "../../src/validation/wilson-ci";
+import { computeWilsonCi95 } from "../../src/validation/pipelines/wilson-ci";
 
 test("wilson ci95 handles zero denominator", () => {
   const ci = computeWilsonCi95(0, 0);

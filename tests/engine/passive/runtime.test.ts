@@ -1,0 +1,792 @@
+import { expect, test } from "bun:test";
+import {
+  createVirtualContextEnginePassive,
+  type EmbeddingProvider,
+  InMemorySymbolStore,
+  type AssistantGenerateFn,
+  type CompressionExtractor,
+} from "../../../src/engine";
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+test("v2 passive hybrid retrieval forwards query embeddings when provider is configured", async () => {
+  const store = new InMemorySymbolStore();
+  await store.upsert("thread-hybrid-embed", {
+    summary: "pager owner",
+    content: "on-call owner is Casey",
+    kind: "fact",
+  });
+
+  const originalSearchWithOptions = store.searchWithOptions?.bind(store);
+  let capturedQueryEmbedding: number[] | undefined;
+  store.searchWithOptions = async (threadId, queryText, k, options) => {
+    capturedQueryEmbedding = options.queryEmbedding;
+    return originalSearchWithOptions!(threadId, queryText, k, options);
+  };
+
+  const embeddingProvider: EmbeddingProvider = {
+    async embed() {
+      return {
+        vector: [0.15, -0.02, 0.88],
+        model: "mock-embed",
+        provider: "mock",
+        latencyMs: 1,
+      };
+    },
+  };
+
+  const engine = createVirtualContextEnginePassive({
+    assistantGenerate: async () => "ack",
+    store,
+    embeddingProvider,
+    retrievalStrategy: "hybrid_v2",
+    packBudget: {
+      totalChars: 420,
+      recentLiteralPairCount: 2,
+    },
+  });
+
+  const response = await engine.processTurn({
+    threadId: "thread-hybrid-embed",
+    messages: [{ role: "user", content: "who is on-call owner?" }],
+  });
+
+  expect(capturedQueryEmbedding).toEqual([0.15, -0.02, 0.88]);
+  expect(response.diagnostics.retrievalDegraded).toBe(false);
+});
+
+test("v2 passive hybrid retrieval fails open when query embedding generation fails", async () => {
+  const store = new InMemorySymbolStore();
+  await store.upsert("thread-hybrid-embed-fail", {
+    summary: "pager owner",
+    content: "on-call owner is Casey",
+    kind: "fact",
+  });
+
+  const embeddingProvider: EmbeddingProvider = {
+    async embed() {
+      throw new Error("embedding_backend_unavailable");
+    },
+  };
+
+  const engine = createVirtualContextEnginePassive({
+    assistantGenerate: async () => "ack",
+    store,
+    embeddingProvider,
+    retrievalStrategy: "hybrid_v2",
+    packBudget: {
+      totalChars: 420,
+      recentLiteralPairCount: 2,
+    },
+  });
+
+  const response = await engine.processTurn({
+    threadId: "thread-hybrid-embed-fail",
+    messages: [{ role: "user", content: "who is on-call owner?" }],
+  });
+
+  expect(response.content).toBe("ack");
+  expect(response.diagnostics.generationCallCount).toBe(1);
+  expect(response.diagnostics.retrievalDegraded).toBe(true);
+});
+
+test("v2 passive hybrid retrieval does not mark degraded when embedding provider is unset", async () => {
+  const store = new InMemorySymbolStore();
+  await store.upsert("thread-hybrid-no-embed-provider", {
+    summary: "pager owner",
+    content: "on-call owner is Casey",
+    kind: "fact",
+  });
+
+  const engine = createVirtualContextEnginePassive({
+    assistantGenerate: async () => "ack",
+    store,
+    retrievalStrategy: "hybrid_v2",
+    packBudget: {
+      totalChars: 420,
+      recentLiteralPairCount: 2,
+    },
+  });
+
+  const response = await engine.processTurn({
+    threadId: "thread-hybrid-no-embed-provider",
+    messages: [{ role: "user", content: "who is on-call owner?" }],
+  });
+
+  expect(response.diagnostics.retrievalDegraded).toBe(false);
+});
+
+test("v2 passive hybrid retrieval skips embedding call when symbol index is empty", async () => {
+  const store = new InMemorySymbolStore();
+  let embedCalls = 0;
+  const embeddingProvider: EmbeddingProvider = {
+    async embed() {
+      embedCalls += 1;
+      return {
+        vector: [0.2, 0.1, 0.7],
+        model: "mock-embed",
+        provider: "mock",
+        latencyMs: 1,
+      };
+    },
+  };
+
+  const engine = createVirtualContextEnginePassive({
+    assistantGenerate: async () => "ack",
+    store,
+    embeddingProvider,
+    retrievalStrategy: "hybrid_v2",
+    packBudget: {
+      totalChars: 420,
+      recentLiteralPairCount: 2,
+    },
+  });
+
+  const response = await engine.processTurn({
+    threadId: "thread-hybrid-empty-index",
+    messages: [{ role: "user", content: "any updates?" }],
+  });
+
+  expect(embedCalls).toBe(0);
+  expect(response.diagnostics.retrievalDegraded).toBe(false);
+});
+
+test("v2 passive compaction is async, ignores model-origin writes, and keeps one-call invariant", async () => {
+  const store = new InMemorySymbolStore();
+  const extractor: CompressionExtractor = {
+    async extract(input) {
+      await sleep(80);
+      const entry = input.entries[0];
+      if (!entry) {
+        return [];
+      }
+      return [
+        {
+          summary: "compressed entry",
+          content: entry.content,
+          kind: "note",
+          confidence: 0.9,
+          evidenceSpans: [
+            {
+              entryId: entry.entryId,
+              startOffset: entry.offsetStart,
+              endOffset: entry.offsetEnd,
+            },
+          ],
+        },
+      ];
+    },
+  };
+
+  const assistantGenerate: AssistantGenerateFn = async () => {
+    const payload = {
+      symbol_events: [
+        {
+          type: "upsert_symbol",
+          content: "MODEL_WRITE_SENTINEL",
+        },
+      ],
+    };
+    return `response text\n<symbolic_control>${JSON.stringify(payload)}</symbolic_control>`;
+  };
+
+  const engine = createVirtualContextEnginePassive({
+    assistantGenerate,
+    store,
+    extractor,
+    highWatermark: 0.2,
+    lowWatermark: 0.1,
+    packBudget: {
+      totalChars: 140,
+      recentLiteralPairCount: 2,
+    },
+  });
+
+  const prompts = [
+    "seed memory entry one with lots of text for pressure budget",
+    "seed memory entry two with lots of text for pressure budget",
+    "seed memory entry three with lots of text for pressure budget",
+    "seed memory entry four with lots of text for pressure budget",
+  ];
+
+  let lastResponse:
+    | {
+        diagnostics: {
+          generationCallCount: number;
+          passive?: {
+            compactionJobsTriggered: number;
+            ignoredModelEventCount: number;
+          };
+        };
+      }
+    | undefined;
+
+  for (const prompt of prompts) {
+    const response = await engine.processTurn({
+      threadId: "thread-passive-async",
+      messages: [{ role: "user", content: prompt }],
+    });
+    lastResponse = response;
+  }
+
+  expect(lastResponse?.diagnostics.generationCallCount).toBe(1);
+  expect(lastResponse?.diagnostics.passive?.ignoredModelEventCount).toBeGreaterThan(0);
+  expect(lastResponse?.diagnostics.passive?.compactionJobsTriggered).toBeGreaterThan(0);
+
+  const immediate = await store.list("thread-passive-async");
+  expect(immediate.length).toBeGreaterThanOrEqual(0);
+
+  await sleep(130);
+
+  const eventual = await store.list("thread-passive-async");
+  expect(eventual.length).toBeGreaterThanOrEqual(immediate.length);
+  expect(eventual.length).toBeGreaterThan(0);
+
+  const records = await Promise.all(
+    eventual.map((record) => store.get("thread-passive-async", record.symbolId)),
+  );
+  expect(records.some((record) => record?.content.includes("MODEL_WRITE_SENTINEL"))).toBe(
+    false,
+  );
+});
+
+test("v2 passive compaction improves recall under pressure vs baseline v1", async () => {
+  const expectedToken = "VCW-CODE-ABCD1234";
+  const assistantGenerate: AssistantGenerateFn = async (input) => {
+    const userText =
+      input.request.messages.findLast((message) => message.role === "user")?.content ?? "";
+
+    if (/exact unlock code/iu.test(userText)) {
+      return input.contextPackText.includes(expectedToken) ? expectedToken : "UNKNOWN";
+    }
+
+    return `ack ${userText}`;
+  };
+
+  const baseline = createVirtualContextEnginePassive({
+    assistantGenerate,
+    store: new InMemorySymbolStore(),
+    extractor: {
+      async extract() {
+        return [];
+      },
+    },
+    highWatermark: 0.2,
+    lowWatermark: 0.1,
+    hotWindowOverlapTurns: 100,
+    packBudget: {
+      totalChars: 420,
+      recentLiteralPairCount: 100,
+    },
+  });
+
+  const passiveStore = new InMemorySymbolStore();
+  const extractor: CompressionExtractor = {
+    async extract(input) {
+      const proposals = [];
+      for (const entry of input.entries) {
+        const match = entry.content.match(/VCW-CODE-[A-Z0-9]+/u);
+        if (!match) {
+          continue;
+        }
+        proposals.push({
+          summary: "unlock code",
+          content: `unlock code ${match[0]}`,
+          kind: "fact" as const,
+          confidence: 0.95,
+          evidenceSpans: [
+            {
+              entryId: entry.entryId,
+              startOffset: entry.offsetStart,
+              endOffset: entry.offsetEnd,
+            },
+          ],
+        });
+      }
+      return proposals;
+    },
+  };
+
+  const passive = createVirtualContextEnginePassive({
+    assistantGenerate,
+    store: passiveStore,
+    extractor,
+    highWatermark: 0.2,
+    lowWatermark: 0.1,
+    packBudget: {
+      totalChars: 420,
+      recentLiteralPairCount: 2,
+    },
+  });
+
+  const threadBaseline = "thread-baseline-recall";
+  const threadPassive = "thread-passive-recall";
+  const turns = [
+    `incident briefing unlock code is ${expectedToken}`,
+    "distractor telemetry turn 1 with verbose details",
+    "distractor telemetry turn 2 with verbose details",
+    "distractor telemetry turn 3 with verbose details",
+    "distractor telemetry turn 4 with verbose details",
+  ];
+
+  for (const turn of turns) {
+    await baseline.processTurn({
+      threadId: threadBaseline,
+      messages: [{ role: "user", content: turn }],
+    });
+    await passive.processTurn({
+      threadId: threadPassive,
+      messages: [{ role: "user", content: turn }],
+    });
+  }
+
+  await sleep(80);
+
+  const baselineFinal = await baseline.processTurn({
+    threadId: threadBaseline,
+    messages: [{ role: "user", content: "what is the exact unlock code" }],
+  });
+  const passiveFinal = await passive.processTurn({
+    threadId: threadPassive,
+    messages: [{ role: "user", content: "what is the exact unlock code" }],
+  });
+
+  expect(baselineFinal.content).toBe("UNKNOWN");
+  expect(passiveFinal.content).toBe(expectedToken);
+  expect(passiveFinal.diagnostics.generationCallCount).toBe(1);
+});
+
+test("v2 passive age-backfill recovers latest fact under low pressure with windowed history", async () => {
+  const expectedToken = "VCW-AGE-7781";
+  const assistantGenerate: AssistantGenerateFn = async (input) => {
+    const userText =
+      input.request.messages.findLast((message) => message.role === "user")?.content ?? "";
+
+    if (/latest deployment token/iu.test(userText)) {
+      return input.contextPackText.includes(expectedToken) ? expectedToken : "UNKNOWN";
+    }
+
+    return `ack ${userText}`;
+  };
+
+  const baseline = createVirtualContextEnginePassive({
+    assistantGenerate,
+    store: new InMemorySymbolStore(),
+    extractor: {
+      async extract() {
+        return [];
+      },
+    },
+    highWatermark: 0.95,
+    lowWatermark: 0.7,
+    packBudget: {
+      totalChars: 1_800,
+      recentLiteralPairCount: 100,
+      recallK: 3,
+    },
+  });
+
+  const passiveStore = new InMemorySymbolStore();
+  const extractor: CompressionExtractor = {
+    async extract(input) {
+      const proposals = [];
+      for (const entry of input.entries) {
+        const match = entry.content.match(/VCW-AGE-[A-Z0-9]+/u);
+        if (!match) {
+          continue;
+        }
+        proposals.push({
+          summary: "deployment token",
+          content: `latest deployment token ${match[0]}`,
+          kind: "fact" as const,
+          confidence: 0.95,
+          evidenceSpans: [
+            {
+              entryId: entry.entryId,
+              startOffset: entry.offsetStart,
+              endOffset: entry.offsetEnd,
+            },
+          ],
+        });
+      }
+      return proposals;
+    },
+  };
+
+  const passive = createVirtualContextEnginePassive({
+    assistantGenerate,
+    store: passiveStore,
+    extractor,
+    highWatermark: 0.95,
+    lowWatermark: 0.7,
+    packBudget: {
+      totalChars: 1_800,
+      recentLiteralPairCount: 1,
+      recallK: 3,
+    },
+  });
+
+  const threadBaseline = "thread-baseline-age-backfill";
+  const threadPassive = "thread-passive-age-backfill";
+  const turns = [
+    `incident update latest deployment token is ${expectedToken}`,
+    "distractor update turn one with verbose detail",
+    "distractor update turn two with verbose detail",
+    "distractor update turn three with verbose detail",
+    "distractor update turn four with verbose detail",
+  ];
+
+  for (const turn of turns) {
+    await baseline.processTurn({
+      threadId: threadBaseline,
+      messages: [{ role: "user", content: turn }],
+    });
+    await passive.processTurn({
+      threadId: threadPassive,
+      messages: [{ role: "user", content: turn }],
+    });
+  }
+
+  await sleep(60);
+
+  const baselineFinal = await baseline.processTurn({
+    threadId: threadBaseline,
+    messages: [{ role: "user", content: "what is the latest deployment token" }],
+  });
+  const passiveFinal = await passive.processTurn({
+    threadId: threadPassive,
+    messages: [{ role: "user", content: "what is the latest deployment token" }],
+  });
+
+  expect(baselineFinal.content).toBe("UNKNOWN");
+  expect(passiveFinal.content).toBe(expectedToken);
+  expect(passiveFinal.diagnostics.passive?.compactionJobsTriggered).toBeGreaterThan(0);
+  expect(passiveFinal.diagnostics.generationCallCount).toBe(1);
+});
+
+test("v2 passive schedules compaction when pressure triggers and candidates are available", async () => {
+  const threadId = "thread-passive-no-candidates";
+  const store = new InMemorySymbolStore();
+  for (let index = 0; index < 8; index += 1) {
+    await store.upsert(threadId, {
+      summary: `incident unlock context summary ${index}`,
+      content: `incident unlock context payload ${index} ${"details ".repeat(16)}`,
+      kind: "note",
+    });
+  }
+
+  const extractor: CompressionExtractor = {
+    async extract() {
+      return [];
+    },
+  };
+
+  const engine = createVirtualContextEnginePassive({
+    assistantGenerate: async () => "ack",
+    store,
+    extractor,
+    highWatermark: 0.2,
+    lowWatermark: 0.1,
+    packBudget: {
+      totalChars: 140,
+      recentLiteralPairCount: 2,
+      recallK: 4,
+    },
+  });
+
+  const response = await engine.processTurn({
+    threadId,
+    messages: [{ role: "user", content: "incident unlock context" }],
+  });
+
+  expect(response.diagnostics.passive?.compactionTriggered).toBe(true);
+  expect(response.diagnostics.passive?.compactionSkippedReason).toBe("none");
+  expect(response.diagnostics.passive?.extractorCalls).toBe(1);
+});
+
+test("v2 passive skip reason reflects the current scheduling decision, not stale outcomes", async () => {
+  const threadId = "thread-passive-skip-reason";
+  const store = new InMemorySymbolStore();
+  for (let index = 0; index < 8; index += 1) {
+    await store.upsert(threadId, {
+      summary: `pressure summary ${index}`,
+      content: `pressure content ${index} ${"details ".repeat(16)}`,
+      kind: "note",
+    });
+  }
+
+  const extractor: CompressionExtractor = {
+    async extract(input) {
+      const entry = input.entries[0];
+      if (!entry) {
+        return [];
+      }
+      return [
+        {
+          summary: "grounded",
+          content: entry.content,
+          kind: "note",
+          confidence: 0.95,
+          evidenceSpans: [
+            {
+              entryId: entry.entryId,
+              startOffset: entry.offsetStart,
+              endOffset: entry.offsetEnd,
+            },
+          ],
+        },
+      ];
+    },
+  };
+
+  const engine = createVirtualContextEnginePassive({
+    assistantGenerate: async () => "ack",
+    store,
+    extractor,
+    highWatermark: 0.2,
+    lowWatermark: 0.1,
+    packBudget: {
+      totalChars: 140,
+      recentLiteralPairCount: 2,
+      recallK: 4,
+    },
+  });
+
+  const turn1 = await engine.processTurn({
+    threadId,
+    messages: [{ role: "user", content: "turn one pressure" }],
+  });
+  const turn2 = await engine.processTurn({
+    threadId,
+    messages: [{ role: "user", content: "turn two pressure" }],
+  });
+
+  // Earlier turns should reflect the current scheduling decision directly.
+  expect(
+    [turn1.diagnostics.passive?.compactionSkippedReason, turn2.diagnostics.passive?.compactionSkippedReason],
+  ).toContain("none");
+
+  const turn3 = await engine.processTurn({
+    threadId,
+    messages: [{ role: "user", content: "turn three pressure" }],
+  });
+
+  expect(turn3.diagnostics.passive?.compactionJobsTriggered).toBeGreaterThan(0);
+  expect(turn3.diagnostics.passive?.compactionSkippedReason).toBe("none");
+});
+
+test("v2 passive waits for in-flight compaction before pre-model retrieval", async () => {
+  const threadId = "thread-passive-drain-wait";
+  const store = new InMemorySymbolStore();
+  const extractor: CompressionExtractor = {
+    async extract(input) {
+      await sleep(140);
+      const entry = input.entries[0];
+      if (!entry) {
+        return [];
+      }
+      return [
+        {
+          summary: "compacted",
+          content: entry.content,
+          kind: "note",
+          confidence: 0.95,
+          evidenceSpans: [
+            {
+              entryId: entry.entryId,
+              startOffset: entry.offsetStart,
+              endOffset: entry.offsetEnd,
+            },
+          ],
+        },
+      ];
+    },
+  };
+
+  const engine = createVirtualContextEnginePassive({
+    assistantGenerate: async () => "ack",
+    store,
+    extractor,
+    highWatermark: 0.05,
+    lowWatermark: 0.02,
+    packBudget: {
+      totalChars: 120,
+      recentLiteralPairCount: 1,
+    },
+    compactionDrainTimeoutMs: 600,
+    waitForCompactionDrain: true,
+  });
+
+  await engine.processTurn({
+    threadId,
+    messages: [{ role: "user", content: "seed turn one with verbose filler payload for pressure" }],
+  });
+  const second = await engine.processTurn({
+    threadId,
+    messages: [{ role: "user", content: "seed turn two with verbose filler payload for pressure" }],
+  });
+  expect(second.diagnostics.passive?.compactionJobsTriggered).toBeGreaterThan(0);
+
+  const third = await engine.processTurn({
+    threadId,
+    messages: [{ role: "user", content: "turn three should await in-flight compaction" }],
+  });
+
+  expect(third.diagnostics.passive?.compactionDrainAttempted).toBe(true);
+  expect(third.diagnostics.passive?.compactionDrainTimedOut).toBe(false);
+  expect(third.diagnostics.passive?.compactionDrainWaitMs).toBeGreaterThan(0);
+});
+
+test("v2 passive compaction drain timeout does not block the turn", async () => {
+  const threadId = "thread-passive-drain-timeout";
+  const store = new InMemorySymbolStore();
+  const extractor: CompressionExtractor = {
+    async extract(input) {
+      await sleep(220);
+      const entry = input.entries[0];
+      if (!entry) {
+        return [];
+      }
+      return [
+        {
+          summary: "slow compacted",
+          content: entry.content,
+          kind: "note",
+          confidence: 0.95,
+          evidenceSpans: [
+            {
+              entryId: entry.entryId,
+              startOffset: entry.offsetStart,
+              endOffset: entry.offsetEnd,
+            },
+          ],
+        },
+      ];
+    },
+  };
+
+  const engine = createVirtualContextEnginePassive({
+    assistantGenerate: async () => "ack",
+    store,
+    extractor,
+    highWatermark: 0.05,
+    lowWatermark: 0.02,
+    packBudget: {
+      totalChars: 120,
+      recentLiteralPairCount: 1,
+    },
+    compactionDrainTimeoutMs: 60,
+    waitForCompactionDrain: true,
+  });
+
+  await engine.processTurn({
+    threadId,
+    messages: [{ role: "user", content: "seed turn one with verbose filler payload for pressure" }],
+  });
+  await engine.processTurn({
+    threadId,
+    messages: [{ role: "user", content: "seed turn two with verbose filler payload for pressure" }],
+  });
+
+  const third = await engine.processTurn({
+    threadId,
+    messages: [{ role: "user", content: "turn three should proceed after compaction drain timeout" }],
+  });
+
+  expect(third.diagnostics.passive?.compactionDrainAttempted).toBe(true);
+  expect(third.diagnostics.passive?.compactionDrainTimedOut).toBe(true);
+  expect(third.diagnostics.passive?.compactionDrainWaitMs).toBeGreaterThanOrEqual(50);
+});
+
+test("v2 passive maxCompactionProposals bounds committed symbols per compaction job", async () => {
+  const threadId = "thread-passive-max-proposals";
+  const store = new InMemorySymbolStore();
+  const extractor: CompressionExtractor = {
+    async extract(input) {
+      return input.entries.map((entry) => ({
+        summary: `summary ${entry.entryId}`,
+        content: `${entry.role}:${entry.content}`,
+        kind: "note" as const,
+        confidence: 0.95,
+        evidenceSpans: [
+          {
+            entryId: entry.entryId,
+            startOffset: entry.offsetStart,
+            endOffset: entry.offsetEnd,
+          },
+        ],
+      }));
+    },
+  };
+
+  const assistantGenerate: AssistantGenerateFn = async (input) => {
+    const lastUser =
+      input.request.messages.findLast((message) => message.role === "user")?.content ?? "";
+    return `ack ${lastUser}`;
+  };
+
+  const engine = createVirtualContextEnginePassive({
+    assistantGenerate,
+    store,
+    extractor,
+    highWatermark: 0.99,
+    lowWatermark: 0.8,
+    ageBackfillCooldownTurns: 3,
+    maxCompactionProposals: 3,
+    packBudget: {
+      totalChars: 1_600,
+      recentLiteralPairCount: 1,
+      recallK: 3,
+    },
+  });
+
+  let last:
+    | Awaited<ReturnType<typeof engine.processTurn>>
+    | undefined;
+  for (let turn = 1; turn <= 4; turn += 1) {
+    last = await engine.processTurn({
+      threadId,
+      messages: [{ role: "user", content: `turn-${turn} unique incident detail` }],
+    });
+  }
+
+  const listed = await store.list(threadId);
+  expect(listed.length).toBeLessThanOrEqual(5);
+  expect(last?.diagnostics.passive?.maxCompactionProposalsConfigured).toBe(3);
+  expect(last?.diagnostics.passive?.committedSymbolsCount).toBeLessThanOrEqual(5);
+});
+
+test("v2 passive aligns effective hot window to metadata-provided history window", async () => {
+  const engine = createVirtualContextEnginePassive({
+    assistantGenerate: async () => "ack",
+    store: new InMemorySymbolStore(),
+    highWatermark: 0.99,
+    lowWatermark: 0.8,
+    hotWindowOverlapTurns: 1,
+    packBudget: {
+      totalChars: 1_600,
+      recentLiteralPairCount: 2,
+      recallK: 3,
+    },
+  });
+
+  let last:
+    | Awaited<ReturnType<typeof engine.processTurn>>
+    | undefined;
+  for (let turn = 1; turn <= 5; turn += 1) {
+    last = await engine.processTurn({
+      threadId: "thread-passive-history-window-metadata",
+      metadata: {
+        vcwHistoryTurnLimit: 5,
+      },
+      messages: [{ role: "user", content: `turn-${turn} data` }],
+    });
+  }
+
+  expect(last?.diagnostics.passive?.historyWindowTurns).toBe(5);
+  expect(last?.diagnostics.passive?.effectiveHotWindowPairs).toBe(4);
+  expect(last?.diagnostics.passive?.hotWindowOverlapTurns).toBe(1);
+  expect(last?.diagnostics.passive?.ageBackfillEligibleCount).toBeGreaterThan(0);
+});

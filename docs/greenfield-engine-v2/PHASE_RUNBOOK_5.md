@@ -1,69 +1,70 @@
-# Phase Runbook 5: MVP Stabilization and Ops Readiness
+# Phase Runbook 5: Passive Validation Stabilization and Ops Readiness
 
-## 1) Goal and Boundaries
+## Goal and Boundaries
 ### Goal
-Stabilize runtime behavior, confirm parity+ release gate across two consecutive production-signal runs, and finalize operations readiness.
+Stabilize passive validation quality and operations workflow using paired production runs and passive gate outcomes.
 
 ### Boundaries
-- In scope: performance tuning, reliability hardening, incident/rollback readiness.
-- Out of scope: non-MVP feature expansion.
+- In scope: reliability hardening, run pairing, drift monitoring, rollback readiness.
+- Out of scope: new feature expansion.
 
-## 2) Prerequisites and Inputs
-- Phase 4 PASS
-- Latest `RISK_REGISTER.md`
-- Latest `OPERATIONS_SLO.md`
-- Two candidate production-signal validation runs
+## Prerequisites
+- Phase 4 passive validation system complete.
+- Updated `RISK_REGISTER.md` and `OPERATIONS_SLO.md`.
+- Provider/model config fixed for paired production runs.
+- Team aligned that quick-live is a lightweight signal check, not full agent/tool orchestration evidence.
 
-## 3) Exact Task Sequence
-1. Execute first production-signal run and collect artifacts.
-2. Resolve any P0/P1 metric failures before next run.
-3. Execute second production-signal run under comparable conditions.
-4. Evaluate baseline-v2 parity+ gate with two-run drift checks.
-5. Validate latency non-regression for pre/post middleware p95.
-6. Dry-run rollback playbook.
-7. Finalize release checklist and sign-off records.
+## Task Sequence
+1. Execute production run A (`validate:production`).
+2. Resolve P0/P1 failures before running B.
+3. Execute production run B under matching conditions.
+4. Evaluate gate using `validate:gate` across the run pair.
+5. Evaluate stability checks (`validate:stability`).
+6. Run quick and quick-live smoke checks as needed.
+7. Complete rollback dry-run and sign-off.
 
-## 4) Required Commands and Checks
-Canonical certification path:
+## Canonical Commands
 ```bash
 bun run validate:phase5
 ```
 
-Diagnostic fallback sequence (only if canonical path fails):
+Fallback/manual sequence:
 ```bash
 bun run validate:production
 bun run validate:production
-bun run validate:baseline-v2
+bun run validate:gate
 bun run validate:quick
 bun run validate:quick:live
 bun run validate:stability
 ```
 
-Phase 5 certification protocol lock:
-- `VCW_VALIDATE_TIMEOUT_MS=60000`
-- `VCW_VALIDATE_CONCURRENCY=1`
-- Use fixed model/provider endpoint for both production-signal runs in the same certification attempt.
+Compatibility alias:
+```bash
+bun run validate:baseline-v2
+```
+`validate:baseline-v2` forwards to `validate:gate` and prints a deprecation warning.
 
-## 5) Expected Artifacts and File Outputs
-- Two production-signal report directories.
-- Baseline-v2 gate verdict artifacts.
-- Updated risk statuses in `RISK_REGISTER.md`.
-- Final release checklist and sign-off note.
+## Expected Artifacts
+- Two production run directories in `reports/production-*`.
+- Passive gate artifacts in `reports/gates/<timestamp>/`.
+- Updated risk status summary.
+- Certification report from `validate:phase5` when using canonical flow.
 
-## 6) Pass/Fail Checks and Rollback Trigger
+## Pass/Fail Criteria
 ### Pass
-- Two consecutive production-signal runs pass parity+ gate.
-- Zero-tolerance metrics remain satisfied.
-- No unresolved P0/P1 items without explicit, approved mitigation.
+- Gate passes with all preconditions satisfied.
+- Stability command confirms sufficient runs and no drift regression.
+- No unresolved P0/P1 risks without approved mitigation.
+- Release decision is grounded in production deterministic + gate evidence, not quick-live alone.
 
 ### Fail
-- Any gate failure in consecutive runs.
-- Any isolation or control leak violation.
-- Latency regression beyond agreed run-over-run envelope.
+- Gate precondition or dimension failure (`memory/mechanism/latency`).
+- Stability run fails or exits due insufficient production runs.
+- Thread isolation, one-call invariant, or stream equivalence failures.
 
-### Rollback trigger
-- P0 regression after release candidate cut; execute rollback playbook immediately.
+### Rollback Trigger
+- Any P0 regression after candidate cut; execute rollback playbook immediately.
 
-## 7) Handoff Notes to Post-MVP
-- Open roadmap planning for shared-plane maturity, scale-out architecture, and advanced retrieval tuning.
-- Keep KPI gate as release guardrail; no bypass without ADR and stakeholder approval.
+## Post-Phase Notes
+- Keep passive gate as release guardrail.
+- Threshold changes require synchronized updates to test matrix, runbooks, and risk register.

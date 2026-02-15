@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { createOllamaEmbeddingProvider } from "../../src/integrations/ollama";
+import { createOllamaEmbeddingProvider } from "../../src/integrations/ollama/embedding-provider";
 
 test("OllamaEmbeddingProvider uses /api/embed when available", async () => {
   const calls: string[] = [];

@@ -1,13 +1,13 @@
 import type {
   RetrievalStrategy,
   SymbolStore,
-} from "../../engine/contracts";
-import type { AssistantGenerateFn, AssistantGenerateInput } from "../../engine/hooks";
+} from "../../engine/core/types";
+import type { AssistantGenerateFn, AssistantGenerateInput } from "../../engine/core/hooks";
 import type {
   VcwLangChainMiddleware,
   LangChainAssistantResultMetadata,
 } from "../langchain/contracts";
-import type { VcwAgentToolContext } from "../langchain/agent-contracts";
+import type { VcwAgentToolContext } from "../langchain/agent/agent-contracts";
 
 export type OpenAIStreamProvider = "none" | "sse" | "buffered";
 

@@ -3,7 +3,7 @@ import type {
   EmbeddingProvider,
   EmbeddingRequest,
   EmbeddingResponse,
-} from "../../engine/contracts";
+} from "../../engine/core/types";
 import type { CreateOpenAIClient, OpenAIResponsesClientLike } from "./contracts";
 
 const DEFAULT_OPENAI_BASE_URL = "https://api.openai.com/v1";

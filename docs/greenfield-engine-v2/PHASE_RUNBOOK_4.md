@@ -1,58 +1,62 @@
-# Phase Runbook 4: Validation and KPI Gate System
+# Phase Runbook 4: Passive Validation System
 
-## 1) Goal and Boundaries
+## Goal and Boundaries
 ### Goal
-Build objective gate infrastructure (scenario runner, metrics, CI95, denominator floors, drift checks) for MVP release decisions.
+Ship passive-sliding validation (`P01..P14`) with interpretable gates that prove memory durability and retrieval quality under context pressure.
 
 ### Boundaries
-- In scope: validation runners, evaluators, metrics/report/gate outputs.
-- Out of scope: production runtime scaling.
+- In scope: scenario runners, metrics, thresholds, gates, reports, CLI validation commands.
+- Out of scope: production runtime scaling changes.
 
-## 2) Prerequisites and Inputs
-- Phase 3 PASS
-- `TEST_MATRIX.md` scenario/threshold definitions
-- `OPERATIONS_SLO.md` SLO and alert criteria
+## Prerequisites and Inputs
+- Passive middleware engine path active.
+- `TEST_MATRIX.md` and `OPERATIONS_SLO.md` updated to passive semantics.
+- Deterministic and live provider paths available for validation.
+- Live validation scope understood: lightweight provider prompt path today; full agent/tool orchestration is a follow-up.
 
-## 3) Exact Task Sequence
-1. Implement scenario catalog for required S01-S13 coverage.
-2. Implement deterministic and live runners.
-3. Implement mechanism/task-quality KPI computation with Wilson CI95.
-4. Implement threshold evaluation engine (PASS/WARN/FAIL/N/A).
-5. Implement denominator floor checks and two-run drift logic.
-6. Implement parser canary split metrics.
-7. Implement markdown/json report generation.
-8. Implement baseline-v2 parity+ gate command.
+## Task Sequence
+1. Implement passive scenario catalog (`P01..P14`) with explicit evaluators.
+2. Implement lane model:
+   - `history_only_window`
+   - `passive_sliding_window`
+3. Replace legacy threshold rules with passive threshold map.
+4. Implement `evaluatePassiveSlidingGate` (`memory`, `mechanism`, `latency`).
+5. Add schema-versioned artifacts (`passive_validation_v1`, `passive_gate_v1`).
+6. Keep compatibility alias `validate:baseline-v2` forwarding to `validate:gate` with deprecation warning.
+7. Ensure `validate:stability` fails non-zero on insufficient production runs.
 
-## 4) Required Commands and Checks
+## Required Commands
 ```bash
 bun test
 bun run validate:quick
 bun run validate:quick:live
-bun run validate:stability
 bun run validate:production
+bun run validate:gate
+bun run validate:stability
 bun run validate:baseline-v2
 ```
 
-## 5) Expected Artifacts and File Outputs
-- Scenario definitions and evaluators.
-- Metrics computation module.
-- Summary and metrics artifacts per run.
-- Gate verdict artifacts (`gate.md`, `gate.json`).
+## Expected Outputs
+- `reports/<run_id>/summary.md`
+- `reports/<run_id>/metrics.json`
+- `reports/<run_id>/scenario_results.jsonl`
+- `reports/gates/<timestamp>/gate.md`
+- `reports/gates/<timestamp>/gate.json`
 
-## 6) Pass/Fail Checks and Rollback Trigger
+## Pass/Fail Criteria
 ### Pass
-- Dual-family KPI tables generated.
-- Denominator floors and drift checks active.
-- Parser deterministic canary split operational.
+- Scenario catalog and profile planning execute without legacy default-pass behavior.
+- Gate artifacts include explicit dimension verdicts and reasons.
+- Quick profiles do not collapse into blanket denominator-floor `N/A`.
+- Timeout metric accounting is single-count per scenario execution.
 
 ### Fail
-- Missing core scenario coverage.
-- Gate logic omits denominator or drift checks.
-- KPI report lacks required metrics.
+- Missing passive head-to-head coverage.
+- Gate reasons opaque or dependent on removed parser-era metrics.
+- Stability or gate commands report success with invalid preconditions.
 
-### Rollback trigger
-- Gate reports inconsistent metric values between recompute and primary path.
+### Rollback Trigger
+- Report consistency precondition fails on gate runs (`reportConsistencyPassed=false`).
 
-## 7) Handoff Notes to Next Phase
-- Phase 5 uses gate outputs for stabilization, incident playbooks, and release readiness.
-- Any threshold change requires ADR update and matrix update in same change set.
+## Handoff to Phase 5
+- Phase 5 consumes `validate:production` and `validate:gate` outputs for release readiness and drift checks.

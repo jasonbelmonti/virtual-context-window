@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import { mkdir } from "node:fs/promises";
 import path from "node:path";
-import { resolveBaselinePair } from "../../src/validation/reports";
+import { resolveBaselinePair } from "../../src/validation/core/reports";
 import { withTempReportsRoot } from "./test-utils";
 
 test("baseline pair auto-selects latest two production runs", async () => {

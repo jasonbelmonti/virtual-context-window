@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { defaultQueryBuilder } from "../../src/engine/hooks";
+import { defaultQueryBuilder } from "../../src/engine/core/hooks";
 
 test("defaultQueryBuilder uses recent user turns and biases latest turn", () => {
   const query = defaultQueryBuilder({

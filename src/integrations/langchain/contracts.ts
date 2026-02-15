@@ -1,4 +1,4 @@
-import type { AssistantGenerateInput } from "../../engine/hooks";
+import type { AssistantGenerateInput } from "../../engine/core/hooks";
 
 export type AssistantProvider =
   | "langchain_ollama"

@@ -2,7 +2,7 @@ import type {
   EmbeddingProvider,
   EmbeddingRequest,
   EmbeddingResponse,
-} from "../../engine/contracts";
+} from "../../engine/core/types";
 
 const DEFAULT_OLLAMA_BASE_URL = "http://127.0.0.1:11434";
 
