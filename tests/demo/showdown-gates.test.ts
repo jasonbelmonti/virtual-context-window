@@ -124,3 +124,68 @@ test("incident gate reports deterministic failure reasons when requirements are 
     "web_evidence_missing",
   ]);
 });
+
+test("incident gate accepts heading and citation variants common in live model output", () => {
+  const answer = [
+    "## Situation",
+    "INC-123456 impacting payments-api.",
+    "Owner Avery Kim. Unlock token VCW‑CODE‑AAAA1111BBBB.",
+    "## Timeline",
+    "- T+0 alert",
+    "## Hypothesis",
+    "- dependency saturation",
+    "## Mitigations",
+    "- tune retries",
+    "## Next 30 min",
+    "- verify recovery",
+    "- **Source:** https://example.com/runbook",
+  ].join("\n");
+
+  const result = evaluateLaneGates({
+    lane: "compaction_on",
+    scenarioKind: "incident_response",
+    answerText: answer,
+    expectedToken: "VCW-CODE-AAAA1111BBBB",
+    trace: makeTrace([...INCIDENT_REQUIRED_TOOL_NAMES]),
+    requiredToolNames: [...INCIDENT_REQUIRED_TOOL_NAMES],
+    requiredHeadings: [...INCIDENT_REQUIRED_HEADINGS],
+    memoryEvidenceTokens: ["INC-123456", "payments-api", "Avery Kim", "VCW-CODE-AAAA1111BBBB"],
+  });
+
+  expect(result.answerCorrect).toBe(true);
+  expect(result.briefFormatSatisfied).toBe(true);
+  expect(result.webEvidenceSatisfied).toBe(true);
+  expect(result.strictGatePassed).toBe(true);
+});
+
+test("incident gate matches memory evidence across unicode spacing and dash variants", () => {
+  const answer = [
+    "## Situation",
+    "INC‑123456 impacting payments‑api.",
+    "Mitigation owner is Avery Kim. Unlock token VCW‑CODE‑AAAA1111BBBB.",
+    "## Timeline",
+    "- T+0 alert",
+    "## Hypothesis",
+    "- dependency saturation",
+    "## Mitigations",
+    "- tune retries",
+    "## Next 30m",
+    "- verify recovery",
+    "Source: https://example.com/runbook",
+  ].join("\n");
+
+  const result = evaluateLaneGates({
+    lane: "compaction_on",
+    scenarioKind: "incident_response",
+    answerText: answer,
+    expectedToken: "VCW-CODE-AAAA1111BBBB",
+    trace: makeTrace([...INCIDENT_REQUIRED_TOOL_NAMES]),
+    requiredToolNames: [...INCIDENT_REQUIRED_TOOL_NAMES],
+    requiredHeadings: [...INCIDENT_REQUIRED_HEADINGS],
+    memoryEvidenceTokens: ["INC-123456", "payments-api", "Avery Kim", "VCW-CODE-AAAA1111BBBB"],
+  });
+
+  expect(result.answerCorrect).toBe(true);
+  expect(result.memoryEvidenceSatisfied).toBe(true);
+  expect(result.strictGatePassed).toBe(true);
+});

@@ -59,6 +59,10 @@ function normalizeToolNames(names: string[]): string[] {
 }
 
 function headingSatisfied(answerText: string, heading: string): boolean {
+  if (heading.trim().toLowerCase() === "next 30m") {
+    return /^\s{0,3}(?:#{1,6}\s*)?next\s*30\s*(?:m|min|minutes)\b/imu.test(answerText);
+  }
+
   const escaped = heading.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
   const regex = new RegExp(`^\\s{0,3}(?:#{1,6}\\s*)?${escaped}\\s*:?(?:\\s|$)`, "imu");
   return regex.test(answerText);
@@ -66,8 +70,18 @@ function headingSatisfied(answerText: string, heading: string): boolean {
 
 function hasWebCitation(answerText: string): boolean {
   const hasUrl = /https?:\/\/\S+/iu.test(answerText);
-  const hasSourceLabel = /^\s*(?:[-*]\s*)?sources?\s*:/imu.test(answerText);
+  const hasSourceLabel =
+    /^\s*(?:[-*]\s*)?(?:\*\*|__)?sources?(?:\*\*|__)?\s*:/imu.test(answerText);
   return hasUrl && hasSourceLabel;
+}
+
+function normalizeForMemoryEvidence(value: string): string {
+  return value
+    .normalize("NFKC")
+    .replace(/[\u2010\u2011\u2012\u2013\u2014\u2015\u2212]/gu, "-")
+    .replace(/\s+/gu, " ")
+    .trim()
+    .toLowerCase();
 }
 
 function hasMemoryEvidence(
@@ -79,14 +93,19 @@ function hasMemoryEvidence(
     return false;
   }
 
-  const lower = answerText.toLowerCase();
+  const normalizedAnswer = normalizeForMemoryEvidence(answerText);
   let additionalHits = 0;
   for (const token of memoryEvidenceTokens) {
     if (!token || containsExactTokenIgnoreCase(token, expectedToken)) {
       continue;
     }
 
-    if (lower.includes(token.toLowerCase())) {
+    const normalizedToken = normalizeForMemoryEvidence(token);
+    if (!normalizedToken) {
+      continue;
+    }
+
+    if (normalizedAnswer.includes(normalizedToken)) {
       additionalHits += 1;
     }
   }

@@ -545,6 +545,8 @@ async function executeLane(options: {
   let attempt = 0;
   let finalTurn: { content: string; trace: AgentTurnTrace } | null = null;
   let gateResult: ShowdownLaneGateResult | null = null;
+  const missionToolNames = new Set<string>();
+  let missionToolCallCount = 0;
 
   while (attempt < Math.max(1, options.maxRetries + 1)) {
     attempt += 1;
@@ -576,6 +578,13 @@ async function executeLane(options: {
     });
     const turn = await runtime.processUserMessage(prompt);
     pushAssistant(turn.content);
+    const turnToolNames = (turn.trace.agent?.agentToolNames ?? [])
+      .map((name) => name.trim().toLowerCase())
+      .filter((name) => name.length > 0);
+    for (const toolName of turnToolNames) {
+      missionToolNames.add(toolName);
+    }
+    missionToolCallCount += turn.trace.agent?.agentToolCallCount ?? turnToolNames.length;
 
     finalTurn = turn;
     gateResult = gateForTurn({
@@ -583,7 +592,8 @@ async function executeLane(options: {
       scenario: options.scenario,
       requiredToolNames: options.requiredToolNames,
       turn,
-      toolNameOverride: options.gateToolNameOverride,
+      toolNameOverride:
+        options.gateToolNameOverride ?? Array.from(missionToolNames),
     });
 
     timelinePush(
@@ -630,8 +640,12 @@ async function executeLane(options: {
     preModelMs: finalTurn.trace.diagnostics.preModelMs,
     postModelMs: finalTurn.trace.diagnostics.postModelMs,
     symbolTableCount: finalTurn.trace.symbolTable.length,
-    agentToolCallCount: gateResult.agentToolCallCount,
-    agentToolNames: gateResult.agentToolNames,
+    agentToolNames:
+      options.gateToolNameOverride ?? Array.from(missionToolNames),
+    agentToolCallCount:
+      options.gateToolNameOverride !== undefined
+        ? gateResult.agentToolCallCount
+        : missionToolCallCount,
     requiredToolCallsSatisfied: gateResult.requiredToolCallsSatisfied,
     briefFormatSatisfied: gateResult.briefFormatSatisfied,
     memoryEvidenceSatisfied: gateResult.memoryEvidenceSatisfied,

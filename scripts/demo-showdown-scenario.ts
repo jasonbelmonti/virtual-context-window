@@ -64,6 +64,12 @@ function toWordBoundarySafePattern(token: string): RegExp {
   return new RegExp(`(^|[^A-Za-z0-9-])${escaped}([^A-Za-z0-9-]|$)`, "iu");
 }
 
+function normalizeForTokenMatch(value: string): string {
+  return value
+    .normalize("NFKC")
+    .replace(/[\u2010\u2011\u2012\u2013\u2014\u2015\u2212]/gu, "-");
+}
+
 function makeDistractorPrompts(kind: ShowdownScenarioKind, count: number): string[] {
   const prompts: string[] = [];
   for (let index = 1; index <= count; index += 1) {
@@ -155,12 +161,14 @@ function createIncidentScenario(seed: string, distractorTurns: number, now: Date
 }
 
 export function containsExactTokenIgnoreCase(text: string, token: string): boolean {
-  if (!text.trim() || !token.trim()) {
+  const normalizedText = normalizeForTokenMatch(text).trim();
+  const normalizedToken = normalizeForTokenMatch(token).trim();
+  if (!normalizedText || !normalizedToken) {
     return false;
   }
 
-  const pattern = toWordBoundarySafePattern(token.trim());
-  return pattern.test(text);
+  const pattern = toWordBoundarySafePattern(normalizedToken);
+  return pattern.test(normalizedText);
 }
 
 export function scoreAnswer(answerText: string, expectedToken: string): boolean {
