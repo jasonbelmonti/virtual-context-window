@@ -122,19 +122,51 @@ export type AssistantInvokerHook = (
   input: AssistantInvokerInput,
 ) => Promise<string>;
 
-export function defaultQueryBuilder(input: QueryBuilderInput): QueryBuilderOutput {
-  const userMessages = input.messages.filter((message) => message.role === "user");
-  const latestUserText = userMessages.at(-1)?.content ?? "";
-  const queryText = latestUserText.trim();
-  const queryTokens = queryText
+const DEFAULT_QUERY_MAX_USER_TURNS = 3;
+const DEFAULT_QUERY_MAX_CHARS = 600;
+const DEFAULT_QUERY_MAX_TOKENS = 80;
+
+function tokenizeQuery(text: string): string[] {
+  return text
     .toLowerCase()
-    .split(/\s+/u)
-    .filter((token) => token.length > 0);
+    .split(/[^a-z0-9]+/u)
+    .filter((token) => token.length > 0)
+    .slice(0, DEFAULT_QUERY_MAX_TOKENS);
+}
+
+export function defaultQueryBuilder(input: QueryBuilderInput): QueryBuilderOutput {
+  const userTurns = input.messages
+    .filter((message) => message.role === "user")
+    .map((message) => message.content.trim())
+    .filter((content) => content.length > 0)
+    .slice(-DEFAULT_QUERY_MAX_USER_TURNS);
+
+  if (userTurns.length === 0) {
+    return {
+      queryText: "",
+      queryTokens: [],
+      turnsUsed: 0,
+    };
+  }
+
+  // Keep recent turns in descending recency and repeat the latest turn to bias retrieval.
+  const newestFirst = [...userTurns].reverse();
+  const weightedParts: string[] = [];
+  for (let index = 0; index < newestFirst.length; index += 1) {
+    const turnText = newestFirst[index];
+    const repetitions = index === 0 ? 2 : 1;
+    for (let repeat = 0; repeat < repetitions; repeat += 1) {
+      weightedParts.push(turnText);
+    }
+  }
+
+  const queryText = weightedParts.join("\n").slice(0, DEFAULT_QUERY_MAX_CHARS).trim();
+  const queryTokens = tokenizeQuery(queryText);
 
   return {
     queryText,
     queryTokens,
-    turnsUsed: queryText.length > 0 ? 1 : 0,
+    turnsUsed: userTurns.length,
   };
 }
 
