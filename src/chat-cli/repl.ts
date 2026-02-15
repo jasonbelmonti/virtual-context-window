@@ -157,11 +157,29 @@ function toPrintableMessage(error: unknown): string {
   return String(error);
 }
 
-function renderConversationHistory(messages: VirtualContextMessage[]): string {
+function compactSingleLine(text: string, maxChars = 160): string {
+  const normalized = text.replace(/\s+/gu, " ").trim();
+  if (normalized.length <= maxChars) {
+    return normalized;
+  }
+  if (maxChars <= 3) {
+    return normalized.slice(0, maxChars);
+  }
+  return `${normalized.slice(0, maxChars - 3)}...`;
+}
+
+function renderConversationHistory(
+  messages: VirtualContextMessage[],
+  theme: ReturnType<typeof createCliTheme>,
+): string {
   const lines = messages.map((message) =>
-    `- [${message.role}] ${message.content.replace(/\s+/gu, " ").trim() || "(empty)"}`
+    `${theme.success("●")} ${theme.success("IN_WINDOW")} ${theme.value(`[${message.role}]`)} ${compactSingleLine(message.content || "(empty)")}`
   );
-  return ["CONVERSATION HISTORY", lines.join("\n") || "(empty)"].join("\n");
+  return [
+    theme.section("CONVERSATION HISTORY"),
+    theme.subtle("window=off (unbounded)"),
+    theme.value(lines.join("\n") || "(empty)"),
+  ].join("\n");
 }
 
 export async function runInteractiveChatCli(
@@ -222,7 +240,7 @@ export async function runInteractiveChatCli(
         writeLine(print, renderTurnTrace(turn.trace, { color: colorEnabled }));
       }
       if (showHistory) {
-        writeLine(print, theme.value(renderConversationHistory(runtime.getConversationHistory())));
+        writeLine(print, renderConversationHistory(runtime.getConversationHistory(), theme));
       }
       return 0;
     } catch (error) {
@@ -341,7 +359,7 @@ export async function runInteractiveChatCli(
           writeLine(print, renderTurnTrace(result.trace, { color: colorEnabled }));
         }
         if (showHistory) {
-          writeLine(print, theme.value(renderConversationHistory(runtime.getConversationHistory())));
+          writeLine(print, renderConversationHistory(runtime.getConversationHistory(), theme));
         }
       } catch (error) {
         const classification = runtime.classifyError(error);

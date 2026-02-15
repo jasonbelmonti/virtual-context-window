@@ -31,6 +31,11 @@ type RenderResult = {
   recallIncluded: number;
 };
 
+type IndexLineVariant = {
+  full: string;
+  compact: string;
+};
+
 function truncateDeterministic(text: string, maxChars: number): string {
   if (maxChars <= 0) {
     return "";
@@ -136,6 +141,39 @@ function renderPack(input: {
     appendLineWithBudget(lines, "\n", remainingChars);
   };
 
+  const appendIndexSection = (items: IndexLineVariant[]) => {
+    if (items.length === 0) {
+      return;
+    }
+
+    const titleLine = "SYMBOL INDEX\n";
+    if (!appendLineWithBudget(lines, titleLine, remainingChars)) {
+      return;
+    }
+
+    let included = false;
+    for (const item of items) {
+      if (appendLineWithBudget(lines, item.full, remainingChars, { allowTruncate: false })) {
+        included = true;
+        continue;
+      }
+      // If summary cannot fit, keep the ID visible as a compact checkpoint.
+      if (appendLineWithBudget(lines, item.compact, remainingChars, { allowTruncate: false })) {
+        included = true;
+        continue;
+      }
+      break;
+    }
+
+    if (!included) {
+      lines.pop();
+      remainingChars.value += titleLine.length;
+      return;
+    }
+
+    appendLineWithBudget(lines, "\n", remainingChars);
+  };
+
   const hydratedIds = new Set(
     [...input.hydratedFocused, ...input.hydratedRecall].map((record) => record.symbolId),
   );
@@ -144,7 +182,10 @@ function renderPack(input: {
     .slice(0, input.budget.symbolIndexLimit)
     .map((item) => {
       const summary = truncateDeterministic(item.summary, dynamicIndexMaxChars);
-      return `- ${item.symbolId}: ${summary}\n`;
+      return {
+        full: `- ${item.symbolId}: ${summary}\n`,
+        compact: `- ${item.symbolId}\n`,
+      };
     });
 
   const focusedLines = input.hydratedFocused.map((item) => {
@@ -177,7 +218,7 @@ function renderPack(input: {
         recallIncluded += 1;
       },
     );
-  const appendIndex = () => appendSection("SYMBOL INDEX", indexLines, { allowItemTruncate: false });
+  const appendIndex = () => appendIndexSection(indexLines);
 
   if (input.prioritizeHydrated) {
     appendMemory();

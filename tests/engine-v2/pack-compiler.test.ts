@@ -133,3 +133,44 @@ test("pack compiler does not mid-truncate symbol index entries", () => {
     .filter((line) => line.startsWith("- sym_"));
   expect(indexLines.every((line) => line.includes(": "))).toBe(true);
 });
+
+test("pack compiler keeps symbol index visible by degrading to compact id lines", () => {
+  const budget = {
+    totalChars: 26,
+    symbolIndexLimit: 8,
+    indexItemMaxChars: 120,
+    focusedItemMaxChars: 120,
+    recallItemMaxChars: 80,
+    recallK: 2,
+    recentLiteralPairCount: 2,
+  };
+
+  const result = compilePassiveContextPack({
+    queryText: "index",
+    turnsUsed: 1,
+    symbolIndex: [
+      {
+        symbolId: "sym_000001",
+        summary: "very long summary that cannot fit in this tiny pack budget",
+      },
+      {
+        symbolId: "sym_000002",
+        summary: "also long",
+      },
+    ],
+    hydratedFocused: [],
+    hydratedRecall: [],
+    budget,
+    highWatermark: 0.95,
+    lowWatermark: 0.6,
+    compactMode: false,
+    lexicalCandidateCount: 0,
+    vectorCandidateCount: 0,
+    rerankedCandidateCount: 0,
+  });
+
+  expect(result.text).toContain("SYMBOL INDEX");
+  expect(result.text).toContain("- sym_000001");
+  expect(result.text).not.toContain("...[truncated]");
+  expect(result.usedChars).toBeLessThanOrEqual(budget.totalChars);
+});

@@ -205,13 +205,27 @@ function renderPreModelContextPack(
 
 function renderConversationHistory(
   messages: VirtualContextMessage[],
+  historyTurnLimit: number | null,
   theme: ReturnType<typeof createCliTheme>,
 ): string {
-  const lines = messages.map((message) =>
-    `- [${message.role}] ${compactSingleLine(message.content || "(empty)", 160)}`
-  );
+  const maxMessages = historyTurnLimit && historyTurnLimit > 0
+    ? historyTurnLimit * 2
+    : null;
+  const inWindowStart = maxMessages === null
+    ? 0
+    : Math.max(0, messages.length - maxMessages);
+  const lines = messages.map((message, index) => {
+    const inWindow = index >= inWindowStart;
+    const marker = inWindow ? theme.success("IN_WINDOW") : theme.subtle("OUT_OF_WINDOW");
+    const prefix = inWindow ? theme.success("●") : theme.subtle("○");
+    return `${prefix} ${marker} ${theme.value(`[${message.role}]`)} ${compactSingleLine(message.content || "(empty)", 160)}`;
+  });
+  const legend = historyTurnLimit && historyTurnLimit > 0
+    ? `window=${historyTurnLimit} turn(s), messages in window=${Math.min(messages.length, maxMessages ?? messages.length)}`
+    : "window=off (unbounded)";
   return [
     theme.section("CONVERSATION HISTORY"),
+    theme.subtle(legend),
     theme.value(lines.join("\n") || "(empty)"),
   ].join("\n");
 }
@@ -432,7 +446,15 @@ export async function runInteractiveAgentCli(
         writeLine(print, renderPostModelDiagnostics(turn.trace, theme));
       }
       if (showHistory) {
-        writeLine(print, renderConversationHistory(runtime.getConversationHistory(), theme));
+        const state = runtime.getState();
+        writeLine(
+          print,
+          renderConversationHistory(
+            runtime.getConversationHistory(),
+            state.historyTurnLimit,
+            theme,
+          ),
+        );
       }
       return 0;
     } catch (error) {
@@ -636,7 +658,15 @@ export async function runInteractiveAgentCli(
           writeLine(print, renderPostModelDiagnostics(result.trace, theme));
         }
         if (showHistory) {
-          writeLine(print, renderConversationHistory(runtime.getConversationHistory(), theme));
+          const state = runtime.getState();
+          writeLine(
+            print,
+            renderConversationHistory(
+              runtime.getConversationHistory(),
+              state.historyTurnLimit,
+              theme,
+            ),
+          );
         }
       } catch (error) {
         const classification = runtime.classifyError(error);
