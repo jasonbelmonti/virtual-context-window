@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { compilePassiveContextPack, type EventTapeEntry } from "../../src/engine-v2";
+import { compilePassiveContextPack, type EventTapeEntry } from "../../src/engine";
 
 function entry(id: string, content: string): EventTapeEntry {
   return {
@@ -63,6 +63,8 @@ test("pack compiler hides hydrated symbols from index and enforces budget", () =
 
   expect(result.text).toContain("FOCUSED MEMORY");
   expect(result.text).toContain("SEMANTIC RECALL");
+  expect(result.text).toContain("RECENT LITERALS");
+  expect(result.text).toContain("- [user] evt_1: we saw unlock code during incident");
   expect(result.text).toContain("- sym_other:");
   expect(result.text).not.toContain("- sym_focus:");
   expect(result.text).not.toContain("- sym_recall: recall symbol");

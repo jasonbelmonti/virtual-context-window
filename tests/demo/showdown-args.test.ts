@@ -6,12 +6,12 @@ test("parseShowdownArgs applies upgraded defaults", () => {
   const parsed = parseShowdownArgs([]);
 
   expect(parsed.provider).toBe("ollama");
-  expect(parsed.historyLimit).toBe(1);
-  expect(parsed.distractorTurns).toBe(6);
+  expect(parsed.historyLimit).toBe(5);
+  expect(parsed.distractorTurns).toBe(20);
   expect(parsed.stream).toBe(false);
-  expect(parsed.strict).toBe(true);
   expect(parsed.scenario).toBe("incident_response");
   expect(parsed.maxRetries).toBe(2);
+  expect(parsed.runs).toBe(1);
   expect(parsed.seed).toBeUndefined();
   expect(parsed.outputDir).toBeUndefined();
 });
@@ -26,12 +26,12 @@ test("parseShowdownArgs parses explicit overrides", () => {
     "7",
     "--stream",
     "on",
-    "--strict",
-    "off",
     "--scenario",
-    "classic",
+    "incident_response",
     "--max-retries",
     "4",
+    "--runs",
+    "5",
     "--seed",
     "seed-123",
     "--output-dir",
@@ -42,9 +42,9 @@ test("parseShowdownArgs parses explicit overrides", () => {
   expect(parsed.historyLimit).toBe(3);
   expect(parsed.distractorTurns).toBe(7);
   expect(parsed.stream).toBe(true);
-  expect(parsed.strict).toBe(false);
-  expect(parsed.scenario).toBe("classic");
+  expect(parsed.scenario).toBe("incident_response");
   expect(parsed.maxRetries).toBe(4);
+  expect(parsed.runs).toBe(5);
   expect(parsed.seed).toBe("seed-123");
   expect(parsed.outputDir).toBe("/tmp/demo-dir");
 });

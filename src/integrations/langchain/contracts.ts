@@ -1,31 +1,15 @@
-import type { VirtualContextTurnRequest } from "../../engine/contracts";
-import type { UpsertSymbolEvent } from "../../engine/contracts";
 import type { AssistantGenerateInput } from "../../engine/hooks";
 
-export type WriteIntentMode = "none" | "strict" | "auto";
-export type WriteTransport =
-  | "plain_text"
-  | "function_call_bridge"
-  | "detector_bridge";
-export type WriteToolSchemaVersion = "v1";
 export type AssistantProvider =
   | "langchain_ollama"
   | "langchain_create_agent_ollama"
   | "openai_responses";
+
 export type AssistantStreamProvider =
   | "none"
   | "langchain_stream"
   | "sse"
   | "buffered";
-
-export type WriteIntentContext = {
-  mode: WriteIntentMode;
-};
-
-export type WriteIntentToolPayload = {
-  assistant_response: string;
-  symbol_events: UpsertSymbolEvent[];
-};
 
 export type VcwLangChainMiddlewareContext = {
   request: AssistantGenerateInput["request"];
@@ -51,11 +35,7 @@ export type LangChainAssistantResultMetadata = {
   streamedTextChars?: number;
   streamBuffered?: boolean;
   streamProvider?: AssistantStreamProvider;
-  writeIntentMode: WriteIntentMode;
-  writeIntentSatisfied: boolean;
-  writeTransport: WriteTransport;
   toolCallDetected: boolean;
-  writeToolSchemaVersion: WriteToolSchemaVersion;
   autoMode?: "off" | "shadow" | "active";
   autoTriggered?: boolean;
   autoConfidence?: number;
@@ -102,10 +82,6 @@ export type LangChainInvokeResult = {
 export interface LangChainChatInvoker {
   invoke(prompt: string): Promise<LangChainInvokeResult | unknown>;
   stream?(prompt: string): AsyncIterable<unknown>;
-  invokeWithWriteTool?(
-    prompt: string,
-    options: { schemaVersion: WriteToolSchemaVersion },
-  ): Promise<LangChainInvokeResult | unknown>;
 }
 
 export type LangChainAssistantOptions = {
@@ -114,10 +90,6 @@ export type LangChainAssistantOptions = {
   temperature?: number;
   env?: Record<string, string | undefined>;
   middleware?: VcwLangChainMiddleware[];
-  writeIntentResolver?: (
-    request: VirtualContextTurnRequest,
-  ) => WriteIntentMode;
-  writeToolSchemaVersion?: WriteToolSchemaVersion;
   onResultMetadata?: (
     metadata: LangChainAssistantResultMetadata,
   ) => void | Promise<void>;

@@ -1,15 +1,11 @@
 import OpenAI from "openai";
-import type { SymbolRecordKind, SymbolStore } from "../engine/contracts";
-import {
-  DEFAULT_MAX_CONTENT_CHARS,
-  DEFAULT_MAX_EVENTS,
-} from "../engine/symbol-event-policy";
+import type { SymbolRecordKind, SymbolStore } from "./passive-contracts";
 import type {
   CompressionExtractor,
   CompressionExtractorInput,
   CompressionProposal,
   PassiveCommitPolicyResult,
-} from "./contracts";
+} from "./passive-contracts";
 
 type ExtractorProvider = "ollama" | "openai_responses";
 
@@ -23,6 +19,8 @@ const SECRET_PATTERN =
 
 const DEFAULT_CONFIDENCE_THRESHOLD = 0.75;
 const DEFAULT_MAX_PROPOSALS = 4;
+const DEFAULT_MAX_EVENTS = 8;
+const DEFAULT_MAX_CONTENT_CHARS = 4_000;
 
 function asObject(value: unknown): Record<string, unknown> | null {
   if (!value || typeof value !== "object" || Array.isArray(value)) {

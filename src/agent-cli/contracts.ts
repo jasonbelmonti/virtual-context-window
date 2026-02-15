@@ -5,22 +5,15 @@ import type {
   TelemetryEvent,
   VirtualContextMessage,
 } from "../engine";
-import type {
-  WriteIntentMode,
-  WriteToolSchemaVersion,
-  WriteTransport,
-} from "../integrations/langchain";
 import type { AutoSymbolMode, RecognitionScoreBand } from "../recognition";
 
 export type TraceMode = "off" | "on";
-export type KernelMode = "v1" | "v2_passive";
 
 export type AgentCliLaunchOptions = {
   once?: string;
   trace?: boolean;
   mock?: boolean;
   provider?: "ollama" | "openai_responses";
-  kernelMode?: KernelMode;
   stream?: boolean;
   threadId?: string;
   env?: Record<string, string | undefined>;
@@ -48,18 +41,76 @@ export type AgentAssistantTraceMetadata = {
   agentToolCallCount: number;
   agentToolNames: string[];
   agentLoopDurationMs: number;
-  writeIntentMode: WriteIntentMode;
-  writeTransport: WriteTransport;
-  writeIntentSatisfied: boolean;
-  toolCallDetected: boolean;
-  writeToolSchemaVersion: WriteToolSchemaVersion;
 };
+
+export type AgentLifecycleEvent =
+  | {
+      seq: number;
+      timestampMs: number;
+      type: "retrieval_candidates";
+      queryText: string;
+      candidateSymbolIds: string[];
+      focusedCandidates: Array<{
+        symbolId: string;
+        score: number;
+      }>;
+      recallCandidates: Array<{
+        symbolId: string;
+        score: number;
+      }>;
+    }
+  | {
+      seq: number;
+      timestampMs: number;
+      type: "compaction_candidates";
+      pressureRatio: number;
+      pressureState: "normal" | "compact";
+      compactionTriggered: boolean;
+      compactionReason: "high_watermark" | "below_threshold" | "none";
+      scheduleResult:
+        | "none"
+        | "in_flight"
+        | "low_pressure"
+        | "no_candidates"
+        | "extractor_error";
+      candidateEntries: Array<{
+        entryId: string;
+        role: "user" | "assistant";
+        chars: number;
+        preview: string;
+      }>;
+    }
+  | {
+      seq: number;
+      timestampMs: number;
+      type: "tool_call_started";
+      toolName: string;
+      argsPreview: string;
+    }
+  | {
+      seq: number;
+      timestampMs: number;
+      type: "tool_call_completed";
+      toolName: string;
+      argsPreview: string;
+      resultPreview: string;
+      durationMs: number;
+    }
+  | {
+      seq: number;
+      timestampMs: number;
+      type: "tool_call_failed";
+      toolName: string;
+      argsPreview: string;
+      errorMessage: string;
+      durationMs: number;
+    };
 
 export type AgentTurnTrace = {
   threadId: string;
-  kernelMode: KernelMode;
   stages: EngineStage[];
   telemetry: TelemetryEvent[];
+  lifecycle?: AgentLifecycleEvent[];
   symbolTable: SymbolRecord[];
   contextPackText: string;
   rawModelContent: string;
@@ -74,6 +125,9 @@ export type AgentTurnTrace = {
       pressureRatio: number;
       pressurePeak: number;
       pressureState: "normal" | "compact";
+      compactionDrainAttempted: boolean;
+      compactionDrainWaitMs: number;
+      compactionDrainTimedOut: boolean;
       compactionTriggered: boolean;
       compactionReason: "high_watermark" | "below_threshold" | "none";
       compactionJobsTriggered: number;
@@ -116,7 +170,6 @@ export type AgentCliStateView = {
   threadId: string;
   traceMode: TraceMode;
   provider: "ollama" | "openai_responses";
-  kernelMode: KernelMode;
   streamEnabled: boolean;
   autoSymbolMode: AutoSymbolMode;
   historyTurnLimit: number | null;
@@ -125,7 +178,7 @@ export type AgentCliStateView = {
 
 export type AgentCliCommand =
   | { type: "help" }
-  | { type: "trace"; action: "on" | "off" | "view" | "raw" }
+  | { type: "trace"; action: "on" | "off" | "view" | "raw" | "pack" | "tape" }
   | { type: "stream"; action: "on" | "off" | "status" }
   | { type: "auto"; action: "on" | "off" | "shadow" | "status" }
   | { type: "state" }
@@ -135,7 +188,6 @@ export type AgentCliCommand =
   | { type: "show"; symbolId: string }
   | { type: "history"; action: "clear" | "status" | "off" }
   | { type: "history_limit"; turns: number }
-  | { type: "experiment"; mode: "vcw-only" | "chat-only" }
   | { type: "thread"; threadId: string }
   | { type: "quit" };
 

@@ -17,6 +17,16 @@ test("parseSlashCommand parses supported commands", () => {
     command: { type: "trace", action: "raw" },
   });
 
+  expect(parseSlashCommand("/trace pack")).toEqual({
+    ok: true,
+    command: { type: "trace", action: "pack" },
+  });
+
+  expect(parseSlashCommand("/trace tape")).toEqual({
+    ok: true,
+    command: { type: "trace", action: "tape" },
+  });
+
   expect(parseSlashCommand("/stream off")).toEqual({
     ok: true,
     command: { type: "stream", action: "off" },
@@ -25,16 +35,6 @@ test("parseSlashCommand parses supported commands", () => {
   expect(parseSlashCommand("/auto shadow")).toEqual({
     ok: true,
     command: { type: "auto", action: "shadow" },
-  });
-
-  expect(parseSlashCommand("/experiment vcw-only")).toEqual({
-    ok: true,
-    command: { type: "experiment", mode: "vcw-only" },
-  });
-
-  expect(parseSlashCommand("/experiment chat-only")).toEqual({
-    ok: true,
-    command: { type: "experiment", mode: "chat-only" },
   });
 
   expect(parseSlashCommand("/symbols 5")).toEqual({
@@ -78,7 +78,7 @@ test("parseSlashCommand returns useful errors for invalid input", () => {
   const invalidTrace = parseSlashCommand("/trace maybe");
   expect(invalidTrace).toEqual({
     ok: false,
-    error: "usage: /trace on|off|view|raw",
+    error: "usage: /trace on|off|view|raw|pack|tape",
   });
 
   const invalidStream = parseSlashCommand("/stream maybe");
@@ -111,19 +111,13 @@ test("parseSlashCommand returns useful errors for invalid input", () => {
     error: "usage: /history clear",
   });
 
-  const invalidExperiment = parseSlashCommand("/experiment weird-mode");
-  expect(invalidExperiment).toEqual({
-    ok: false,
-    error: "usage: /experiment vcw-only|chat-only",
-  });
 });
 
 test("formatHelpText includes all command anchors", () => {
   const help = formatHelpText();
-  expect(help).toContain("/trace on|off|view|raw");
+  expect(help).toContain("/trace on|off|view|raw|pack|tape");
   expect(help).toContain("/stream on|off|status");
   expect(help).toContain("/auto on|off|shadow|status");
-  expect(help).toContain("/experiment vcw-only|chat-only");
   expect(help).toContain("/history clear");
   expect(help).toContain("/remember <text>");
   expect(help).toContain("/symbols [limit]");

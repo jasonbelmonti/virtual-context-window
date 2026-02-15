@@ -1,32 +1,43 @@
 import { createHash, randomUUID } from "node:crypto";
 
-export type ShowdownLane = "chat_only" | "vcw_only";
-export type ShowdownScenarioKind = "classic" | "incident_response";
+export type ShowdownLane = "history_only_window" | "passive_sliding_window";
+export type ShowdownScenarioKind = "incident_response";
 
 export type ShowdownSentinelFact = {
   key: string;
   value: string;
 };
 
+export type IncidentRequiredFacts = {
+  incidentId: string;
+  service: string;
+  ownerLatest: string;
+  unlockTokenLatest: string;
+};
+
 export type IncidentScenarioDetails = {
   incidentId: string;
   service: string;
   region: string;
-  owner: string;
+  ownerInitial: string;
+  ownerLatest: string;
+  unlockTokenInitial: string;
+  unlockTokenLatest: string;
   startedAt: string;
   symptom: string;
   dashboardUrl: string;
   runbookUrl: string;
   searchQuery: string;
   expectedHeadings: string[];
-  memoryEvidenceTokens: string[];
+  requiredFacts: IncidentRequiredFacts;
 };
 
 export type ShowdownScenario = {
   kind: ShowdownScenarioKind;
   runId: string;
   seed: string;
-  sentinels: ShowdownSentinelFact[];
+  initialFacts: ShowdownSentinelFact[];
+  updateFacts: ShowdownSentinelFact[];
   expectedToken: string;
   finalQuestion: string;
   distractorPrompts: string[];
@@ -64,6 +75,12 @@ function toWordBoundarySafePattern(token: string): RegExp {
   return new RegExp(`(^|[^A-Za-z0-9-])${escaped}([^A-Za-z0-9-]|$)`, "iu");
 }
 
+function normalizeForTokenMatch(value: string): string {
+  return value
+    .normalize("NFKC")
+    .replace(/[\u2010\u2011\u2012\u2013\u2014\u2015\u2212]/gu, "-");
+}
+
 function makeDistractorPrompts(kind: ShowdownScenarioKind, count: number): string[] {
   const prompts: string[] = [];
   for (let index = 1; index <= count; index += 1) {
@@ -80,121 +97,121 @@ function makeDistractorPrompts(kind: ShowdownScenarioKind, count: number): strin
   return prompts;
 }
 
-function createClassicScenario(seed: string, distractorTurns: number, now: Date): ShowdownScenario {
-  const projectToken = deterministicHex(seed, "classic-project", 8);
-  const incidentToken = deterministicHex(seed, "classic-incident", 8);
-  const unlockToken = `VCW-CODE-${deterministicHex(seed, "classic-unlock", 12)}`;
-
-  const sentinels: ShowdownSentinelFact[] = [
-    { key: "Project codename", value: `VCW-NAME-${projectToken}` },
-    { key: "Incident alias", value: `VCW-INC-${incidentToken}` },
-    { key: "Demo unlock code", value: unlockToken },
-  ];
-
-  return {
-    kind: "classic",
-    runId: toRunId("classic", now),
-    seed,
-    sentinels,
-    expectedToken: unlockToken,
-    finalQuestion: "Return only the exact token for Demo unlock code. No explanation. No punctuation.",
-    distractorPrompts: makeDistractorPrompts("classic", distractorTurns),
-  };
-}
-
-function createIncidentScenario(seed: string, distractorTurns: number, now: Date): ShowdownScenario {
-  const unlockToken = `VCW-CODE-${deterministicHex(seed, "incident-unlock", 12)}`;
+function createIncidentScenario(
+  seed: string,
+  distractorTurns: number,
+  now: Date,
+): ShowdownScenario {
   const incidentId = `INC-${deterministicHex(seed, "incident-id", 6)}`;
   const service = "payments-api";
   const region = "us-east-1";
-  const owner = "Avery Kim";
+  const ownerInitial = "Avery Kim";
+  const ownerLatest = "Jordan Lee";
+  const unlockTokenInitial = `VCW-CODE-${deterministicHex(seed, "incident-unlock-initial", 12)}`;
+  const unlockTokenLatest = `VCW-CODE-${deterministicHex(seed, "incident-unlock-latest", 12)}`;
   const startedAt = "2026-02-14T09:42:00Z";
   const symptom = "elevated 5xx and checkout latency spikes";
   const dashboardUrl = "https://status.example.com/incidents";
   const runbookUrl = "https://runbooks.example.com/incidents/checkout-5xx";
   const searchQuery = `${service} incident response 5xx mitigation checklist`;
 
-  const sentinels: ShowdownSentinelFact[] = [
+  const initialFacts: ShowdownSentinelFact[] = [
     { key: "Incident ID", value: incidentId },
     { key: "Impacted service", value: service },
     { key: "Primary region", value: region },
-    { key: "Mitigation owner", value: owner },
-    { key: "Incident unlock token", value: unlockToken },
+    { key: "Mitigation owner", value: ownerInitial },
+    { key: "Incident unlock token", value: unlockTokenInitial },
     { key: "Runbook", value: runbookUrl },
   ];
 
-  const expectedHeadings = [
-    "Situation",
-    "Timeline",
-    "Hypothesis",
-    "Mitigations",
-    "Next 30m",
+  const updateFacts: ShowdownSentinelFact[] = [
+    { key: "Mitigation owner", value: ownerLatest },
+    { key: "Incident unlock token", value: unlockTokenLatest },
   ];
+
+  const expectedHeadings = ["Situation", "Timeline", "Next 30m"];
 
   const finalQuestion = [
     "You are producing an incident-response brief for engineering leadership.",
-    "Execution contract:",
-    "- Call vcw_search_symbols exactly once to recover durable incident memory from this thread.",
-    "- Call vcw_web_search exactly once to gather one fresh external reference.",
-    "- After those two tool calls, return the final answer immediately with no additional tool calls.",
-    `Use web search query: \"${searchQuery}\".`,
-    "Return markdown with EXACT section headings:",
+    "Use the MOST RECENT value when a fact changed over time.",
+    "You may use memory and web tools if useful, but tool usage is optional.",
+    `Helpful search query if needed: \"${searchQuery}\".`,
+    "Return markdown and include these section headings:",
     "## Situation",
     "## Timeline",
-    "## Hypothesis",
-    "## Mitigations",
     "## Next 30m",
+    "Include these exact field labels in your answer:",
+    "- Incident ID:",
+    "- Impacted service:",
+    "- Mitigation owner:",
+    "- Incident unlock token:",
     "Requirements:",
-    "- Include exact Incident ID from durable memory.",
-    "- Include exact impacted service from durable memory.",
-    "- Include exact mitigation owner from durable memory.",
-    "- Include exact incident unlock token from durable memory.",
-    "- Include at least one source URL and a line starting with 'Source:'.",
+    "- Values must be latest values at mission time.",
+    "- If unknown, write UNKNOWN instead of guessing.",
   ].join("\n");
 
   return {
     kind: "incident_response",
     runId: toRunId("incident_response", now),
     seed,
-    sentinels,
-    expectedToken: unlockToken,
+    initialFacts,
+    updateFacts,
+    expectedToken: unlockTokenLatest,
     finalQuestion,
     distractorPrompts: makeDistractorPrompts("incident_response", distractorTurns),
     incident: {
       incidentId,
       service,
       region,
-      owner,
+      ownerInitial,
+      ownerLatest,
+      unlockTokenInitial,
+      unlockTokenLatest,
       startedAt,
       symptom,
       dashboardUrl,
       runbookUrl,
       searchQuery,
       expectedHeadings,
-      memoryEvidenceTokens: [incidentId, service, owner, unlockToken],
+      requiredFacts: {
+        incidentId,
+        service,
+        ownerLatest,
+        unlockTokenLatest,
+      },
     },
   };
 }
 
 export function containsExactTokenIgnoreCase(text: string, token: string): boolean {
-  if (!text.trim() || !token.trim()) {
+  const normalizedText = normalizeForTokenMatch(text).trim();
+  const normalizedToken = normalizeForTokenMatch(token).trim();
+  if (!normalizedText || !normalizedToken) {
     return false;
   }
 
-  const pattern = toWordBoundarySafePattern(token.trim());
-  return pattern.test(text);
+  const pattern = toWordBoundarySafePattern(normalizedToken);
+  return pattern.test(normalizedText);
 }
 
 export function scoreAnswer(answerText: string, expectedToken: string): boolean {
   return containsExactTokenIgnoreCase(answerText, expectedToken);
 }
 
-export function buildSentinelWriteText(fact: ShowdownSentinelFact): string {
+export function buildIncidentFactTurnText(
+  fact: ShowdownSentinelFact,
+  phase: "seed" | "update",
+): string {
+  const header =
+    phase === "seed"
+      ? "Incident seed event (log and acknowledge)."
+      : "Incident update event (latest authoritative update).";
   return [
-    `Fact key: ${fact.key}.`,
-    `Fact value: ${fact.value}.`,
-    "Store this as durable memory and keep the value exact.",
-  ].join(" ");
+    header,
+    `Field: ${fact.key}`,
+    `Value: ${fact.value}`,
+    "Reply with exactly: seeded",
+  ].join("\n");
 }
 
 export function createShowdownScenario(
@@ -202,10 +219,5 @@ export function createShowdownScenario(
 ): ShowdownScenario {
   const seed = toSeed(options.seed);
   const now = options.now ?? new Date();
-
-  if (options.kind === "classic") {
-    return createClassicScenario(seed, options.distractorTurns, now);
-  }
-
   return createIncidentScenario(seed, options.distractorTurns, now);
 }

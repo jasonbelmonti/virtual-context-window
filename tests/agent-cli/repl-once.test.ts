@@ -37,29 +37,26 @@ test("--once with --trace prints trace output in mock mode", async () => {
 
   expect(exitCode).toBe(0);
   const output = printed.join("\n");
-  expect(output).toContain("Got it.");
-  expect(output).toContain("PROJECTION ACCEPTED");
-  expect(output).toContain("origin=MODEL_RENDERED");
-  expect(output).toContain("transport=plain_text");
-  expect(output).toContain("--- Agent Turn Trace ---");
-  expect(output).toContain("parseOutcome");
-  expect(output).toContain("control_channel_valid");
+  expect(output).toContain("Mock agent: remember: keep agent tests deterministic");
+  expect(output).toContain("PRE-MODEL");
+  expect(output).toContain("Assembly");
+  expect(output).toContain("Context Pack: Content");
+  expect(output).toContain("Lifecycle #");
+  expect(output).toContain("remember: keep agent tests deterministic");
 });
 
-test("live startup fails fast when VCW_OLLAMA_EMBED_MODEL is missing", async () => {
+test("live startup fails fast when VCW_OLLAMA_MODEL is missing", async () => {
   const errors: string[] = [];
 
   const exitCode = await runInteractiveAgentCli({
     once: "hello",
     mock: false,
-    env: {
-      VCW_OLLAMA_MODEL: "gpt-oss:20b",
-    },
+    env: {},
     printError: (text) => {
       errors.push(text);
     },
   });
 
   expect(exitCode).toBe(1);
-  expect(errors.join("\n")).toContain("missing_env:VCW_OLLAMA_EMBED_MODEL");
+  expect(errors.join("\n")).toContain("missing_env:VCW_OLLAMA_MODEL");
 });

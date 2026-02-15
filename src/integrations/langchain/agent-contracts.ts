@@ -4,14 +4,7 @@ import type {
   VirtualContextTurnRequest,
 } from "../../engine/contracts";
 import type { AssistantGenerateInput, AssistantGenerateFn } from "../../engine/hooks";
-import type { VcwLangChainMiddleware } from "./contracts";
-import type { LangChainAssistantOptions } from "./contracts";
-import type {
-  AssistantStreamProvider,
-  WriteIntentMode,
-  WriteToolSchemaVersion,
-  WriteTransport,
-} from "./contracts";
+import type { VcwLangChainMiddleware, AssistantStreamProvider } from "./contracts";
 
 export type AgentToolListResult = {
   symbols: Array<{
@@ -59,6 +52,30 @@ export type FetchLike = (
   init?: RequestInit,
 ) => Promise<Response>;
 
+export type VcwToolLifecycleEvent =
+  | {
+      type: "tool_call_started";
+      toolName: string;
+      argsPreview: string;
+      timestampMs: number;
+    }
+  | {
+      type: "tool_call_completed";
+      toolName: string;
+      argsPreview: string;
+      resultPreview: string;
+      durationMs: number;
+      timestampMs: number;
+    }
+  | {
+      type: "tool_call_failed";
+      toolName: string;
+      argsPreview: string;
+      errorMessage: string;
+      durationMs: number;
+      timestampMs: number;
+    };
+
 export type VcwAgentToolContext = {
   store: SymbolStore;
   threadId: string;
@@ -73,6 +90,10 @@ export type VcwAgentToolContext = {
     source?: string;
     fetchFn?: FetchLike;
   };
+  now?: () => number;
+  onToolLifecycle?: (
+    event: VcwToolLifecycleEvent,
+  ) => void | Promise<void>;
 };
 
 export interface LangChainAgentRuntime {
@@ -116,11 +137,7 @@ export type LangChainAgentMetadata = {
   agentToolCallCount: number;
   agentToolNames: string[];
   agentLoopDurationMs: number;
-  writeIntentMode: WriteIntentMode;
-  writeTransport: WriteTransport;
-  writeIntentSatisfied: boolean;
   toolCallDetected: boolean;
-  writeToolSchemaVersion: WriteToolSchemaVersion;
   autoMode?: "off" | "shadow" | "active";
   autoTriggered?: boolean;
   autoConfidence?: number;
@@ -150,8 +167,6 @@ export type VcwAgentAssistantOptions = {
   ) => LangChainAgentRuntime;
   buildToolContext?: (input: AssistantGenerateInput) => VcwAgentToolContext;
   createTools?: (context: VcwAgentToolContext) => unknown[];
-  strictWriteGenerate?: AssistantGenerateFn;
-  strictWriteAssistantOptions?: Partial<LangChainAssistantOptions>;
   onResultMetadata?: (
     metadata: LangChainAgentMetadata,
   ) => void | Promise<void>;

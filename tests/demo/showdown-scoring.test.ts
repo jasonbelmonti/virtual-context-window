@@ -26,6 +26,13 @@ test("containsExactTokenIgnoreCase handles punctuation boundaries", () => {
   expect(containsExactTokenIgnoreCase(answer, expected)).toBe(true);
 });
 
+test("scoreAnswer treats unicode dash variants as equivalent to ASCII hyphen", () => {
+  const expected = "VCW-CODE-ABC123";
+  const answer = "Final token: VCW‑CODE‑ABC123";
+
+  expect(scoreAnswer(answer, expected)).toBe(true);
+});
+
 test("createShowdownScenario is deterministic for fixed seed and timestamp", () => {
   const now = new Date("2026-02-14T10:00:00.000Z");
   const first = createShowdownScenario({
@@ -42,6 +49,7 @@ test("createShowdownScenario is deterministic for fixed seed and timestamp", () 
   });
 
   expect(first.expectedToken).toBe(second.expectedToken);
-  expect(first.sentinels).toEqual(second.sentinels);
+  expect(first.initialFacts).toEqual(second.initialFacts);
+  expect(first.updateFacts).toEqual(second.updateFacts);
   expect(first.finalQuestion).toBe(second.finalQuestion);
 });

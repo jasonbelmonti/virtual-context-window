@@ -3,7 +3,7 @@ import type { ValidationScenarioDefinition } from "./contracts";
 export const SCENARIO_CATALOG: ValidationScenarioDefinition[] = [
   {
     id: "S01",
-    name: "Opaque memory reuse (recent)",
+    name: "Passive pressure trigger",
     family: "mechanism",
     supportedModes: ["deterministic", "live"],
     requiredMetricKeys: ["opaque_memory_reuse_rate"],
@@ -11,7 +11,7 @@ export const SCENARIO_CATALOG: ValidationScenarioDefinition[] = [
   },
   {
     id: "S02",
-    name: "Opaque memory reuse (fact)",
+    name: "Passive recall fidelity",
     family: "task",
     supportedModes: ["deterministic", "live"],
     requiredMetricKeys: ["explicit_answer_fidelity_rate"],
@@ -19,7 +19,7 @@ export const SCENARIO_CATALOG: ValidationScenarioDefinition[] = [
   },
   {
     id: "S03",
-    name: "Semantic exact phrase",
+    name: "Hydration exact recall",
     family: "task",
     supportedModes: ["deterministic", "live"],
     requiredMetricKeys: ["semantic_hit_at_4_exact", "semantic_answer_fidelity_exact_rate"],
@@ -27,7 +27,7 @@ export const SCENARIO_CATALOG: ValidationScenarioDefinition[] = [
   },
   {
     id: "S04",
-    name: "Semantic paraphrase",
+    name: "Hydration paraphrase recall",
     family: "task",
     supportedModes: ["deterministic", "live"],
     requiredMetricKeys: [
@@ -38,7 +38,7 @@ export const SCENARIO_CATALOG: ValidationScenarioDefinition[] = [
   },
   {
     id: "S05",
-    name: "Untrusted symbol token ignored",
+    name: "Trusted-ref gate enforcement",
     family: "mechanism",
     supportedModes: ["deterministic", "live"],
     requiredMetricKeys: ["untrusted_token_injection_resistance_rate"],
@@ -46,7 +46,7 @@ export const SCENARIO_CATALOG: ValidationScenarioDefinition[] = [
   },
   {
     id: "S06",
-    name: "Strict control strip correctness",
+    name: "Model-write ignore + sanitize",
     family: "mechanism",
     supportedModes: ["deterministic", "live"],
     requiredMetricKeys: [
@@ -60,7 +60,7 @@ export const SCENARIO_CATALOG: ValidationScenarioDefinition[] = [
   },
   {
     id: "S07",
-    name: "Invalid event rejection",
+    name: "Ignored model event accounting",
     family: "mechanism",
     supportedModes: ["deterministic", "live"],
     requiredMetricKeys: ["invalid_event_rejection_rate"],
@@ -68,7 +68,7 @@ export const SCENARIO_CATALOG: ValidationScenarioDefinition[] = [
   },
   {
     id: "S08",
-    name: "Cross-thread isolation",
+    name: "Passive thread isolation",
     family: "mechanism",
     supportedModes: ["deterministic", "live"],
     requiredMetricKeys: [
@@ -79,7 +79,7 @@ export const SCENARIO_CATALOG: ValidationScenarioDefinition[] = [
   },
   {
     id: "S09",
-    name: "Non-trailing control ignored canary",
+    name: "Compaction hysteresis stability",
     family: "parser_robustness",
     supportedModes: ["deterministic"],
     requiredMetricKeys: ["wrapped_canary_pass_rate", "canary_expected_invalid_pass_rate"],
@@ -87,7 +87,7 @@ export const SCENARIO_CATALOG: ValidationScenarioDefinition[] = [
   },
   {
     id: "S10",
-    name: "Malformed control JSON recovery",
+    name: "Malformed control fail-open",
     family: "parser_robustness",
     supportedModes: ["deterministic"],
     requiredMetricKeys: ["canary_expected_invalid_pass_rate"],
@@ -95,7 +95,7 @@ export const SCENARIO_CATALOG: ValidationScenarioDefinition[] = [
   },
   {
     id: "S11",
-    name: "Budget truncation + section ordering",
+    name: "Pack budget stability",
     family: "mechanism",
     supportedModes: ["deterministic"],
     requiredMetricKeys: ["step_timeout_rate"],
@@ -103,7 +103,7 @@ export const SCENARIO_CATALOG: ValidationScenarioDefinition[] = [
   },
   {
     id: "S12",
-    name: "Embedding provider failure branches",
+    name: "Provider failure containment",
     family: "robustness",
     supportedModes: ["deterministic", "live"],
     liveOptional: true,

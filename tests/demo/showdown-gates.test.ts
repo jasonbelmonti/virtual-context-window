@@ -2,14 +2,13 @@ import { expect, test } from "bun:test";
 import type { AgentTurnTrace } from "../../src/agent-cli";
 import {
   evaluateLaneGates,
-  INCIDENT_REQUIRED_HEADINGS,
-  INCIDENT_REQUIRED_TOOL_NAMES,
+  INCIDENT_REQUIRED_HEADINGS_MIN,
 } from "../../scripts/demo-showdown-gates";
+import type { IncidentRequiredFacts } from "../../scripts/demo-showdown-scenario";
 
 function makeTrace(toolNames: string[]): AgentTurnTrace {
   return {
     threadId: "thread-gate-test",
-    kernelMode: "v1",
     stages: [],
     telemetry: [],
     symbolTable: [],
@@ -51,82 +50,131 @@ function makeTrace(toolNames: string[]): AgentTurnTrace {
       agentToolCallCount: toolNames.length,
       agentToolNames: toolNames,
       agentLoopDurationMs: 1,
-      writeIntentMode: "none",
-      writeTransport: "plain_text",
-      writeIntentSatisfied: true,
-      toolCallDetected: false,
-      writeToolSchemaVersion: "v1",
     },
   };
 }
 
-test("incident gate passes with required tools, headings, memory evidence, and web citation", () => {
+const requiredFacts: IncidentRequiredFacts = {
+  incidentId: "INC-123456",
+  service: "payments-api",
+  ownerLatest: "Jordan Lee",
+  unlockTokenLatest: "VCW-CODE-AAAA1111BBBB",
+};
+
+test("gates pass with latest required facts and minimum structure even with zero tools", () => {
   const answer = [
     "## Situation",
-    "INC-123456 impacting payments-api.",
-    "Owner Avery Kim. Unlock token VCW-CODE-AAAA1111BBBB.",
+    "Incident ID: INC-123456",
+    "Impacted service: payments-api",
+    "Mitigation owner: Jordan Lee",
+    "Incident unlock token: VCW-CODE-AAAA1111BBBB",
     "## Timeline",
     "- T+0 alert",
-    "## Hypothesis",
-    "- connection pool exhaustion",
-    "## Mitigations",
-    "- tune retries",
     "## Next 30m",
-    "- verify recovery",
-    "Source: https://example.com/runbook",
+    "- confirm recovery",
   ].join("\n");
 
   const result = evaluateLaneGates({
-    lane: "vcw_only",
+    lane: "passive_sliding_window",
     scenarioKind: "incident_response",
     answerText: answer,
-    expectedToken: "VCW-CODE-AAAA1111BBBB",
-    trace: makeTrace([...INCIDENT_REQUIRED_TOOL_NAMES]),
-    requiredToolNames: [...INCIDENT_REQUIRED_TOOL_NAMES],
-    requiredHeadings: [...INCIDENT_REQUIRED_HEADINGS],
-    memoryEvidenceTokens: ["INC-123456", "payments-api", "Avery Kim", "VCW-CODE-AAAA1111BBBB"],
+    latestFacts: requiredFacts,
+    trace: makeTrace([]),
+    requiredHeadings: [...INCIDENT_REQUIRED_HEADINGS_MIN],
   });
 
-  expect(result.requiredToolCallsSatisfied).toBe(true);
-  expect(result.briefFormatSatisfied).toBe(true);
-  expect(result.memoryEvidenceSatisfied).toBe(true);
-  expect(result.webEvidenceSatisfied).toBe(true);
+  expect(result.answerCorrect).toBe(true);
+  expect(result.memoryGatePassed).toBe(true);
+  expect(result.structureGatePassed).toBe(true);
   expect(result.strictGatePassed).toBe(true);
+  expect(result.requiredFactsCorrect).toBe(4);
+  expect(result.requiredFactsTotal).toBe(4);
+  expect(result.agentToolCallCount).toBe(0);
   expect(result.failureReasons).toEqual([]);
 });
 
-test("incident gate reports deterministic failure reasons when requirements are missing", () => {
+test("gates report latest fact mismatch when labels exist but stale values are used", () => {
   const answer = [
     "## Situation",
-    "Missing details",
+    "Incident ID: INC-123456",
+    "Impacted service: payments-api",
+    "Mitigation owner: Avery Kim",
+    "Incident unlock token: VCW-CODE-OLDOLDOLD111",
     "## Timeline",
     "- T+0 alert",
-    "## Hypothesis",
-    "- unknown",
-    "## Mitigations",
-    "- investigate",
     "## Next 30m",
-    "- gather context",
+    "- continue mitigation",
   ].join("\n");
 
   const result = evaluateLaneGates({
-    lane: "chat_only",
+    lane: "history_only_window",
     scenarioKind: "incident_response",
     answerText: answer,
-    expectedToken: "VCW-CODE-AAAA1111BBBB",
-    trace: makeTrace(["vcw_web_search"]),
-    requiredToolNames: [...INCIDENT_REQUIRED_TOOL_NAMES],
-    requiredHeadings: [...INCIDENT_REQUIRED_HEADINGS],
-    memoryEvidenceTokens: ["INC-123456", "payments-api", "Avery Kim", "VCW-CODE-AAAA1111BBBB"],
+    latestFacts: requiredFacts,
+    trace: makeTrace(["vcw_search_symbols"]),
   });
 
-  expect(result.requiredToolCallsSatisfied).toBe(false);
-  expect(result.webEvidenceSatisfied).toBe(false);
-  expect(result.memoryEvidenceSatisfied).toBe(false);
-  expect(result.strictGatePassed).toBe(false);
-  expect(result.failureReasons).toEqual([
-    "missing_tool:vcw_search_symbols",
-    "memory_evidence_missing",
-    "web_evidence_missing",
+  expect(result.memoryGatePassed).toBe(false);
+  expect(result.requiredFactsCorrect).toBe(2);
+  expect(result.latestFactMismatchFields).toEqual([
+    "ownerLatest",
+    "unlockTokenLatest",
   ]);
+  expect(result.failureReasons).toContain("latest_fact_mismatch:ownerLatest");
+  expect(result.failureReasons).toContain("latest_fact_mismatch:unlockTokenLatest");
+});
+
+test("gates report missing required fields when labels are absent", () => {
+  const answer = [
+    "## Situation",
+    "Potential incident, values unavailable.",
+    "## Timeline",
+    "- gathering evidence",
+    "## Next 30m",
+    "- post update",
+  ].join("\n");
+
+  const result = evaluateLaneGates({
+    lane: "history_only_window",
+    scenarioKind: "incident_response",
+    answerText: answer,
+    latestFacts: requiredFacts,
+    trace: makeTrace([]),
+  });
+
+  expect(result.memoryGatePassed).toBe(false);
+  expect(result.requiredFactsCorrect).toBe(0);
+  expect(result.missingRequiredFields).toEqual([
+    "incidentId",
+    "service",
+    "ownerLatest",
+    "unlockTokenLatest",
+  ]);
+  expect(result.failureReasons).toContain("missing_required_field:incidentId");
+  expect(result.failureReasons).toContain("missing_required_field:service");
+});
+
+test("gates fail structure when fewer than three required headings are present", () => {
+  const answer = [
+    "## Situation",
+    "Incident ID: INC-123456",
+    "Impacted service: payments-api",
+    "Mitigation owner: Jordan Lee",
+    "Incident unlock token: VCW-CODE-AAAA1111BBBB",
+    "## Timeline",
+    "- one entry",
+  ].join("\n");
+
+  const result = evaluateLaneGates({
+    lane: "passive_sliding_window",
+    scenarioKind: "incident_response",
+    answerText: answer,
+    latestFacts: requiredFacts,
+    trace: makeTrace(["vcw_web_search"]),
+  });
+
+  expect(result.memoryGatePassed).toBe(true);
+  expect(result.structureGatePassed).toBe(false);
+  expect(result.strictGatePassed).toBe(false);
+  expect(result.failureReasons).toContain("structure_insufficient");
 });

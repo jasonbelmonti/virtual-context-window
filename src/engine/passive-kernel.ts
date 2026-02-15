@@ -3,38 +3,38 @@ import type {
   PostModelTelemetry,
   PreModelTelemetry,
   SymbolRecord,
+  VirtualContextThreadInspection,
   VirtualContextEngine,
   VirtualContextTurnRequest,
   VirtualContextTurnResponse,
   VirtualContextTurnStreamEvent,
-} from "../engine/contracts";
-import { StrictControlChannelParser } from "../engine/control-channel-parser";
+} from "./contracts";
+import { StrictControlChannelParser } from "./control-channel-parser";
 import {
   GenerationCallInvariantError,
   SecondGenerationCallError,
-} from "../engine/errors";
+} from "./errors";
 import {
   defaultQueryBuilder,
   type AssistantGenerateInput,
   type AssistantGenerateStreamEvent,
-} from "../engine/hooks";
-import { resolveThreadIdentity, resolveTrustedSymbolRefs } from "../engine/identity";
-import { strictOutputSanitizer } from "../engine/output-sanitizer";
+} from "./hooks";
+import { resolveThreadIdentity, resolveTrustedSymbolRefs } from "./identity";
+import { strictOutputSanitizer } from "./output-sanitizer";
 import {
   applyPassiveCommitPolicy,
   createDeterministicFallbackExtractor,
   runExtractorWithTimeout,
-} from "./compressor";
+} from "./passive-compressor";
 import type {
-  EventTapeEntry,
   PassiveKernelOptions,
   PassivePackBudget,
   PassivePackHydratedRecord,
   PassiveThreadCounters,
   PassiveTurnDiagnostics,
-} from "./contracts";
-import { InMemoryEventTape } from "./event-tape";
-import { compilePassiveContextPack } from "./pack-compiler";
+} from "./passive-contracts";
+import { InMemoryEventTape } from "./passive-event-tape";
+import { compilePassiveContextPack } from "./passive-pack-compiler";
 
 const CONTROL_START_PREFIX = "<symbolic_control";
 const CONTROL_OPEN_TAG = "<symbolic_control>";
@@ -57,6 +57,7 @@ const DEFAULT_HIGH_WATERMARK = 0.8;
 const DEFAULT_LOW_WATERMARK = 0.6;
 const DEFAULT_EXTRACTOR_TIMEOUT_MS = 1_200;
 const DEFAULT_MAX_COMPACTION_PROPOSALS = 4;
+const DEFAULT_COMPACTION_DRAIN_TIMEOUT_MS = 1_200;
 
 const defaultNow = () => Date.now();
 const defaultClock = () => performance.now();
@@ -163,6 +164,7 @@ function createThreadState(): ThreadState {
     committedSymbolsCount: 0,
     compactMode: false,
     compactionInFlight: false,
+    compactionJob: null,
     lastCompactionOutcome: "none",
   };
 }
@@ -175,6 +177,7 @@ async function selectHydratedCandidates(options: {
   store: PassiveKernelOptions["store"];
   recallK: number;
 }): Promise<{
+  candidateSymbolIds: string[];
   focused: PassivePackHydratedRecord[];
   recall: PassivePackHydratedRecord[];
   lexicalCandidateCount: number;
@@ -237,12 +240,24 @@ async function selectHydratedCandidates(options: {
     }));
 
   return {
+    candidateSymbolIds: ids,
     focused,
     recall,
     lexicalCandidateCount,
     vectorCandidateCount,
     rerankedCandidateCount,
   };
+}
+
+function compactPreview(text: string, maxChars = 80): string {
+  const normalized = text.replace(/\s+/gu, " ").trim();
+  if (normalized.length <= maxChars) {
+    return normalized;
+  }
+  if (maxChars <= 3) {
+    return normalized.slice(0, maxChars);
+  }
+  return `${normalized.slice(0, maxChars - 3)}...`;
 }
 
 async function emitTelemetry(
@@ -267,7 +282,7 @@ async function emitTelemetry(
   }
 }
 
-export function createVirtualContextEngineV2Passive(
+export function createVirtualContextEnginePassive(
   options: PassiveKernelOptions,
 ): VirtualContextEngine {
   const now = options.now ?? defaultNow;
@@ -279,6 +294,7 @@ export function createVirtualContextEngineV2Passive(
   });
   const queryBuilder = options.queryBuilder ?? defaultQueryBuilder;
   const extractor = options.extractor ?? createDeterministicFallbackExtractor();
+  const fallbackExtractor = createDeterministicFallbackExtractor();
 
   const threadStates = new Map<string, ThreadState>();
 
@@ -291,6 +307,11 @@ export function createVirtualContextEngineV2Passive(
     DEFAULT_LOW_WATERMARK,
   );
   const timeoutMs = Math.max(50, options.extractorTimeoutMs ?? DEFAULT_EXTRACTOR_TIMEOUT_MS);
+  const compactionDrainTimeoutMs = Math.max(
+    50,
+    options.compactionDrainTimeoutMs ?? DEFAULT_COMPACTION_DRAIN_TIMEOUT_MS,
+  );
+  const waitForCompactionDrain = options.waitForCompactionDrain ?? true;
   const maxCompactionProposals = Math.max(
     1,
     options.maxCompactionProposals ?? DEFAULT_MAX_COMPACTION_PROPOSALS,
@@ -313,39 +334,48 @@ export function createVirtualContextEngineV2Passive(
   async function runCompactionJob(
     threadId: string,
     queryText: string,
+    candidates: ReturnType<typeof tape.listUnsymbolizedCompactionCandidates>,
   ): Promise<"none" | "no_candidates" | "extractor_error"> {
     const state = getThreadState(threadId);
-    const candidates = tape.listUnsymbolizedCompactionCandidates(
-      threadId,
-      budget.recentLiteralPairCount,
-      6,
-    );
     if (candidates.length === 0) {
       return "no_candidates";
     }
 
     state.extractorCalls += 1;
+    const extractionInput = {
+      threadId,
+      queryText,
+      entries: candidates,
+      maxProposals: maxCompactionProposals,
+    } as const;
     const extraction = await runExtractorWithTimeout({
       extractor,
-      input: {
-        threadId,
-        queryText,
-        entries: candidates,
-        maxProposals: maxCompactionProposals,
-      },
+      input: extractionInput,
       timeoutMs,
     });
 
-    if (extraction.failed || extraction.timeout) {
-      return "extractor_error";
+    let proposals = extraction.proposals;
+    if (extraction.failed || extraction.timeout || proposals.length === 0) {
+      try {
+        const fallbackProposals = await fallbackExtractor.extract(extractionInput);
+        if (fallbackProposals.length > 0) {
+          proposals = fallbackProposals;
+        } else if (extraction.failed || extraction.timeout) {
+          return "extractor_error";
+        }
+      } catch {
+        if (extraction.failed || extraction.timeout) {
+          return "extractor_error";
+        }
+      }
     }
 
-    state.proposalsCount += extraction.proposals.length;
+    state.proposalsCount += proposals.length;
 
     const commit = await applyPassiveCommitPolicy({
       threadId,
       store: options.store,
-      proposals: extraction.proposals,
+      proposals,
       maxProposals: maxCompactionProposals,
       candidateEntries: candidates.map((entry) => ({
         entryId: entry.entryId,
@@ -375,6 +405,7 @@ export function createVirtualContextEngineV2Passive(
     threadId: string,
     queryText: string,
     shouldTrigger: boolean,
+    candidates: ReturnType<typeof tape.listUnsymbolizedCompactionCandidates>,
   ): "none" | "in_flight" | "low_pressure" | "no_candidates" | "extractor_error" {
     const state = getThreadState(threadId);
     if (!shouldTrigger) {
@@ -385,11 +416,6 @@ export function createVirtualContextEngineV2Passive(
       return "in_flight";
     }
 
-    const candidates = tape.listUnsymbolizedCompactionCandidates(
-      threadId,
-      budget.recentLiteralPairCount,
-      6,
-    );
     if (candidates.length === 0) {
       state.lastCompactionOutcome = "no_candidates";
       return "no_candidates";
@@ -397,15 +423,59 @@ export function createVirtualContextEngineV2Passive(
 
     state.compactionInFlight = true;
     state.compactionJobsTriggered += 1;
-    void (async () => {
+    const compactionJob = (async () => {
       try {
-        state.lastCompactionOutcome = await runCompactionJob(threadId, queryText);
+        state.lastCompactionOutcome = await runCompactionJob(
+          threadId,
+          queryText,
+          candidates,
+        );
+      } catch {
+        state.lastCompactionOutcome = "extractor_error";
       } finally {
         state.compactionInFlight = false;
+        if (state.compactionJob === compactionJob) {
+          state.compactionJob = null;
+        }
       }
     })();
+    state.compactionJob = compactionJob;
 
     return "none";
+  }
+
+  async function waitForCompactionDrainIfNeeded(threadId: string): Promise<{
+    attempted: boolean;
+    waitMs: number;
+    timedOut: boolean;
+  }> {
+    const state = getThreadState(threadId);
+    if (!waitForCompactionDrain || !state.compactionInFlight || !state.compactionJob) {
+      return {
+        attempted: false,
+        waitMs: 0,
+        timedOut: false,
+      };
+    }
+
+    const startedAt = clock();
+    let timedOut = false;
+    const job = state.compactionJob;
+    await Promise.race([
+      job,
+      new Promise<void>((resolve) => {
+        setTimeout(() => {
+          timedOut = true;
+          resolve();
+        }, compactionDrainTimeoutMs);
+      }),
+    ]);
+    const waitMs = clock() - startedAt;
+    return {
+      attempted: true,
+      waitMs,
+      timedOut,
+    };
   }
 
   const markStage = async (
@@ -445,6 +515,7 @@ export function createVirtualContextEngineV2Passive(
 
     const preModelStart = clock();
     await markStage("ResolveIdentity", threadId, executeOptions?.streamEvents);
+    const compactionDrain = await waitForCompactionDrainIfNeeded(threadId);
 
     await markStage("BuildTurnQuery", threadId, executeOptions?.streamEvents);
     const query = await queryBuilder({
@@ -523,6 +594,29 @@ export function createVirtualContextEngineV2Passive(
       },
       executeOptions?.streamEvents,
     );
+    if (executeOptions?.streamEvents) {
+      await executeOptions.streamEvents({
+        type: "retrieval_candidates",
+        threadId,
+        queryText: query.queryText,
+        candidateSymbolIds: hydrated.candidateSymbolIds,
+        focusedCandidates: hydrated.focused.map((record) => ({
+          symbolId: record.symbolId,
+          score: record.score,
+        })),
+        recallCandidates: hydrated.recall.map((record) => ({
+          symbolId: record.symbolId,
+          score: record.score,
+        })),
+      });
+    }
+    if (executeOptions?.streamEvents) {
+      await executeOptions.streamEvents({
+        type: "context_pack_compiled",
+        threadId,
+        contextPackText: compiled.text,
+      });
+    }
 
     let generationCallCount = 0;
     await markStage("InvokeAssistant", threadId, executeOptions?.streamEvents);
@@ -610,16 +704,42 @@ export function createVirtualContextEngineV2Passive(
     tape.append(threadId, "user", lastUserText);
     tape.append(threadId, "assistant", sanitized.content);
 
+    const compactionCandidates = tape.listUnsymbolizedCompactionCandidates(
+      threadId,
+      budget.recentLiteralPairCount,
+      6,
+    );
     const scheduledCompactionReason = scheduleCompaction(
       threadId,
       query.queryText,
       compiled.compactionTriggered,
+      compactionCandidates,
     );
+    if (executeOptions?.streamEvents) {
+      await executeOptions.streamEvents({
+        type: "compaction_candidates",
+        threadId,
+        pressureRatio: compiled.pressureRatio,
+        pressureState: compiled.pressureState,
+        compactionTriggered: compiled.compactionTriggered,
+        compactionReason: compiled.compactionReason,
+        scheduleResult: scheduledCompactionReason,
+        candidateEntries: compactionCandidates.map((entry) => ({
+          entryId: entry.entryId,
+          role: entry.role,
+          chars: entry.content.length,
+          preview: compactPreview(entry.content),
+        })),
+      });
+    }
 
     const passiveDiagnostics: PassiveTurnDiagnostics = {
       pressureRatio: compiled.pressureRatio,
       pressurePeak: state.pressurePeak,
       pressureState: compiled.pressureState,
+      compactionDrainAttempted: compactionDrain.attempted,
+      compactionDrainWaitMs: compactionDrain.waitMs,
+      compactionDrainTimedOut: compactionDrain.timedOut,
       compactionTriggered: compiled.compactionTriggered,
       compactionReason: compiled.compactionReason,
       compactionJobsTriggered: state.compactionJobsTriggered,
@@ -747,6 +867,42 @@ export function createVirtualContextEngineV2Passive(
       if (runError) {
         throw runError;
       }
+    },
+    async inspectThread(threadId: string): Promise<VirtualContextThreadInspection> {
+      const state = getThreadState(threadId);
+      const entries = tape.listEntries(threadId);
+      const compressionRecords = tape.listCompressionRecords(threadId);
+      const hydrationLeases = tape.listHydrationLeases(threadId);
+      const pendingCandidates = tape.listUnsymbolizedCompactionCandidates(
+        threadId,
+        budget.recentLiteralPairCount,
+        6,
+      );
+
+      return {
+        threadId,
+        passive: {
+          eventTapeEntryCount: entries.length,
+          compressionRecordCount: compressionRecords.length,
+          hydrationLeaseCount: hydrationLeases.length,
+          pendingCompactionCandidates: pendingCandidates.length,
+          pressurePeak: state.pressurePeak,
+          compactMode: state.compactMode,
+          compactionInFlight: state.compactionInFlight,
+          lastCompactionOutcome: state.lastCompactionOutcome,
+          counters: {
+            compactionJobsTriggered: state.compactionJobsTriggered,
+            extractorCalls: state.extractorCalls,
+            proposalsCount: state.proposalsCount,
+            committedSymbolsCount: state.committedSymbolsCount,
+          },
+          recentEntryIds: entries.slice(-6).map((entry) => entry.entryId),
+          compressedSymbolIds: compressionRecords
+            .slice(-6)
+            .map((record) => record.symbolId),
+          hydratedSymbolIds: hydrationLeases.map((lease) => lease.symbolId),
+        },
+      };
     },
   };
 }

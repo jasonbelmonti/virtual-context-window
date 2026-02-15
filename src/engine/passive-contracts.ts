@@ -1,7 +1,12 @@
-import type { EngineStage, RetrievalStrategy, SymbolRecordKind, SymbolStore, TelemetrySink, VirtualContextEngine } from "../engine/contracts";
-import type { AssistantGenerateFn, QueryBuilderHook } from "../engine/hooks";
-
-export type PassiveKernelMode = "v2_passive";
+import type {
+  EngineStage,
+  RetrievalStrategy,
+  SymbolRecordKind,
+  SymbolStore,
+  TelemetrySink,
+  VirtualContextEngine,
+} from "./contracts";
+import type { AssistantGenerateFn, QueryBuilderHook } from "./hooks";
 
 export type EventTapeEntry = {
   entryId: string;
@@ -104,6 +109,9 @@ export type PassiveTurnDiagnostics = {
   pressureRatio: number;
   pressurePeak: number;
   pressureState: "normal" | "compact";
+  compactionDrainAttempted: boolean;
+  compactionDrainWaitMs: number;
+  compactionDrainTimedOut: boolean;
   compactionTriggered: boolean;
   compactionReason: "high_watermark" | "below_threshold" | "none";
   compactionJobsTriggered: number;
@@ -131,6 +139,8 @@ export type PassiveKernelOptions = {
   maxCompactionProposals?: number;
   packBudget?: Partial<PassivePackBudget>;
   maxEventTapeEntriesPerThread?: number;
+  compactionDrainTimeoutMs?: number;
+  waitForCompactionDrain?: boolean;
 };
 
 export type PassiveThreadCounters = {
@@ -141,6 +151,7 @@ export type PassiveThreadCounters = {
   committedSymbolsCount: number;
   compactMode: boolean;
   compactionInFlight: boolean;
+  compactionJob: Promise<void> | null;
   lastCompactionOutcome: "none" | "no_candidates" | "extractor_error";
 };
 

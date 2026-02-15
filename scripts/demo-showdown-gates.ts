@@ -1,21 +1,14 @@
 import type { AgentTurnTrace } from "../src/agent-cli";
 import {
   containsExactTokenIgnoreCase,
-  scoreAnswer,
+  type IncidentRequiredFacts,
   type ShowdownLane,
   type ShowdownScenarioKind,
 } from "./demo-showdown-scenario";
 
-export const INCIDENT_REQUIRED_TOOL_NAMES = [
-  "vcw_search_symbols",
-  "vcw_web_search",
-] as const;
-
-export const INCIDENT_REQUIRED_HEADINGS = [
+export const INCIDENT_REQUIRED_HEADINGS_MIN = [
   "Situation",
   "Timeline",
-  "Hypothesis",
-  "Mitigations",
   "Next 30m",
 ] as const;
 
@@ -23,24 +16,22 @@ export type ShowdownLaneGateInput = {
   lane: ShowdownLane;
   scenarioKind: ShowdownScenarioKind;
   answerText: string;
-  expectedToken: string;
   trace: AgentTurnTrace;
-  requiredToolNames: string[];
+  latestFacts: IncidentRequiredFacts;
   requiredHeadings?: string[];
-  memoryEvidenceTokens?: string[];
-  toolNameOverride?: string[];
 };
 
 export type ShowdownLaneGateResult = {
   answerCorrect: boolean;
+  memoryGatePassed: boolean;
+  structureGatePassed: boolean;
+  strictGatePassed: boolean;
+  requiredFactsTotal: number;
+  requiredFactsCorrect: number;
+  latestFactMismatchFields: string[];
+  missingRequiredFields: string[];
   agentToolCallCount: number;
   agentToolNames: string[];
-  missingToolNames: string[];
-  requiredToolCallsSatisfied: boolean;
-  briefFormatSatisfied: boolean;
-  memoryEvidenceSatisfied: boolean;
-  webEvidenceSatisfied: boolean;
-  strictGatePassed: boolean;
   failureReasons: string[];
 };
 
@@ -59,137 +50,123 @@ function normalizeToolNames(names: string[]): string[] {
 }
 
 function headingSatisfied(answerText: string, heading: string): boolean {
+  if (heading.trim().toLowerCase() === "next 30m") {
+    return /^\s{0,3}(?:#{1,6}\s*)?next\s*30\s*(?:m|min|minutes)\b/imu.test(answerText);
+  }
+
   const escaped = heading.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
   const regex = new RegExp(`^\\s{0,3}(?:#{1,6}\\s*)?${escaped}\\s*:?(?:\\s|$)`, "imu");
   return regex.test(answerText);
 }
 
-function hasWebCitation(answerText: string): boolean {
-  const hasUrl = /https?:\/\/\S+/iu.test(answerText);
-  const hasSourceLabel = /^\s*(?:[-*]\s*)?sources?\s*:/imu.test(answerText);
-  return hasUrl && hasSourceLabel;
-}
-
-function hasMemoryEvidence(
-  answerText: string,
-  expectedToken: string,
-  memoryEvidenceTokens: string[],
-): boolean {
-  if (!scoreAnswer(answerText, expectedToken)) {
-    return false;
-  }
-
-  const lower = answerText.toLowerCase();
-  let additionalHits = 0;
-  for (const token of memoryEvidenceTokens) {
-    if (!token || containsExactTokenIgnoreCase(token, expectedToken)) {
-      continue;
-    }
-
-    if (lower.includes(token.toLowerCase())) {
-      additionalHits += 1;
-    }
-  }
-
-  return additionalHits >= 1;
-}
-
-function extractToolNames(
-  trace: AgentTurnTrace,
-  toolNameOverride?: string[],
-): { names: string[]; count: number } {
-  if (toolNameOverride) {
-    const normalized = normalizeToolNames(toolNameOverride);
-    return {
-      names: normalized,
-      count: normalized.length,
-    };
-  }
-
+function extractToolNames(trace: AgentTurnTrace): { names: string[]; count: number } {
   const names = normalizeToolNames(trace.agent?.agentToolNames ?? []);
-  const count = trace.agent?.agentToolCallCount ?? 0;
+  const count = trace.agent?.agentToolCallCount ?? names.length;
   return { names, count };
 }
 
-export function evaluateLaneGates(input: ShowdownLaneGateInput): ShowdownLaneGateResult {
-  const answerCorrect = scoreAnswer(input.answerText, input.expectedToken);
-  const requiredTools = normalizeToolNames(input.requiredToolNames);
-  const extractedTools = extractToolNames(input.trace, input.toolNameOverride);
+function hasFieldLabel(answerText: string, field: keyof IncidentRequiredFacts): boolean {
+  switch (field) {
+    case "incidentId":
+      return /\bincident\s*id\b|\binc[-\s]?id\b/iu.test(answerText);
+    case "service":
+      return /impacted\s*service|service/iu.test(answerText);
+    case "ownerLatest":
+      return /mitigation\s*owner|owner/iu.test(answerText);
+    case "unlockTokenLatest":
+      return /incident\s*unlock\s*token|unlock\s*token|token/iu.test(answerText);
+    default:
+      return false;
+  }
+}
 
-  const missingToolNames = requiredTools.filter(
-    (toolName) => !extractedTools.names.includes(toolName),
-  );
-  const requiredToolCallsSatisfied = missingToolNames.length === 0;
+function evaluateLatestFacts(answerText: string, latestFacts: IncidentRequiredFacts): {
+  requiredFactsTotal: number;
+  requiredFactsCorrect: number;
+  latestFactMismatchFields: string[];
+  missingRequiredFields: string[];
+} {
+  const checks: Array<{ field: keyof IncidentRequiredFacts; expected: string }> = [
+    { field: "incidentId", expected: latestFacts.incidentId },
+    { field: "service", expected: latestFacts.service },
+    { field: "ownerLatest", expected: latestFacts.ownerLatest },
+    { field: "unlockTokenLatest", expected: latestFacts.unlockTokenLatest },
+  ];
 
-  if (input.scenarioKind === "classic") {
-    const strictGatePassed = requiredToolCallsSatisfied && answerCorrect;
-    const failureReasons: string[] = [];
-    if (!requiredToolCallsSatisfied) {
-      for (const missing of missingToolNames) {
-        failureReasons.push(`missing_tool:${missing}`);
-      }
+  let requiredFactsCorrect = 0;
+  const latestFactMismatchFields: string[] = [];
+  const missingRequiredFields: string[] = [];
+
+  for (const check of checks) {
+    if (containsExactTokenIgnoreCase(answerText, check.expected)) {
+      requiredFactsCorrect += 1;
+      continue;
     }
-    if (!answerCorrect) {
-      failureReasons.push("token_missing_or_incorrect");
+
+    if (hasFieldLabel(answerText, check.field)) {
+      latestFactMismatchFields.push(check.field);
+    } else {
+      missingRequiredFields.push(check.field);
     }
-
-    return {
-      answerCorrect,
-      agentToolCallCount: extractedTools.count,
-      agentToolNames: extractedTools.names,
-      missingToolNames,
-      requiredToolCallsSatisfied,
-      briefFormatSatisfied: true,
-      memoryEvidenceSatisfied: answerCorrect,
-      webEvidenceSatisfied: true,
-      strictGatePassed,
-      failureReasons,
-    };
-  }
-
-  const requiredHeadings = input.requiredHeadings ?? [...INCIDENT_REQUIRED_HEADINGS];
-  const briefFormatSatisfied = requiredHeadings.every((heading) =>
-    headingSatisfied(input.answerText, heading),
-  );
-  const memoryEvidenceSatisfied = hasMemoryEvidence(
-    input.answerText,
-    input.expectedToken,
-    input.memoryEvidenceTokens ?? [],
-  );
-  const webEvidenceSatisfied = hasWebCitation(input.answerText);
-
-  const strictGatePassed =
-    requiredToolCallsSatisfied &&
-    briefFormatSatisfied &&
-    memoryEvidenceSatisfied &&
-    webEvidenceSatisfied;
-
-  const failureReasons: string[] = [];
-  if (!requiredToolCallsSatisfied) {
-    for (const missing of missingToolNames) {
-      failureReasons.push(`missing_tool:${missing}`);
-    }
-  }
-  if (!briefFormatSatisfied) {
-    failureReasons.push("brief_heading_missing");
-  }
-  if (!memoryEvidenceSatisfied) {
-    failureReasons.push("memory_evidence_missing");
-  }
-  if (!webEvidenceSatisfied) {
-    failureReasons.push("web_evidence_missing");
   }
 
   return {
-    answerCorrect,
+    requiredFactsTotal: checks.length,
+    requiredFactsCorrect,
+    latestFactMismatchFields,
+    missingRequiredFields,
+  };
+}
+
+function evaluateStructure(answerText: string, requiredHeadings: string[]): {
+  matchedCount: number;
+  structureGatePassed: boolean;
+} {
+  let matchedCount = 0;
+  for (const heading of requiredHeadings) {
+    if (headingSatisfied(answerText, heading)) {
+      matchedCount += 1;
+    }
+  }
+
+  const requiredCount = Math.min(3, requiredHeadings.length);
+  return {
+    matchedCount,
+    structureGatePassed: matchedCount >= requiredCount,
+  };
+}
+
+export function evaluateLaneGates(input: ShowdownLaneGateInput): ShowdownLaneGateResult {
+  const requiredHeadings = input.requiredHeadings ?? [...INCIDENT_REQUIRED_HEADINGS_MIN];
+  const latestFacts = evaluateLatestFacts(input.answerText, input.latestFacts);
+  const structure = evaluateStructure(input.answerText, requiredHeadings);
+  const extractedTools = extractToolNames(input.trace);
+
+  const memoryGatePassed = latestFacts.requiredFactsCorrect === latestFacts.requiredFactsTotal;
+  const strictGatePassed = memoryGatePassed && structure.structureGatePassed;
+
+  const failureReasons: string[] = [];
+  for (const field of latestFacts.missingRequiredFields) {
+    failureReasons.push(`missing_required_field:${field}`);
+  }
+  for (const field of latestFacts.latestFactMismatchFields) {
+    failureReasons.push(`latest_fact_mismatch:${field}`);
+  }
+  if (!structure.structureGatePassed) {
+    failureReasons.push("structure_insufficient");
+  }
+
+  return {
+    answerCorrect: memoryGatePassed,
+    memoryGatePassed,
+    structureGatePassed: structure.structureGatePassed,
+    strictGatePassed,
+    requiredFactsTotal: latestFacts.requiredFactsTotal,
+    requiredFactsCorrect: latestFacts.requiredFactsCorrect,
+    latestFactMismatchFields: latestFacts.latestFactMismatchFields,
+    missingRequiredFields: latestFacts.missingRequiredFields,
     agentToolCallCount: extractedTools.count,
     agentToolNames: extractedTools.names,
-    missingToolNames,
-    requiredToolCallsSatisfied,
-    briefFormatSatisfied,
-    memoryEvidenceSatisfied,
-    webEvidenceSatisfied,
-    strictGatePassed,
     failureReasons,
   };
 }

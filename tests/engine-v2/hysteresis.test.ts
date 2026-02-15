@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { compilePassiveContextPack, type EventTapeEntry } from "../../src/engine-v2";
+import { compilePassiveContextPack, type EventTapeEntry } from "../../src/engine";
 
 function makeEntry(id: string, role: "user" | "assistant", content: string): EventTapeEntry {
   return {

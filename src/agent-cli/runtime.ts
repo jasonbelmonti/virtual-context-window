@@ -1,26 +1,21 @@
 import {
   createProviderCompressionExtractor,
   InMemorySymbolStore,
-  createRetrievalHooks,
   createVirtualContextEngine,
-  createVirtualContextEngineV2Passive,
-  createWritePathHooks,
   type AssistantGenerateFn,
   type EngineStage,
+  type PreModelTelemetry,
   type SymbolRecord,
   type TelemetryEvent,
   type VirtualContextEngine,
   type VirtualContextMessage,
 } from "../engine";
-import { createOllamaEmbeddingProvider } from "../integrations/ollama";
 import {
   createLangChainAgentAssistantGenerate,
   type LangChainAgentMetadata,
-  resolveWriteIntentFromMetadata,
+  type VcwToolLifecycleEvent,
 } from "../integrations/langchain";
-import type { WriteIntentMode } from "../integrations/langchain";
 import {
-  createOpenAIEmbeddingProvider,
   createOpenAIResponsesAgentAssistantGenerate,
   type OpenAIResponsesAgentResultMetadata,
 } from "../integrations/openai";
@@ -36,8 +31,8 @@ import {
   type RecognizerConfig,
 } from "../recognition";
 import type {
+  AgentLifecycleEvent,
   AgentCliCommand,
-  KernelMode,
   AgentCliStateView,
   AgentThreadState,
   AgentTurnResult,
@@ -130,6 +125,21 @@ function parseOptionalPositiveInt(value: string | undefined): number | null {
   return parsed;
 }
 
+function parseBoolean(value: string | undefined, fallback: boolean): boolean {
+  if (!value) {
+    return fallback;
+  }
+
+  const normalized = value.trim().toLowerCase();
+  if (normalized === "true" || normalized === "1" || normalized === "yes" || normalized === "on") {
+    return true;
+  }
+  if (normalized === "false" || normalized === "0" || normalized === "no" || normalized === "off") {
+    return false;
+  }
+  return fallback;
+}
+
 function classifyRuntimeError(error: unknown): string {
   if (error instanceof Error) {
     const message = error.message.toLowerCase();
@@ -172,28 +182,9 @@ function parseProvider(
   return fallback;
 }
 
-function parseKernelMode(
-  value: string | undefined,
-  fallback: KernelMode,
-): KernelMode {
-  if (!value) {
-    return fallback;
-  }
-
-  const normalized = value.toLowerCase();
-  if (normalized === "v2" || normalized === "v2_passive") {
-    return "v2_passive";
-  }
-  if (normalized === "v1") {
-    return "v1";
-  }
-  return fallback;
-}
-
 export type AgentCliRuntimeOptions = {
   mock?: boolean;
   provider?: AgentProvider;
-  kernelMode?: KernelMode;
   streamEnabled?: boolean;
   traceEnabled?: boolean;
   threadId?: string;
@@ -204,9 +195,6 @@ export type AgentCliRuntimeOptions = {
 export function createMockAgentAssistantGenerate(): AssistantGenerateFn {
   return async (input) => {
     const lastUserText = getLastUserMessage(input.request.messages).trim();
-    const rememberPrefix = /^remember\s*:\s*/iu;
-    const strictWriteIntent =
-      resolveWriteIntentFromMetadata(input.request) === "strict";
     const autoMetadata = parseAutoSymbolMetadataEnvelope(
       input.request.metadata as Record<string, unknown> | undefined,
     );
@@ -220,31 +208,8 @@ export function createMockAgentAssistantGenerate(): AssistantGenerateFn {
         (autoMetadata.scoring === undefined &&
           autoMetadata.confidence >= DEFAULT_AUTO_ACTIVE_MIN_SCORE));
 
-    if (rememberPrefix.test(lastUserText) || strictWriteIntent) {
-      const content = lastUserText.replace(rememberPrefix, "").trim();
-      const payload = {
-        symbol_events: [
-          {
-            type: "upsert_symbol",
-            summary: summarizeDeterministically(content || "(empty memory)"),
-            content: content || "(empty memory)",
-            kind: "note",
-            key_hint: "agent_cli_mock",
-          },
-        ],
-      };
-
-      return `Got it.\n<symbolic_control>${JSON.stringify(payload)}</symbolic_control>`;
-    }
-
     if (autoWriteActive) {
-      const payload = {
-        symbol_events: autoMetadata.events,
-      };
-      return [
-        `Mock agent: ${lastUserText || "hello"}`,
-        `<symbolic_control>${JSON.stringify(payload)}</symbolic_control>`,
-      ].join("\n");
+      return `Mock agent: ${lastUserText || "hello"} [auto-detected]`;
     }
 
     return `Mock agent: ${lastUserText || "hello"}`;
@@ -257,7 +222,6 @@ export class AgentCliRuntime {
   private store = new InMemorySymbolStore();
   private engine: VirtualContextEngine;
   private readonly provider: AgentProvider;
-  private readonly kernelMode: KernelMode;
   private streamEnabled: boolean;
   private traceEnabled: boolean;
   private autoSymbolMode: AutoSymbolMode;
@@ -266,6 +230,11 @@ export class AgentCliRuntime {
   private threadId: string;
   private activeStages: EngineStage[] | null = null;
   private activeTelemetry: TelemetryEvent[] | null = null;
+  private activeLifecycle: AgentLifecycleEvent[] | null = null;
+  private activeLifecycleSink:
+    | ((event: AgentLifecycleEvent) => void | Promise<void>)
+    | null = null;
+  private lifecycleSequence = 0;
   private activeAutoDecision: RecognitionDecision | null = null;
   private activeAgentMetadata: AgentAssistantMetadata | null = null;
   private lastAutoDecision: RecognitionDecision | null = null;
@@ -279,10 +248,6 @@ export class AgentCliRuntime {
     this.provider = parseProvider(
       options.provider ?? env.VCW_ASSISTANT_PROVIDER,
       "ollama",
-    );
-    this.kernelMode = parseKernelMode(
-      options.kernelMode ?? env.VCW_KERNEL_MODE,
-      "v1",
     );
     this.streamEnabled = options.streamEnabled ?? true;
     this.traceEnabled = options.traceEnabled ?? false;
@@ -302,7 +267,6 @@ export class AgentCliRuntime {
     this.threadId = options.threadId ?? makeThreadId();
 
     if (!options.mock && !options.assistantGenerate) {
-      const needsEmbeddings = this.kernelMode !== "v2_passive";
       if (this.provider === "openai_responses") {
         if (!env.OPENAI_API_KEY) {
           throw new Error("missing_env:OPENAI_API_KEY");
@@ -310,15 +274,9 @@ export class AgentCliRuntime {
         if (!env.VCW_OPENAI_MODEL) {
           throw new Error("missing_env:VCW_OPENAI_MODEL");
         }
-        if (needsEmbeddings && !env.VCW_OPENAI_EMBED_MODEL) {
-          throw new Error("missing_env:VCW_OPENAI_EMBED_MODEL");
-        }
       } else {
         if (!env.VCW_OLLAMA_MODEL) {
           throw new Error("missing_env:VCW_OLLAMA_MODEL");
-        }
-        if (needsEmbeddings && !env.VCW_OLLAMA_EMBED_MODEL) {
-          throw new Error("missing_env:VCW_OLLAMA_EMBED_MODEL");
         }
       }
     }
@@ -351,6 +309,8 @@ export class AgentCliRuntime {
             endpoint: env.VCW_WEB_SEARCH_ENDPOINT,
             source: "wikipedia_opensearch",
           },
+          now: () => Date.now(),
+          onToolLifecycle: (event) => this.recordToolLifecycle(event),
         }),
         onResultMetadata: (metadata) => {
           this.activeAgentMetadata = metadata;
@@ -372,6 +332,8 @@ export class AgentCliRuntime {
           endpoint: env.VCW_WEB_SEARCH_ENDPOINT,
           source: "wikipedia_opensearch",
         },
+        now: () => Date.now(),
+        onToolLifecycle: (event) => this.recordToolLifecycle(event),
       }),
       onResultMetadata: (metadata) => {
         this.activeAgentMetadata = metadata;
@@ -379,101 +341,118 @@ export class AgentCliRuntime {
     });
   }
 
+  private async recordLifecycleEvent(
+    event: Omit<AgentLifecycleEvent, "seq" | "timestampMs">,
+    timestampMs?: number,
+  ): Promise<void> {
+    const seq = this.lifecycleSequence + 1;
+    const lifecycleEvent: AgentLifecycleEvent = {
+      ...event,
+      seq,
+      timestampMs: timestampMs ?? Date.now(),
+    } as AgentLifecycleEvent;
+    this.lifecycleSequence = seq;
+    this.activeLifecycle?.push(lifecycleEvent);
+    const sink = this.activeLifecycleSink;
+    if (!sink) {
+      return;
+    }
+    try {
+      await sink(lifecycleEvent);
+    } catch {
+      // Lifecycle sink must never fail turn processing.
+    }
+  }
+
+  private async recordToolLifecycle(event: VcwToolLifecycleEvent): Promise<void> {
+    if (event.type === "tool_call_started") {
+      await this.recordLifecycleEvent(
+        {
+          type: "tool_call_started",
+          toolName: event.toolName,
+          argsPreview: event.argsPreview,
+        },
+        event.timestampMs,
+      );
+      return;
+    }
+    if (event.type === "tool_call_completed") {
+      await this.recordLifecycleEvent(
+        {
+          type: "tool_call_completed",
+          toolName: event.toolName,
+          argsPreview: event.argsPreview,
+          resultPreview: event.resultPreview,
+          durationMs: event.durationMs,
+        },
+        event.timestampMs,
+      );
+      return;
+    }
+    await this.recordLifecycleEvent(
+      {
+        type: "tool_call_failed",
+        toolName: event.toolName,
+        argsPreview: event.argsPreview,
+        errorMessage: event.errorMessage,
+        durationMs: event.durationMs,
+      },
+      event.timestampMs,
+    );
+  }
+
   private createEngine(): VirtualContextEngine {
     const env = this.options.env ?? process.env;
-    if (this.kernelMode === "v2_passive") {
-      const passiveHighWatermark = parsePositiveFloat(
-        env.VCW_PASSIVE_HIGH_WATERMARK,
-        0.8,
-      );
-      const passiveLowWatermarkRaw = parsePositiveFloat(
-        env.VCW_PASSIVE_LOW_WATERMARK,
-        0.6,
-      );
-      const passiveLowWatermark = Math.min(
-        passiveLowWatermarkRaw,
-        Math.max(0.05, passiveHighWatermark - 0.05),
-      );
-
-      return createVirtualContextEngineV2Passive({
-        assistantGenerate: this.resolveAssistantGenerate(),
-        store: this.store,
-        telemetry: {
-          emit: (event) => {
-            this.activeTelemetry?.push(event);
-          },
-        },
-        onStage: (stage) => {
-          this.activeStages?.push(stage);
-        },
-        retrievalStrategy: "hybrid_v2",
-        highWatermark: passiveHighWatermark,
-        lowWatermark: passiveLowWatermark,
-        packBudget: {
-          totalChars: parsePositiveInt(env.VCW_PASSIVE_PACK_TOTAL_CHARS, 420),
-          recentLiteralPairCount: 2,
-          recentLiteralItemMaxChars: 180,
-        },
-        maxEventTapeEntriesPerThread: parsePositiveInt(
-          env.VCW_PASSIVE_MAX_EVENT_TAPE_ENTRIES,
-          2_000,
-        ),
-        extractor: this.options.mock
-          ? undefined
-          : createProviderCompressionExtractor({
-              provider: this.provider,
-              env,
-            }),
-      });
-    }
-
-    const embedModel =
-      this.provider === "openai_responses"
-        ? env.VCW_OPENAI_EMBED_MODEL
-        : env.VCW_OLLAMA_EMBED_MODEL;
-    const embedCacheEntries = parsePositiveInt(
-      env.VCW_EMBED_CACHE_MAX_ENTRIES,
-      2_000,
+    const passiveHighWatermark = parsePositiveFloat(
+      env.VCW_PASSIVE_HIGH_WATERMARK,
+      0.8,
     );
-    const embeddingProvider = this.options.mock
-      ? undefined
-      : this.provider === "openai_responses"
-        ? createOpenAIEmbeddingProvider({
-            env,
-            defaultModel: embedModel,
-          })
-        : createOllamaEmbeddingProvider({
-            env,
-            defaultModel: embedModel,
-          });
-
-    const hooks = createRetrievalHooks({
-      store: this.store,
-      strategy: "hybrid_v2",
-      embeddingProvider,
-      embeddingModel: embedModel,
-      failOnEmbeddingError: false,
-      embeddingCacheMaxEntries: embedCacheEntries,
-    });
-    const writePathHooks = createWritePathHooks({
-      store: this.store,
-    });
+    const passiveLowWatermarkRaw = parsePositiveFloat(
+      env.VCW_PASSIVE_LOW_WATERMARK,
+      0.6,
+    );
+    const passiveLowWatermark = Math.min(
+      passiveLowWatermarkRaw,
+      Math.max(0.05, passiveHighWatermark - 0.05),
+    );
 
     return createVirtualContextEngine({
       assistantGenerate: this.resolveAssistantGenerate(),
-      hooks: {
-        ...hooks,
-        ...writePathHooks,
-      },
-      onStage: (stage) => {
-        this.activeStages?.push(stage);
-      },
+      store: this.store,
       telemetry: {
         emit: (event) => {
           this.activeTelemetry?.push(event);
         },
       },
+      onStage: (stage) => {
+        this.activeStages?.push(stage);
+      },
       retrievalStrategy: "hybrid_v2",
+      highWatermark: passiveHighWatermark,
+      lowWatermark: passiveLowWatermark,
+      packBudget: {
+        totalChars: parsePositiveInt(env.VCW_PASSIVE_PACK_TOTAL_CHARS, 420),
+        recentLiteralPairCount: 2,
+        recentLiteralItemMaxChars: 180,
+      },
+      maxEventTapeEntriesPerThread: parsePositiveInt(
+        env.VCW_PASSIVE_MAX_EVENT_TAPE_ENTRIES,
+        2_000,
+      ),
+      waitForCompactionDrain: parseBoolean(
+        env.VCW_PASSIVE_WAIT_FOR_COMPACTION_DRAIN,
+        true,
+      ),
+      compactionDrainTimeoutMs: parsePositiveInt(
+        env.VCW_PASSIVE_COMPACTION_DRAIN_TIMEOUT_MS,
+        1_200,
+      ),
+      extractor: this.options.mock
+        ? undefined
+        : createProviderCompressionExtractor({
+            provider: this.provider,
+            env,
+          }),
     });
   }
 
@@ -538,12 +517,7 @@ export class AgentCliRuntime {
 
   private async buildAutoDecision(
     userText: string,
-    writeIntentMode: WriteIntentMode,
   ): Promise<RecognitionDecision | null> {
-    if (writeIntentMode === "strict") {
-      return null;
-    }
-
     const initial = recognizeAutomaticSymbols({
       latestUserText: userText,
       mode: this.autoSymbolMode,
@@ -619,6 +593,9 @@ export class AgentCliRuntime {
         pressureRatio: number;
         pressurePeak: number;
         pressureState: "normal" | "compact";
+        compactionDrainAttempted: boolean;
+        compactionDrainWaitMs: number;
+        compactionDrainTimedOut: boolean;
         compactionTriggered: boolean;
         compactionReason: "high_watermark" | "below_threshold" | "none";
         compactionJobsTriggered: number;
@@ -639,21 +616,12 @@ export class AgentCliRuntime {
     const symbolTable = await this.collectSymbolTableSnapshot(this.threadId);
     const env = this.options.env ?? process.env;
     const auto = this.lastAutoDecision ?? this.emptyAutoDecision();
-    const post = this.activeTelemetry?.find(
-      (event) => event.type === "post_model",
-    );
-    const writeApplied =
-      (this.lastAgentMetadata?.writeTransport === "detector_bridge" &&
-        (post?.type !== "post_model" || post.eventsAccepted > 0)) ||
-      (post?.type === "post_model" &&
-        auto.mode === "active" &&
-        auto.triggered &&
-        post.eventsAccepted > 0);
+
     return {
       threadId: this.threadId,
-      kernelMode: this.kernelMode,
       stages: this.activeStages ?? [],
       telemetry: this.activeTelemetry ?? [],
+      lifecycle: this.activeLifecycle ? [...this.activeLifecycle] : [],
       symbolTable,
       contextPackText: response.contextPackText,
       rawModelContent: response.rawModelContent,
@@ -666,7 +634,7 @@ export class AgentCliRuntime {
         reason: this.lastAgentMetadata?.autoReason ?? auto.reason,
         eventCount: this.lastAgentMetadata?.autoEventCount ?? auto.events.length,
         suppressed: this.lastAgentMetadata?.autoSuppressed ?? auto.suppressed,
-        writeApplied,
+        writeApplied: false,
         scorerVersion:
           this.lastAgentMetadata?.autoScorerVersion ?? auto.scoring.scorerVersion,
         score: this.lastAgentMetadata?.autoScore ?? auto.scoring.probability,
@@ -693,12 +661,6 @@ export class AgentCliRuntime {
             agentToolCallCount: this.lastAgentMetadata.agentToolCallCount,
             agentToolNames: this.lastAgentMetadata.agentToolNames,
             agentLoopDurationMs: this.lastAgentMetadata.agentLoopDurationMs,
-            writeIntentMode: this.lastAgentMetadata.writeIntentMode,
-            writeTransport: this.lastAgentMetadata.writeTransport,
-            writeIntentSatisfied: this.lastAgentMetadata.writeIntentSatisfied,
-            toolCallDetected: this.lastAgentMetadata.toolCallDetected,
-            writeToolSchemaVersion:
-              this.lastAgentMetadata.writeToolSchemaVersion,
           }
         : {
             provider:
@@ -723,11 +685,6 @@ export class AgentCliRuntime {
             agentToolCallCount: 0,
             agentToolNames: [],
             agentLoopDurationMs: 0,
-            writeIntentMode: "none",
-            writeTransport: "plain_text",
-            writeIntentSatisfied: true,
-            toolCallDetected: false,
-            writeToolSchemaVersion: "v1",
           },
     };
   }
@@ -735,8 +692,12 @@ export class AgentCliRuntime {
   async processUserMessage(
     userInput: string,
     options?: {
-      writeIntentMode?: WriteIntentMode;
       onAssistantDelta?: (delta: string) => void | Promise<void>;
+      onPreModel?: (event: PreModelTelemetry) => void | Promise<void>;
+      onContextPack?: (contextPackText: string) => void | Promise<void>;
+      onLifecycleEvent?: (
+        event: AgentLifecycleEvent,
+      ) => void | Promise<void>;
     },
   ): Promise<AgentTurnResult> {
     if (this.turnInFlight) {
@@ -751,34 +712,20 @@ export class AgentCliRuntime {
     const thread = this.getOrCreateThread(this.threadId);
     const historyForRequest = this.getWindowedHistory(thread.messages);
     const requestMessages = [...historyForRequest, { role: "user" as const, content: text }];
-    const requestedWriteIntentMode = options?.writeIntentMode ?? "none";
-    const autoDecision = await this.buildAutoDecision(text, requestedWriteIntentMode);
-    const writeIntentMode =
-      requestedWriteIntentMode === "strict"
-        ? "strict"
-        : this.autoSymbolMode === "off"
-          ? "none"
-          : "auto";
-    const metadata: Record<string, unknown> | undefined =
-      requestedWriteIntentMode === "strict"
-        ? {
-            writeIntent: {
-              mode: "strict",
-            },
-          }
-        : this.autoSymbolMode !== "off"
-          ? {
-              writeIntent: {
-                mode: "auto",
-              },
-              vcwAutoSymbol: toAutoSymbolMetadataEnvelope(
-                autoDecision ?? this.emptyAutoDecision(),
-              ),
-            }
-          : undefined;
+    const autoDecision = await this.buildAutoDecision(text);
+    const metadata: Record<string, unknown> | undefined = this.autoSymbolMode !== "off"
+      ? {
+          vcwAutoSymbol: toAutoSymbolMetadataEnvelope(
+            autoDecision ?? this.emptyAutoDecision(),
+          ),
+        }
+      : undefined;
 
     this.activeStages = [];
     this.activeTelemetry = [];
+    this.activeLifecycle = [];
+    this.activeLifecycleSink = options?.onLifecycleEvent ?? null;
+    this.lifecycleSequence = 0;
     this.activeAutoDecision = autoDecision;
     this.activeAgentMetadata = null;
     this.turnInFlight = true;
@@ -804,6 +751,9 @@ export class AgentCliRuntime {
                 pressureRatio: number;
                 pressurePeak: number;
                 pressureState: "normal" | "compact";
+                compactionDrainAttempted: boolean;
+                compactionDrainWaitMs: number;
+                compactionDrainTimedOut: boolean;
                 compactionTriggered: boolean;
                 compactionReason: "high_watermark" | "below_threshold" | "none";
                 compactionJobsTriggered: number;
@@ -824,6 +774,36 @@ export class AgentCliRuntime {
         | undefined;
       if (this.streamEnabled) {
         for await (const event of this.engine.processTurnStream(request)) {
+          if (
+            event.type === "telemetry" &&
+            event.event.type === "pre_model" &&
+            options?.onPreModel
+          ) {
+            await options.onPreModel(event.event);
+          }
+          if (event.type === "retrieval_candidates") {
+            await this.recordLifecycleEvent({
+              type: "retrieval_candidates",
+              queryText: event.queryText,
+              candidateSymbolIds: event.candidateSymbolIds,
+              focusedCandidates: event.focusedCandidates,
+              recallCandidates: event.recallCandidates,
+            });
+          }
+          if (event.type === "context_pack_compiled" && options?.onContextPack) {
+            await options.onContextPack(event.contextPackText);
+          }
+          if (event.type === "compaction_candidates") {
+            await this.recordLifecycleEvent({
+              type: "compaction_candidates",
+              pressureRatio: event.pressureRatio,
+              pressureState: event.pressureState,
+              compactionTriggered: event.compactionTriggered,
+              compactionReason: event.compactionReason,
+              scheduleResult: event.scheduleResult,
+              candidateEntries: event.candidateEntries,
+            });
+          }
           if (event.type === "assistant_text_delta" && options?.onAssistantDelta) {
             await options.onAssistantDelta(event.delta);
           }
@@ -852,6 +832,8 @@ export class AgentCliRuntime {
     } finally {
       this.activeStages = null;
       this.activeTelemetry = null;
+      this.activeLifecycle = null;
+      this.activeLifecycleSink = null;
       this.activeAutoDecision = null;
       this.activeAgentMetadata = null;
       this.turnInFlight = false;
@@ -871,6 +853,43 @@ export class AgentCliRuntime {
             output: [
               "--- Raw Model Output ---",
               this.lastTrace.rawModelContent || "(empty)",
+            ].join("\n"),
+          };
+        }
+        if (command.action === "pack") {
+          if (!this.lastTrace) {
+            return { output: "No context pack available yet." };
+          }
+          return {
+            output: [
+              "--- Context Pack ---",
+              this.lastTrace.contextPackText || "(empty)",
+            ].join("\n"),
+          };
+        }
+        if (command.action === "tape") {
+          if (!this.engine.inspectThread) {
+            return { output: "Engine inspection unavailable." };
+          }
+          const snapshot = await this.engine.inspectThread(this.threadId);
+          return {
+            output: [
+              "--- Event Tape ---",
+              `entries=${snapshot.passive.eventTapeEntryCount}`,
+              `compressionRecords=${snapshot.passive.compressionRecordCount}`,
+              `hydrationLeases=${snapshot.passive.hydrationLeaseCount}`,
+              `pendingCandidates=${snapshot.passive.pendingCompactionCandidates}`,
+              `pressurePeak=${snapshot.passive.pressurePeak.toFixed(3)}`,
+              `compactMode=${snapshot.passive.compactMode}`,
+              `compactionInFlight=${snapshot.passive.compactionInFlight}`,
+              `lastCompactionOutcome=${snapshot.passive.lastCompactionOutcome}`,
+              `jobsTriggered=${snapshot.passive.counters.compactionJobsTriggered}`,
+              `extractorCalls=${snapshot.passive.counters.extractorCalls}`,
+              `proposals=${snapshot.passive.counters.proposalsCount}`,
+              `committedSymbols=${snapshot.passive.counters.committedSymbolsCount}`,
+              `recentEntryIds=${snapshot.passive.recentEntryIds.join(",") || "(none)"}`,
+              `compressedSymbolIds=${snapshot.passive.compressedSymbolIds.join(",") || "(none)"}`,
+              `hydratedSymbolIds=${snapshot.passive.hydratedSymbolIds.join(",") || "(none)"}`,
             ].join("\n"),
           };
         }
@@ -906,48 +925,43 @@ export class AgentCliRuntime {
       case "state": {
         const state = this.getState();
         const symbolCount = (await this.store.list(this.threadId)).length;
+        const inspection = this.engine.inspectThread
+          ? await this.engine.inspectThread(this.threadId)
+          : null;
         return {
           output: [
             `threadId=${state.threadId}`,
             `trace=${state.traceMode}`,
             `provider=${state.provider}`,
-            `kernelMode=${state.kernelMode}`,
             `stream=${state.streamEnabled ? "on" : "off"}`,
             `autoSymbolMode=${state.autoSymbolMode}`,
             `historyTurnLimit=${state.historyTurnLimit ?? "off"}`,
             `messageCount=${state.messageCount}`,
             `symbolCount=${symbolCount}`,
+            `compactMode=${inspection?.passive.compactMode ?? false}`,
+            `compactionInFlight=${inspection?.passive.compactionInFlight ?? false}`,
+            `pressurePeak=${inspection?.passive.pressurePeak.toFixed(3) ?? "0.000"}`,
           ].join("\n"),
         };
       }
       case "remember": {
-        if (this.kernelMode === "v2_passive") {
-          const content = command.content.trim();
-          if (!content) {
-            return {
-              output: "empty_remember_content",
-            };
-          }
-          await this.store.upsert(this.threadId, {
-            summary: summarizeDeterministically(content),
-            content,
-            kind: "note",
-            meta: {
-              source: "passive_manual",
-              keyHint: "agent_cli_remember",
-            },
-          });
+        const content = command.content.trim();
+        if (!content) {
           return {
-            output: "Remembered via passive policy write path.",
+            output: "empty_remember_content",
           };
         }
-
-        const turn = await this.processUserMessage(command.content, {
-          writeIntentMode: "strict",
+        await this.store.upsert(this.threadId, {
+          summary: summarizeDeterministically(content),
+          content,
+          kind: "note",
+          meta: {
+            source: "passive_manual",
+            keyHint: "agent_cli_remember",
+          },
         });
         return {
-          output: turn.content,
-          turn,
+          output: "Remembered via passive policy write path.",
         };
       }
       case "history": {
@@ -973,25 +987,6 @@ export class AgentCliRuntime {
         return {
           output: `historyTurnLimit=${this.historyTurnLimit}`,
         };
-      case "experiment":
-        if (command.mode === "vcw-only") {
-          const thread = this.getOrCreateThread(this.threadId);
-          thread.messages = [];
-          return {
-            output:
-              "Experiment mode set: VCW-only. Conversation history cleared; symbol table preserved.",
-          };
-        }
-        if (command.mode === "chat-only") {
-          const removedCount = await this.store.clearThread(this.threadId);
-          return {
-            output:
-              removedCount > 0
-                ? `Experiment mode set: chat-only. Cleared ${removedCount} symbol(s); conversation history preserved.`
-                : "Experiment mode set: chat-only. No symbols found; conversation history preserved.",
-          };
-        }
-        return { output: "unknown_experiment_mode" };
       case "symbols_clear": {
         const removedCount = await this.store.clearThread(this.threadId);
         return {
@@ -1051,7 +1046,6 @@ export class AgentCliRuntime {
       threadId: this.threadId,
       traceMode: this.traceEnabled ? "on" : "off",
       provider: this.provider,
-      kernelMode: this.kernelMode,
       streamEnabled: this.streamEnabled,
       autoSymbolMode: this.autoSymbolMode,
       historyTurnLimit: this.historyTurnLimit,

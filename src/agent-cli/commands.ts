@@ -23,10 +23,17 @@ export function parseSlashCommand(input: string): CommandParseResult {
       return { ok: true, command: { type: "help" } };
     case "trace": {
       const action = restTokens[0]?.toLowerCase();
-      if (action === "on" || action === "off" || action === "view" || action === "raw") {
+      if (
+        action === "on" ||
+        action === "off" ||
+        action === "view" ||
+        action === "raw" ||
+        action === "pack" ||
+        action === "tape"
+      ) {
         return { ok: true, command: { type: "trace", action } };
       }
-      return { ok: false, error: "usage: /trace on|off|view|raw" };
+      return { ok: false, error: "usage: /trace on|off|view|raw|pack|tape" };
     }
     case "stream": {
       const action = restTokens[0]?.toLowerCase();
@@ -99,13 +106,6 @@ export function parseSlashCommand(input: string): CommandParseResult {
       }
       return { ok: false, error: "usage: /history clear|status|off|limit <positive-turns>" };
     }
-    case "experiment": {
-      const mode = restTokens[0]?.toLowerCase();
-      if (mode === "vcw-only" || mode === "chat-only") {
-        return { ok: true, command: { type: "experiment", mode } };
-      }
-      return { ok: false, error: "usage: /experiment vcw-only|chat-only" };
-    }
     case "thread": {
       const threadId = restTokens[0]?.trim();
       if (!threadId) {
@@ -125,17 +125,16 @@ export function formatHelpText(): string {
   return [
     "Commands:",
     "  /help                          Show this help",
-    "  /trace on|off|view|raw         Toggle trace, print last trace, or raw model output",
+    "  /trace on|off|view|raw|pack|tape Toggle trace, print last trace/raw output/context pack/event tape",
     "  /stream on|off|status          Toggle streaming output in this session",
     "  /auto on|off|shadow|status     Configure passive symbol recognition mode",
     "  /state                         Show current CLI state",
-    "  /remember <text>               Persist memory via strict trailing control JSON",
+    "  /remember <text>               Deterministic memory upsert",
     "  /symbols [limit]               List symbols in the current thread",
     "  /symbols clear                 Clear symbols for current thread only",
     "  /show <symbol_id>              Show full symbol content",
     "  /history clear|status|off     Clear or inspect history window mode",
     "  /history limit <turns>         Keep only last N turns in model context",
-    "  /experiment vcw-only|chat-only Reset history or symbols for quick experiments",
     "  /thread <thread_id>            Switch active thread",
     "  /quit                          Exit the CLI",
   ].join("\n");
