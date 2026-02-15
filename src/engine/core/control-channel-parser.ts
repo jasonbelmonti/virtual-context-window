@@ -3,7 +3,7 @@ import type {
   ParsedControlChannel,
   SymbolRecordKind,
   UpsertSymbolEvent,
-} from "./contracts";
+} from "./types";
 
 const OPEN_CONTROL_TAG = "<symbolic_control>";
 const CLOSE_CONTROL_TAG = "</symbolic_control>";

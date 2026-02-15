@@ -3,7 +3,7 @@ import type {
   AssistantGenerateFn,
   AssistantGenerateInput,
   AssistantGenerateStreamEvent,
-} from "../../../engine/hooks";
+} from "../../../engine/core/hooks";
 import {
   parseAutoSymbolMetadataEnvelope,
   type RecognitionScoring,

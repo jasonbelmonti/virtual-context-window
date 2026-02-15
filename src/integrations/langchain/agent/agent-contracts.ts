@@ -2,8 +2,8 @@ import type {
   RetrievalStrategy,
   SymbolStore,
   VirtualContextTurnRequest,
-} from "../../../engine/contracts";
-import type { AssistantGenerateInput, AssistantGenerateFn } from "../../../engine/hooks";
+} from "../../../engine/core/types";
+import type { AssistantGenerateInput, AssistantGenerateFn } from "../../../engine/core/hooks";
 import type { VcwLangChainMiddleware, AssistantStreamProvider } from "../contracts";
 
 export type AgentToolListResult = {

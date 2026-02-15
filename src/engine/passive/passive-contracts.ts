@@ -6,7 +6,7 @@ import type {
   SymbolStore,
   TelemetrySink,
   VirtualContextEngine,
-} from "../core/contracts";
+} from "../core/types";
 import type { AssistantGenerateFn, QueryBuilderHook } from "../core/hooks";
 
 export type EventTapeEntry = {

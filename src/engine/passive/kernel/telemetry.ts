@@ -1,7 +1,7 @@
 import type {
   PostModelTelemetry,
   PreModelTelemetry,
-} from "../../core/contracts";
+} from "../../core/types";
 import type { PassiveKernelOptions } from "../passive-contracts";
 import type { StreamEventEmitter } from "./types";
 

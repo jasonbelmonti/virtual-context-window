@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
-import type { MetricAggregate } from "../../src/validation/contracts";
-import { evaluateBaselineV2Gate } from "../../src/validation/gate";
-import { DEFAULT_THRESHOLD_RULES } from "../../src/validation/thresholds";
+import type { MetricAggregate } from "../../src/validation/core/contracts";
+import { evaluateBaselineV2Gate } from "../../src/validation/core/gate";
+import { DEFAULT_THRESHOLD_RULES } from "../../src/validation/scenarios/thresholds";
 
 function buildPassingMetrics(): Record<string, MetricAggregate> {
   const metrics: Record<string, MetricAggregate> = {};

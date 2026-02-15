@@ -1,4 +1,4 @@
-export * from "./contracts";
+export * from "./types";
 export * from "./control-channel-parser";
 export * from "./errors";
 export * from "./hooks";

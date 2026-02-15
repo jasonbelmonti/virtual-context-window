@@ -1,4 +1,4 @@
-import type { VirtualContextTurnStreamEvent } from "../../core/contracts";
+import type { VirtualContextTurnStreamEvent } from "../../core/types";
 import type { PassiveThreadCounters } from "../passive-contracts";
 
 export type StreamEventEmitter = (event: VirtualContextTurnStreamEvent) => void | Promise<void>;

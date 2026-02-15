@@ -1,4 +1,4 @@
-import type { SymbolRecord } from "../../core/contracts";
+import type { SymbolRecord } from "../../core/types";
 import type {
   PassiveKernelOptions,
   PassivePackHydratedRecord,

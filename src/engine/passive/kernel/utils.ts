@@ -1,4 +1,4 @@
-import type { VirtualContextTurnRequest } from "../../core/contracts";
+import type { VirtualContextTurnRequest } from "../../core/types";
 
 export function normalizeWatermark(value: number, fallback: number): number {
   if (!Number.isFinite(value) || value <= 0 || value >= 1) {

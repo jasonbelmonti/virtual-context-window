@@ -5,13 +5,13 @@ import type {
   SymbolStore,
   TelemetrySink,
   VirtualContextEngine,
-} from "./contracts";
+} from "./types";
 import type { AssistantGenerateFn, QueryBuilderHook } from "./hooks";
 import { createVirtualContextEnginePassive } from "../passive/passive-kernel";
 import type { CompressionExtractor, PassivePackBudget } from "../passive/passive-contracts";
 import { InMemorySymbolStore } from "../symbols/symbol-store";
 
-export type { EngineStage } from "./contracts";
+export type { EngineStage } from "./types";
 
 export type EngineKernelOptions = {
   assistantGenerate: AssistantGenerateFn;

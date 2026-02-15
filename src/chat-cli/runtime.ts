@@ -19,7 +19,7 @@ import {
   createOpenAIEmbeddingProvider,
   type OpenAIResponsesAssistantResultMetadata,
 } from "../integrations/openai";
-import { createOllamaEmbeddingProvider } from "../integrations/ollama";
+import { createOllamaEmbeddingProvider } from "../integrations/ollama/embedding-provider";
 import {
   normalizeForComparison,
   parseAutoSymbolMetadataEnvelope,

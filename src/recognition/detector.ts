@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import type { UpsertSymbolEvent } from "../engine/contracts";
+import type { UpsertSymbolEvent } from "../engine/core/types";
 import type {
   AutoSymbolMetadataEnvelope,
   AutoSymbolMode,

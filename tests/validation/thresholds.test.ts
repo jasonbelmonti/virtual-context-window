@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
-import type { MetricAggregate } from "../../src/validation/contracts";
-import { evaluateThresholdSet } from "../../src/validation/thresholds";
+import type { MetricAggregate } from "../../src/validation/core/contracts";
+import { evaluateThresholdSet } from "../../src/validation/scenarios/thresholds";
 
 function rateMetric(
   key: string,

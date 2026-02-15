@@ -1,5 +1,5 @@
 import Table from "cli-table3";
-import type { TelemetryEvent } from "../engine/contracts";
+import type { TelemetryEvent } from "../engine/core/types";
 import { createCliTheme, detectColorEnabled } from "../chat-cli/ui";
 import type { AgentTurnTrace } from "./contracts";
 

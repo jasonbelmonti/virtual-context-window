@@ -2,7 +2,7 @@ import {
   applyPassiveCommitPolicy,
   runExtractorWithTimeout,
 } from "../passive-compressor";
-import type { SymbolStore } from "../../core/contracts";
+import type { SymbolStore } from "../../core/types";
 import type {
   CompressionExtractor,
   EventTapeEntry,

@@ -1,8 +1,8 @@
 import type {
   RetrievalStrategy,
   SymbolStore,
-} from "../../engine/contracts";
-import type { AssistantGenerateFn, AssistantGenerateInput } from "../../engine/hooks";
+} from "../../engine/core/types";
+import type { AssistantGenerateFn, AssistantGenerateInput } from "../../engine/core/hooks";
 import type {
   VcwLangChainMiddleware,
   LangChainAssistantResultMetadata,

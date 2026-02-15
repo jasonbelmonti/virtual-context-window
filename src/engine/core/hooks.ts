@@ -4,7 +4,7 @@ import type {
   UpsertSymbolEvent,
   VirtualContextMessage,
   VirtualContextTurnRequest,
-} from "./contracts";
+} from "./types";
 
 export type QueryBuilderOutput = {
   queryText: string;

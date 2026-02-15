@@ -4,7 +4,7 @@ import type {
   SymbolSearchResult,
   SymbolStore,
   SymbolUpsertInput,
-} from "../core/contracts";
+} from "../core/types";
 
 type StoredThread = Map<string, SymbolRecord>;
 

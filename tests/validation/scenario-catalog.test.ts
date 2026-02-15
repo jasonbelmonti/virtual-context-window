@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
-import { SCENARIO_CATALOG } from "../../src/validation/scenario-catalog";
-import { SCENARIO_IDS } from "../../src/validation/contracts";
+import { SCENARIO_CATALOG } from "../../src/validation/scenarios/scenario-catalog";
+import { SCENARIO_IDS } from "../../src/validation/core/contracts";
 
 test("scenario catalog includes S01-S13 exactly once", () => {
   const expected = [...SCENARIO_IDS].sort();

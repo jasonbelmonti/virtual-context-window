@@ -1,10 +1,10 @@
 import { ChatOllama } from "@langchain/ollama";
-import type { VirtualContextMessage, VirtualContextTurnRequest } from "../../../engine/contracts";
+import type { VirtualContextMessage, VirtualContextTurnRequest } from "../../../engine/core/types";
 import type {
   AssistantGenerateFn,
   AssistantGenerateInput,
   AssistantGenerateStreamEvent,
-} from "../../../engine/hooks";
+} from "../../../engine/core/hooks";
 import {
   parseAutoSymbolMetadataEnvelope,
   type RecognitionScoring,

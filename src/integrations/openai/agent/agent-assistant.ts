@@ -1,7 +1,7 @@
 import type {
   AssistantGenerateFn,
   AssistantGenerateInput,
-} from "../../../engine/hooks";
+} from "../../../engine/core/hooks";
 import {
   parseAutoSymbolMetadataEnvelope,
   type RecognitionScoring,

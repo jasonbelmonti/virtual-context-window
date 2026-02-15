@@ -4,7 +4,7 @@ import type {
   VirtualContextEngine,
   VirtualContextTurnRequest,
   VirtualContextTurnResponse,
-} from "../core/contracts";
+} from "../core/types";
 import { StrictControlChannelParser } from "../core/control-channel-parser";
 import {
   GenerationCallInvariantError,

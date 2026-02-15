@@ -4,7 +4,7 @@ import {
   modelCallLimitMiddleware,
   toolCallLimitMiddleware,
 } from "langchain";
-import type { AssistantGenerateFn } from "../../../engine/hooks";
+import type { AssistantGenerateFn } from "../../../engine/core/hooks";
 import {
   parseAutoSymbolMetadataEnvelope,
   type RecognitionScoring,
