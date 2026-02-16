@@ -94,3 +94,35 @@ test("searchWithOptions returns ids and diagnostics", async () => {
   expect(result.diagnostics.lexicalCandidateCount).toBeGreaterThan(0);
   expect(result.diagnostics.rerankedCandidateCount).toBeGreaterThan(0);
 });
+
+test("fact claim upsert supersedes previous active value for same attribute", async () => {
+  let nowValue = 1_000;
+  const store = new InMemorySymbolStore({ now: () => nowValue });
+
+  const first = await store.upsertFactClaim?.("thread-claims", {
+    attribute: "owner_latest",
+    value: "owner_a",
+    confidence: 0.9,
+    source: "deterministic",
+    sourceEntryIds: ["evt_1"],
+    validFromTurn: 1,
+  });
+  nowValue = 1_001;
+  const second = await store.upsertFactClaim?.("thread-claims", {
+    attribute: "owner",
+    value: "owner_b",
+    confidence: 0.93,
+    source: "planner_model",
+    sourceEntryIds: ["evt_2"],
+    validFromTurn: 2,
+  });
+
+  expect(first?.created).toBe(true);
+  expect(second?.created).toBe(true);
+  expect(typeof second?.supersededClaimId).toBe("string");
+
+  const active = await store.listActiveFactClaims?.("thread-claims");
+  expect(active?.length).toBe(1);
+  expect(active?.[0]?.attribute).toBe("owner");
+  expect(active?.[0]?.value).toBe("owner_b");
+});

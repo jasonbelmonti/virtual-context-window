@@ -13,6 +13,15 @@ type CompileInput = {
     symbolId: string;
     summary: string;
   }>;
+  factLedger?: Array<{
+    claimId: string;
+    attribute: string;
+    value: string;
+    confidence: number;
+  }>;
+  factCoverageRate?: number;
+  factRequiredCount?: number;
+  factMatchedCount?: number;
   hydratedFocused: PassivePackHydratedRecord[];
   hydratedRecall: PassivePackHydratedRecord[];
   budget: PassivePackBudget;
@@ -29,6 +38,8 @@ type RenderResult = {
   usedChars: number;
   focusedIncluded: number;
   recallIncluded: number;
+  factLedgerIncluded: number;
+  factLedgerChars: number;
 };
 
 type IndexLineVariant = {
@@ -84,6 +95,12 @@ function renderPack(input: {
     symbolId: string;
     summary: string;
   }>;
+  factLedger?: Array<{
+    claimId: string;
+    attribute: string;
+    value: string;
+    confidence: number;
+  }>;
   hydratedFocused: PassivePackHydratedRecord[];
   hydratedRecall: PassivePackHydratedRecord[];
   budget: PassivePackBudget;
@@ -93,9 +110,16 @@ function renderPack(input: {
   const remainingChars = { value: input.budget.totalChars };
   let focusedIncluded = 0;
   let recallIncluded = 0;
+  let factLedgerIncluded = 0;
+  let factLedgerChars = 0;
+  const factLedger = input.factLedger ?? [];
+  const factLedgerMinChars = input.budget.factLedgerMinChars ?? Math.floor(input.budget.totalChars * 0.35);
+  const episodeMaxChars = input.budget.episodeMaxChars ?? Math.floor(input.budget.totalChars * 0.55);
+  const indexMaxChars = input.budget.indexMaxChars ?? Math.floor(input.budget.totalChars * 0.1);
+
   const dynamicIndexMaxChars = Math.max(
-    36,
-    Math.min(input.budget.indexItemMaxChars, Math.floor(input.budget.totalChars * 0.35)),
+    30,
+    Math.min(input.budget.indexItemMaxChars, Math.floor(input.budget.totalChars * 0.3)),
   );
   const dynamicFocusedMaxChars = Math.max(
     72,
@@ -106,43 +130,100 @@ function renderPack(input: {
     Math.min(input.budget.recallItemMaxChars, Math.floor(input.budget.totalChars * 0.4)),
   );
 
-  const appendSection = (
-    title: "SYMBOL INDEX" | "RELEVANT MEMORY",
-    items: string[],
-    options?: { allowItemTruncate?: boolean },
-    onIncluded?: () => void,
-  ) => {
-    if (items.length === 0) {
+  const appendFactLedgerSection = () => {
+    if (factLedger.length === 0) {
       return;
     }
 
-    const titleLine = `${title}\n`;
+    const titleLine = "FACT LEDGER\n";
     if (!appendLineWithBudget(lines, titleLine, remainingChars)) {
       return;
     }
 
-    let included = false;
-    for (const item of items) {
-      if (!appendLineWithBudget(lines, item, remainingChars, {
-        allowTruncate: options?.allowItemTruncate ?? true,
-      })) {
+    const startingRemaining = remainingChars.value;
+    const ledgerTarget = Math.max(0, factLedgerMinChars);
+    let consumed = 0;
+
+    for (const claim of factLedger) {
+      const line = `- ${claim.attribute}: ${claim.value}\n`;
+      // Avoid truncating fact lines until we reach the target budget.
+      const appended = appendLineWithBudget(lines, line, remainingChars, {
+        allowTruncate: consumed >= ledgerTarget,
+      });
+      if (!appended) {
         break;
       }
-      included = true;
-      onIncluded?.();
+      consumed = startingRemaining - remainingChars.value;
+      factLedgerIncluded += 1;
     }
 
-    if (!included) {
-      lines.pop();
-      remainingChars.value += titleLine.length;
+    factLedgerChars = startingRemaining - remainingChars.value;
+    appendLineWithBudget(lines, "\n", remainingChars);
+  };
+
+  const appendMemorySection = () => {
+    const focusedLines = input.hydratedFocused.map((item) => {
+      const content = truncateDeterministic(item.content, dynamicFocusedMaxChars);
+      return `- [relevance:high] ${item.symbolId}: ${content}\n`;
+    });
+
+    const recallLines = input.hydratedRecall.slice(0, input.budget.recallK).map((item) => {
+      const content = truncateDeterministic(item.content, dynamicRecallMaxChars);
+      return `- [relevance:medium] ${item.symbolId}: ${content}\n`;
+    });
+
+    const memoryLines = [
+      ...focusedLines.map((line) => ({ line, source: "focused" as const })),
+      ...recallLines.map((line) => ({ line, source: "recall" as const })),
+    ];
+
+    if (memoryLines.length === 0) {
       return;
+    }
+
+    const titleLine = "RELEVANT MEMORY\n";
+    if (!appendLineWithBudget(lines, titleLine, remainingChars)) {
+      return;
+    }
+
+    const startingRemaining = remainingChars.value;
+    for (const item of memoryLines) {
+      const appended = appendLineWithBudget(lines, item.line, remainingChars, {
+        allowTruncate: true,
+      });
+      if (!appended) {
+        break;
+      }
+      const consumed = startingRemaining - remainingChars.value;
+      if (consumed > episodeMaxChars) {
+        break;
+      }
+      if (item.source === "focused") {
+        focusedIncluded += 1;
+      } else {
+        recallIncluded += 1;
+      }
     }
 
     appendLineWithBudget(lines, "\n", remainingChars);
   };
 
-  const appendIndexSection = (items: IndexLineVariant[]) => {
-    if (items.length === 0) {
+  const appendIndexSection = () => {
+    const hydratedIds = new Set(
+      [...input.hydratedFocused, ...input.hydratedRecall].map((record) => record.symbolId),
+    );
+    const indexLines = input.symbolIndex
+      .filter((item) => !hydratedIds.has(item.symbolId))
+      .slice(0, input.budget.symbolIndexLimit)
+      .map((item) => {
+        const summary = truncateDeterministic(item.summary, dynamicIndexMaxChars);
+        return {
+          full: `- ${item.symbolId}: ${summary}\n`,
+          compact: `- ${item.symbolId}\n`,
+        } as IndexLineVariant;
+      });
+
+    if (indexLines.length === 0) {
       return;
     }
 
@@ -151,81 +232,30 @@ function renderPack(input: {
       return;
     }
 
-    let included = false;
-    for (const item of items) {
-      if (appendLineWithBudget(lines, item.full, remainingChars, { allowTruncate: false })) {
-        included = true;
-        continue;
+    const startingRemaining = remainingChars.value;
+    for (const line of indexLines) {
+      const appended =
+        appendLineWithBudget(lines, line.full, remainingChars, { allowTruncate: false }) ||
+        appendLineWithBudget(lines, line.compact, remainingChars, { allowTruncate: false });
+      if (!appended) {
+        break;
       }
-      // If summary cannot fit, keep the ID visible as a compact checkpoint.
-      if (appendLineWithBudget(lines, item.compact, remainingChars, { allowTruncate: false })) {
-        included = true;
-        continue;
+      const consumed = startingRemaining - remainingChars.value;
+      if (consumed > indexMaxChars) {
+        break;
       }
-      break;
-    }
-
-    if (!included) {
-      lines.pop();
-      remainingChars.value += titleLine.length;
-      return;
     }
 
     appendLineWithBudget(lines, "\n", remainingChars);
   };
 
-  const hydratedIds = new Set(
-    [...input.hydratedFocused, ...input.hydratedRecall].map((record) => record.symbolId),
-  );
-  const indexLines = input.symbolIndex
-    .filter((item) => !hydratedIds.has(item.symbolId))
-    .slice(0, input.budget.symbolIndexLimit)
-    .map((item) => {
-      const summary = truncateDeterministic(item.summary, dynamicIndexMaxChars);
-      return {
-        full: `- ${item.symbolId}: ${summary}\n`,
-        compact: `- ${item.symbolId}\n`,
-      };
-    });
-
-  const focusedLines = input.hydratedFocused.map((item) => {
-    const content = truncateDeterministic(item.content, dynamicFocusedMaxChars);
-    return `- [relevance:high] ${item.symbolId}: ${content}\n`;
-  });
-
-  const recallLines = input.hydratedRecall.slice(0, input.budget.recallK).map((item) => {
-    const content = truncateDeterministic(item.content, dynamicRecallMaxChars);
-    return `- [relevance:medium] ${item.symbolId}: ${content}\n`;
-  });
-
-  const memoryLines = [
-    ...focusedLines.map((line) => ({ line, source: "focused" as const })),
-    ...recallLines.map((line) => ({ line, source: "recall" as const })),
-  ];
-  let memoryIncludedCursor = 0;
-  const appendMemory = () =>
-    appendSection(
-      "RELEVANT MEMORY",
-      memoryLines.map((item) => item.line),
-      { allowItemTruncate: true },
-      () => {
-        const includedItem = memoryLines[memoryIncludedCursor];
-        memoryIncludedCursor += 1;
-        if (includedItem?.source === "focused") {
-          focusedIncluded += 1;
-          return;
-        }
-        recallIncluded += 1;
-      },
-    );
-  const appendIndex = () => appendIndexSection(indexLines);
-
+  appendFactLedgerSection();
   if (input.prioritizeHydrated) {
-    appendMemory();
-    appendIndex();
+    appendMemorySection();
+    appendIndexSection();
   } else {
-    appendIndex();
-    appendMemory();
+    appendIndexSection();
+    appendMemorySection();
   }
 
   const text = lines.join("").trimEnd();
@@ -234,6 +264,8 @@ function renderPack(input: {
     usedChars: text.length,
     focusedIncluded,
     recallIncluded,
+    factLedgerIncluded,
+    factLedgerChars,
   };
 }
 
@@ -245,6 +277,7 @@ export function compilePassiveContextPack(input: CompileInput):
 
   let rendered = renderPack({
     symbolIndex: input.symbolIndex,
+    factLedger: input.factLedger ?? [],
     hydratedFocused,
     hydratedRecall,
     budget: input.budget,
@@ -264,6 +297,7 @@ export function compilePassiveContextPack(input: CompileInput):
 
     rendered = renderPack({
       symbolIndex: input.symbolIndex,
+      factLedger: input.factLedger ?? [],
       hydratedFocused,
       hydratedRecall,
       budget: input.budget,
@@ -277,6 +311,7 @@ export function compilePassiveContextPack(input: CompileInput):
       hydratedRecall.pop();
       rendered = renderPack({
         symbolIndex: input.symbolIndex,
+        factLedger: input.factLedger ?? [],
         hydratedFocused,
         hydratedRecall,
         budget: input.budget,
@@ -291,6 +326,7 @@ export function compilePassiveContextPack(input: CompileInput):
       hydratedFocused.pop();
       rendered = renderPack({
         symbolIndex: input.symbolIndex,
+        factLedger: input.factLedger ?? [],
         hydratedFocused,
         hydratedRecall,
         budget: input.budget,
@@ -321,6 +357,10 @@ export function compilePassiveContextPack(input: CompileInput):
     rerankedCandidateCount: input.rerankedCandidateCount,
     historyTurnsUsed: input.turnsUsed,
     retrievalQueryChars: input.queryText.length,
-    compactMode,
+    factLedgerInjectedCount: rendered.factLedgerIncluded,
+    factLedgerChars: rendered.factLedgerChars,
+    factCoverageRate: input.factCoverageRate ?? 1,
+    factRequiredCount: input.factRequiredCount ?? 0,
+    factMatchedCount: input.factMatchedCount ?? 0,
   };
 }

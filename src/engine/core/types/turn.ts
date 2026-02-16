@@ -30,6 +30,18 @@ export type PassiveResponseDiagnostics = {
   maxCompactionProposalsConfigured: number;
   fallbackCommitUsed: boolean;
   ignoredModelEventCount: number;
+  factCoverageRate?: number;
+  factRequiredCount?: number;
+  factMatchedCount?: number;
+  factClaimsApplied?: number;
+  factClaimsActive?: number;
+  plannerHydrationInvoked?: boolean;
+  plannerHydrationReason?: "none" | "pressure" | "low_coverage" | "previous_mismatch";
+  plannerHydrationFocusedFacts?: number;
+  plannerHydrationFocusedEpisodes?: number;
+  plannerFactExtractionInvoked?: boolean;
+  plannerFactExtractionReason?: "none" | "pressure" | "low_coverage" | "previous_mismatch";
+  plannerFactClaimsApplied?: number;
 };
 
 export type TurnDiagnostics = {

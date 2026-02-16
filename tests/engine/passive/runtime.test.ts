@@ -790,3 +790,49 @@ test("v2 passive aligns effective hot window to metadata-provided history window
   expect(last?.diagnostics.passive?.hotWindowOverlapTurns).toBe(1);
   expect(last?.diagnostics.passive?.ageBackfillEligibleCount).toBeGreaterThan(0);
 });
+
+test("v2 passive planner fact extraction is gated and commits grounded claims", async () => {
+  const threadId = "thread-passive-planner-fact-extraction";
+  const store = new InMemorySymbolStore();
+
+  const engine = createVirtualContextEnginePassive({
+    assistantGenerate: async () => "ack",
+    store,
+    plannerHydrationEnabled: true,
+    plannerHydrationLowCoverageThreshold: 0.9,
+    factClaimPlannerExtractor: {
+      async extract(input) {
+        const firstEntry = input.entries[0];
+        if (!firstEntry) {
+          return [];
+        }
+        return [
+          {
+            attribute: "owner_latest",
+            value: "owner_planner",
+            confidence: 0.98,
+            source: "planner_model",
+            sourceEntryIds: [firstEntry.entryId],
+          },
+        ];
+      },
+    },
+    packBudget: {
+      totalChars: 420,
+      recentLiteralPairCount: 2,
+      recallK: 2,
+    },
+  });
+
+  const response = await engine.processTurn({
+    threadId,
+    messages: [{ role: "user", content: "owner_latest=owner_planner" }],
+  });
+
+  expect(response.diagnostics.passive?.plannerFactExtractionInvoked).toBe(true);
+  expect(response.diagnostics.passive?.plannerFactExtractionReason).toBe("low_coverage");
+  expect(response.diagnostics.passive?.plannerFactClaimsApplied).toBeGreaterThanOrEqual(1);
+
+  const claims = await store.listActiveFactClaims?.(threadId);
+  expect(claims?.some((claim) => claim.attribute === "owner" && claim.value === "owner_planner")).toBe(true);
+});

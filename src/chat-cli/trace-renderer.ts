@@ -168,6 +168,17 @@ function renderPassiveSliding(trace: ChatTurnTrace): string {
     ["maxCompactionProposalsConfigured", passive.maxCompactionProposalsConfigured],
     ["fallbackCommitUsed", passive.fallbackCommitUsed],
     ["ignoredModelEventCount", passive.ignoredModelEventCount],
+    ["factCoverageRate", (passive.factCoverageRate ?? 0).toFixed(3)],
+    ["factMatched", `${passive.factMatchedCount ?? 0}/${passive.factRequiredCount ?? 0}`],
+    ["factClaimsApplied", passive.factClaimsApplied ?? 0],
+    ["factClaimsActive", passive.factClaimsActive ?? 0],
+    ["plannerHydrationInvoked", passive.plannerHydrationInvoked ?? false],
+    ["plannerHydrationReason", passive.plannerHydrationReason ?? "none"],
+    ["plannerHydrationFocusedFacts", passive.plannerHydrationFocusedFacts ?? 0],
+    ["plannerHydrationFocusedEpisodes", passive.plannerHydrationFocusedEpisodes ?? 0],
+    ["plannerFactExtractionInvoked", passive.plannerFactExtractionInvoked ?? false],
+    ["plannerFactExtractionReason", passive.plannerFactExtractionReason ?? "none"],
+    ["plannerFactClaimsApplied", passive.plannerFactClaimsApplied ?? 0],
   ]);
   return table.toString();
 }

@@ -58,6 +58,9 @@ export type ShowdownLaneMetric = {
   strictGatePassed: boolean;
   requiredFactsTotal: number;
   requiredFactsCorrect: number;
+  factCoverageRate: number;
+  factLatestCorrectRate: number;
+  factStaleOverrideRate: number;
   latestFactMismatchFields: string[];
   missingRequiredFields: string[];
   contextPackChars: number;
@@ -80,6 +83,10 @@ export type ShowdownLaneMetric = {
   committedSymbolsCount: number;
   hydratedSymbolsCount: number;
   ignoredModelEventCount: number;
+  plannerHydrationInvoked: boolean;
+  plannerHydrationHelped: boolean;
+  plannerFactExtractionInvoked: boolean;
+  plannerFactClaimsApplied: number;
   failureReasons: string[];
 };
 
@@ -452,6 +459,9 @@ function buildLaneFailureResult(options: {
       strictGatePassed: false,
       requiredFactsTotal: options.requiredFactsTotal,
       requiredFactsCorrect: 0,
+      factCoverageRate: 0,
+      factLatestCorrectRate: 0,
+      factStaleOverrideRate: 1,
       latestFactMismatchFields: [],
       missingRequiredFields: [],
       contextPackChars: 0,
@@ -474,6 +484,10 @@ function buildLaneFailureResult(options: {
       committedSymbolsCount: 0,
       hydratedSymbolsCount: 0,
       ignoredModelEventCount: 0,
+      plannerHydrationInvoked: false,
+      plannerHydrationHelped: false,
+      plannerFactExtractionInvoked: false,
+      plannerFactClaimsApplied: 0,
       failureReasons: [failureReason],
     },
     transcript: `ERROR> ${failureReason}`,
@@ -487,8 +501,12 @@ function laneConfigs(env: Record<string, string | undefined>): LaneConfig[] {
       lane: "history_only_window",
       env: {
         ...env,
-        VCW_PASSIVE_HIGH_WATERMARK: "0.999",
+        // Keep the baseline lane history-only by preventing passive scheduling paths.
+        VCW_PASSIVE_HIGH_WATERMARK: "1",
         VCW_PASSIVE_LOW_WATERMARK: "0.95",
+        VCW_PASSIVE_HOT_OVERLAP_TURNS: "1000",
+        VCW_PASSIVE_AGE_BACKFILL_COOLDOWN_TURNS: "1000",
+        VCW_PASSIVE_MAX_COMPACTION_PROPOSALS: "1",
         VCW_PASSIVE_PACK_TOTAL_CHARS: env.VCW_PASSIVE_PACK_TOTAL_CHARS ?? "320",
       },
     },
@@ -643,6 +661,7 @@ async function executeLane(options: {
               strictGatePassed: false,
               requiredFactsTotal: 4,
               requiredFactsCorrect: 0,
+              factCoverageRate: 0,
               latestFactMismatchFields: [],
               missingRequiredFields: [],
               agentToolCallCount: 0,
@@ -761,6 +780,13 @@ async function executeLane(options: {
     strictGatePassed: gateResult.strictGatePassed,
     requiredFactsTotal: gateResult.requiredFactsTotal,
     requiredFactsCorrect: gateResult.requiredFactsCorrect,
+    factCoverageRate: passive?.factCoverageRate ?? 0,
+    factLatestCorrectRate: gateResult.requiredFactsTotal > 0
+      ? gateResult.requiredFactsCorrect / gateResult.requiredFactsTotal
+      : 0,
+    factStaleOverrideRate: gateResult.requiredFactsTotal > 0
+      ? gateResult.latestFactMismatchFields.length / gateResult.requiredFactsTotal
+      : 0,
     latestFactMismatchFields: gateResult.latestFactMismatchFields,
     missingRequiredFields: gateResult.missingRequiredFields,
     contextPackChars: finalTurn.trace.contextPackText.length,
@@ -783,6 +809,10 @@ async function executeLane(options: {
     committedSymbolsCount: passive?.committedSymbolsCount ?? 0,
     hydratedSymbolsCount: passive?.hydratedSymbolsCount ?? 0,
     ignoredModelEventCount: passive?.ignoredModelEventCount ?? 0,
+    plannerHydrationInvoked: passive?.plannerHydrationInvoked ?? false,
+    plannerHydrationHelped: (passive?.plannerHydrationInvoked ?? false) && gateResult.answerCorrect,
+    plannerFactExtractionInvoked: passive?.plannerFactExtractionInvoked ?? false,
+    plannerFactClaimsApplied: passive?.plannerFactClaimsApplied ?? 0,
     failureReasons: gateResult.failureReasons,
   };
 

@@ -10,6 +10,36 @@ export type SymbolMetadata = {
   scope?: "thread" | "shared";
 };
 
+export type FactClaimSource = "deterministic" | "planner_model" | "manual";
+
+export type FactClaim = {
+  claimId: string;
+  threadId: string;
+  entity: string;
+  attribute: string;
+  value: string;
+  valueNormalized: string;
+  confidence: number;
+  source: FactClaimSource;
+  sourceEntryIds: string[];
+  validFromTurn: number;
+  supersededByClaimId?: string;
+  active: boolean;
+  createdAt: number;
+  updatedAt: number;
+};
+
+export type FactClaimUpsertInput = {
+  claimId?: string;
+  entity?: string;
+  attribute: string;
+  value: string;
+  confidence: number;
+  source: FactClaimSource;
+  sourceEntryIds: string[];
+  validFromTurn: number;
+};
+
 export type SymbolRecord = {
   symbolId: string;
   summary: string;
@@ -18,6 +48,8 @@ export type SymbolRecord = {
   createdAt: number;
   updatedAt: number;
   meta?: SymbolMetadata;
+  embeddingModel?: string;
+  embeddingVector?: number[];
 };
 
 export type SymbolUpsertInput = {
@@ -26,6 +58,8 @@ export type SymbolUpsertInput = {
   content: string;
   kind?: SymbolRecordKind;
   meta?: SymbolMetadata;
+  embeddingModel?: string;
+  embeddingVector?: number[];
 };
 
 export type SymbolSearchOptions = {
@@ -64,6 +98,17 @@ export interface SymbolStore {
     k: number,
     options: SymbolSearchOptions,
   ): Promise<SymbolSearchResult>;
+  upsertFactClaim?(
+    threadId: string,
+    input: FactClaimUpsertInput,
+  ): Promise<{ claimId: string; created: boolean; supersededClaimId?: string }>;
+  listActiveFactClaims?(threadId: string): Promise<FactClaim[]>;
+  searchActiveFactClaims?(
+    threadId: string,
+    queryText: string,
+    attributes: string[],
+    k: number,
+  ): Promise<FactClaim[]>;
 }
 
 export type EmbeddingRequest = {

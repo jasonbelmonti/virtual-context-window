@@ -1,8 +1,12 @@
 import {
   createProviderCompressionExtractor,
+  createProviderFactClaimExtractor,
+  createProviderHydrationPlanner,
   createVirtualContextEngine,
+  extractDeterministicFactCandidates,
   type EmbeddingProvider,
   InMemorySymbolStore,
+  toFactClaimUpserts,
   type AssistantGenerateFn,
   type EngineStage,
   type SymbolRecord,
@@ -331,11 +335,32 @@ export class ChatCliRuntime {
       passiveLowWatermarkRaw,
       Math.max(0.05, passiveHighWatermark - 0.05),
     );
+    const plannerHydrationHighWatermark = parsePositiveFloat(
+      env.VCW_PASSIVE_PLANNER_HIGH_WATERMARK,
+      passiveHighWatermark,
+    );
+    const plannerHydrationLowCoverageThreshold = parsePositiveFloat(
+      env.VCW_PASSIVE_PLANNER_LOW_COVERAGE_THRESHOLD,
+      0.6,
+    );
+    const factConfidenceThreshold = parsePositiveFloat(
+      env.VCW_PASSIVE_FACT_CONFIDENCE_THRESHOLD,
+      0.72,
+    );
+    const factLedgerMinCharsRatio = parsePositiveFloat(
+      env.VCW_PASSIVE_FACT_LEDGER_MIN_RATIO,
+      0.35,
+    );
+    const providerPlannerEnabled = !this.options.mock && !this.options.assistantGenerate;
+    const embeddingModel = this.provider === "openai_responses"
+      ? env.VCW_OPENAI_EMBED_MODEL ?? ""
+      : env.VCW_OLLAMA_EMBED_MODEL ?? "";
 
     return createVirtualContextEngine({
       assistantGenerate: this.resolveAssistantGenerate(),
       store: this.store,
       embeddingProvider: this.resolveEmbeddingProvider(),
+      embeddingModel,
       onStage: (stage) => {
         this.activeStages?.push(stage);
       },
@@ -347,6 +372,14 @@ export class ChatCliRuntime {
       retrievalStrategy: "hybrid_v2",
       highWatermark: passiveHighWatermark,
       lowWatermark: passiveLowWatermark,
+      plannerHydrationEnabled: parseBoolean(
+        env.VCW_PASSIVE_PLANNER_HYDRATION_ENABLED,
+        true,
+      ),
+      plannerHydrationHighWatermark,
+      plannerHydrationLowCoverageThreshold,
+      factConfidenceThreshold,
+      factLedgerMinChars: factLedgerMinCharsRatio,
       maxCompactionProposals: this.passiveMaxCompactionProposals,
       hotWindowOverlapTurns: this.passiveHotOverlapTurns,
       ageBackfillCooldownTurns: this.passiveAgeBackfillCooldownTurns,
@@ -366,9 +399,21 @@ export class ChatCliRuntime {
         env.VCW_PASSIVE_COMPACTION_DRAIN_TIMEOUT_MS,
         1_200,
       ),
-      extractor: this.options.mock
+      extractor: !providerPlannerEnabled
         ? undefined
         : createProviderCompressionExtractor({
+            provider: this.provider,
+            env,
+          }),
+      plannerHydrator: !providerPlannerEnabled
+        ? undefined
+        : createProviderHydrationPlanner({
+            provider: this.provider,
+            env,
+          }),
+      factClaimPlannerExtractor: !providerPlannerEnabled
+        ? undefined
+        : createProviderFactClaimExtractor({
             provider: this.provider,
             env,
           }),
@@ -804,8 +849,40 @@ export class ChatCliRuntime {
             keyHint: "chat_cli_remember",
           },
         });
+        let factClaimsApplied = 0;
+        if (this.store.upsertFactClaim) {
+          const manualCandidates = extractDeterministicFactCandidates([
+            {
+              entryId: `remember_${Date.now().toString(36)}`,
+              threadId: this.threadId,
+              role: "user",
+              content,
+              createdAt: Date.now(),
+              offsetStart: 0,
+              offsetEnd: content.length,
+              symbolized: false,
+              checksum: "",
+            },
+          ]).map((candidate) => ({
+            ...candidate,
+            source: "manual" as const,
+            confidence: Math.max(candidate.confidence, 0.9),
+          }));
+          const manualUpserts = toFactClaimUpserts(
+            this.threadId,
+            Math.max(1, this.getOrCreateThread(this.threadId).messages.length),
+            manualCandidates,
+            0.72,
+          );
+          for (const upsert of manualUpserts) {
+            await this.store.upsertFactClaim(this.threadId, upsert);
+            factClaimsApplied += 1;
+          }
+        }
         return {
-          output: "Remembered via passive policy write path.",
+          output: factClaimsApplied > 0
+            ? `Remembered via passive policy write path. factClaimsApplied=${factClaimsApplied}`
+            : "Remembered via passive policy write path.",
         };
       }
       case "state": {

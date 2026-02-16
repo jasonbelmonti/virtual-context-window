@@ -28,6 +28,7 @@ export type ShowdownLaneGateResult = {
   strictGatePassed: boolean;
   requiredFactsTotal: number;
   requiredFactsCorrect: number;
+  factCoverageRate: number;
   latestFactMismatchFields: string[];
   missingRequiredFields: string[];
   agentToolCallCount: number;
@@ -141,6 +142,7 @@ export function evaluateLaneGates(input: ShowdownLaneGateInput): ShowdownLaneGat
   const latestFacts = evaluateLatestFacts(input.answerText, input.latestFacts);
   const structure = evaluateStructure(input.answerText, requiredHeadings);
   const extractedTools = extractToolNames(input.trace);
+  const factCoverageRate = input.trace.diagnostics.passive?.factCoverageRate ?? 0;
 
   const memoryGatePassed = latestFacts.requiredFactsCorrect === latestFacts.requiredFactsTotal;
   const strictGatePassed = memoryGatePassed && structure.structureGatePassed;
@@ -163,6 +165,7 @@ export function evaluateLaneGates(input: ShowdownLaneGateInput): ShowdownLaneGat
     strictGatePassed,
     requiredFactsTotal: latestFacts.requiredFactsTotal,
     requiredFactsCorrect: latestFacts.requiredFactsCorrect,
+    factCoverageRate,
     latestFactMismatchFields: latestFacts.latestFactMismatchFields,
     missingRequiredFields: latestFacts.missingRequiredFields,
     agentToolCallCount: extractedTools.count,

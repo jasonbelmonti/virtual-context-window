@@ -8,6 +8,9 @@ export const SCENARIO_CATALOG: ValidationScenarioDefinition[] = [
     supportedModes: ["deterministic", "live"],
     supportedProfiles: ["quick", "quick_live", "production"],
     requiredMetricKeys: [
+      "fact_coverage_rate",
+      "fact_latest_correct_rate",
+      "fact_stale_override_rate",
       "latest_fact_accuracy_rate",
       "required_fact_field_completeness_rate",
       "stale_fact_mismatch_rate",
@@ -21,7 +24,13 @@ export const SCENARIO_CATALOG: ValidationScenarioDefinition[] = [
     family: "memory",
     supportedModes: ["deterministic", "live"],
     supportedProfiles: ["quick", "quick_live", "production"],
-    requiredMetricKeys: ["required_fact_field_completeness_rate", "stale_fact_mismatch_rate"],
+    requiredMetricKeys: [
+      "required_fact_field_completeness_rate",
+      "stale_fact_mismatch_rate",
+      "fact_coverage_rate",
+      "fact_latest_correct_rate",
+      "fact_stale_override_rate",
+    ],
     failureClassification: "retrieval_miss",
   },
   {
@@ -30,7 +39,13 @@ export const SCENARIO_CATALOG: ValidationScenarioDefinition[] = [
     family: "memory",
     supportedModes: ["deterministic", "live"],
     supportedProfiles: ["production"],
-    requiredMetricKeys: ["latest_fact_accuracy_rate", "passive_vs_history_win_rate"],
+    requiredMetricKeys: [
+      "latest_fact_accuracy_rate",
+      "passive_vs_history_win_rate",
+      "fact_coverage_rate",
+      "fact_latest_correct_rate",
+      "fact_stale_override_rate",
+    ],
     failureClassification: "retrieval_miss",
   },
   {

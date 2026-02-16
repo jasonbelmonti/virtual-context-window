@@ -62,6 +62,11 @@ type LaneRunResult = {
   pressurePeak: number;
   pressureFinal: number;
   compactionJobsTriggered: number;
+  committedSymbolsCount: number;
+  factCoverageRate: number;
+  plannerHydrationInvoked: boolean;
+  plannerFactExtractionInvoked: boolean;
+  plannerFactClaimsApplied: number;
   passiveTurnDiagnostics: Array<{
     turnIndex: number;
     compactionTriggerSource: "none" | "pressure" | "age_backfill";
@@ -145,15 +150,29 @@ function latestCapture(pattern: RegExp, source: string): string | undefined {
   return value;
 }
 
+function escapeRegex(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
+}
+
+function captureLatestKeyValue(source: string, keys: string[]): string | undefined {
+  if (keys.length === 0) {
+    return undefined;
+  }
+  const alternation = keys.map((key) => escapeRegex(key)).join("|");
+  const pattern = new RegExp(`\\b(?:${alternation})\\b\\s*[:=]\\s*([^\\s\\n,;]+)`, "iu");
+  return latestCapture(pattern, source);
+}
+
 function extractFactsFromSource(source: string): Record<string, string> {
-  const incidentId = latestCapture(/incident_id\s*=\s*([A-Z0-9-]+)/iu, source);
-  const service = latestCapture(/service\s*=\s*([a-z0-9_-]+)/iu, source);
-  const ownerLatest =
-    latestCapture(/owner_latest\s*=\s*([a-z0-9_\-]+)/iu, source) ??
-    latestCapture(/owner\s*=\s*([a-z0-9_\-]+)/iu, source);
-  const unlockLatest =
-    latestCapture(/unlock_latest\s*=\s*([A-Z0-9-]+)/iu, source) ??
-    latestCapture(/unlock_code\s*=\s*([A-Z0-9-]+)/iu, source);
+  const incidentId = captureLatestKeyValue(source, ["incident_id", "incidentId"]);
+  const service = captureLatestKeyValue(source, ["service"]);
+  const ownerLatest = captureLatestKeyValue(source, ["owner_latest", "owner"]);
+  const unlockLatest = captureLatestKeyValue(source, [
+    "unlockToken_latest",
+    "unlock_latest",
+    "unlock_token",
+    "unlock_code",
+  ]);
 
   return {
     incidentId: incidentId ?? "unknown",
@@ -544,6 +563,11 @@ async function runLaneScript(input: {
     pressurePeak: passive?.pressurePeak ?? 0,
     pressureFinal: passive?.pressureRatio ?? 0,
     compactionJobsTriggered: passive?.compactionJobsTriggered ?? 0,
+    committedSymbolsCount: passive?.committedSymbolsCount ?? 0,
+    factCoverageRate: passive?.factCoverageRate ?? 0,
+    plannerHydrationInvoked: passive?.plannerHydrationInvoked ?? false,
+    plannerFactExtractionInvoked: passive?.plannerFactExtractionInvoked ?? false,
+    plannerFactClaimsApplied: passive?.plannerFactClaimsApplied ?? 0,
     passiveTurnDiagnostics,
     oneCallInvariant: finalResponse.diagnostics.generationCallCount === 1,
     contextPackText: finalResponse.contextPackText,
@@ -685,6 +709,9 @@ function memoryOutcomeMetrics(lane: LaneRunResult): MetricSample[] {
   const completeness = lane.requiredFactsTotal > 0
     ? lane.requiredFactsCorrect / lane.requiredFactsTotal
     : 0;
+  const plannerHydrationHelped = lane.plannerHydrationInvoked && lane.requiredFactsCorrect > 0;
+  const embeddingSemanticHit = lane.vectorCandidatePeak > 0;
+  const chatterSymbolization = lane.committedSymbolsCount > 0 && lane.factCoverageRate < 0.5;
 
   return [
     makeRateMetric("latest_fact_accuracy_rate", lane.requiredFactsCorrect, lane.requiredFactsTotal),
@@ -700,6 +727,13 @@ function memoryOutcomeMetrics(lane: LaneRunResult): MetricSample[] {
     ),
     // Keep an informational metric in compatibility output; not thresholded by default.
     makeRateMetric("baseline_lane_completeness_rate", completeness, 1),
+    makeRateMetric("fact_coverage_rate", lane.factCoverageRate, 1),
+    makeRateMetric("fact_latest_correct_rate", lane.requiredFactsCorrect, lane.requiredFactsTotal),
+    makeRateMetric("fact_stale_override_rate", staleCount, lane.requiredFactsTotal),
+    makeRateMetric("planner_hydration_invocation_rate", lane.plannerHydrationInvoked ? 1 : 0, 1),
+    makeRateMetric("planner_hydration_help_rate", plannerHydrationHelped ? 1 : 0, 1),
+    makeRateMetric("episode_chatter_symbolization_rate", chatterSymbolization ? 1 : 0, 1),
+    makeRateMetric("embedding_semantic_hit_rate", embeddingSemanticHit ? 1 : 0, 1),
   ];
 }
 
@@ -1140,6 +1174,7 @@ async function runScenarioP11(context: ScenarioExecutionContext): Promise<Scenar
     metricSamples: [
       ...baseTurnMetrics(lane),
       makeRateMetric("embedding_query_activation_rate", activated ? 1 : 0, 1),
+      makeRateMetric("embedding_semantic_hit_rate", activated ? 1 : 0, 1),
     ],
   };
 }

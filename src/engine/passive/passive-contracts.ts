@@ -1,6 +1,8 @@
 import type {
   EmbeddingProvider,
   EngineStage,
+  FactClaim,
+  FactClaimSource,
   RetrievalStrategy,
   SymbolRecordKind,
   SymbolStore,
@@ -68,6 +70,9 @@ export type PassivePackBudget = {
   recallItemMaxChars: number;
   recallK: number;
   recentLiteralPairCount: number;
+  factLedgerMinChars?: number;
+  episodeMaxChars?: number;
+  indexMaxChars?: number;
 };
 
 export type PassivePackHydratedRecord = {
@@ -92,7 +97,56 @@ export type PassivePackCompileResult = {
   rerankedCandidateCount: number;
   historyTurnsUsed: number;
   retrievalQueryChars: number;
+  factLedgerInjectedCount: number;
+  factLedgerChars: number;
+  factCoverageRate: number;
+  factRequiredCount: number;
+  factMatchedCount: number;
 };
+
+export type PlannerHydrationInput = {
+  threadId: string;
+  queryText: string;
+  queryTokens: string[];
+  pressureRatioHint: number;
+  requiredAttributes: string[];
+  factCandidates: Array<Pick<FactClaim, "claimId" | "attribute" | "value" | "confidence">>;
+  episodeCandidateIds: string[];
+  maxFocusedFacts: number;
+  maxFocusedEpisodes: number;
+};
+
+export type PlannerHydrationOutput = {
+  requiredAttributes: string[];
+  focusedFactIds: string[];
+  focusedEpisodeIds: string[];
+  reasoningTags: string[];
+};
+
+export interface PlannerHydrator {
+  plan(input: PlannerHydrationInput): Promise<PlannerHydrationOutput>;
+}
+
+export type FactClaimPlannerExtractionInput = {
+  threadId: string;
+  queryText: string;
+  requiredAttributes: string[];
+  pressureRatioHint: number;
+  entries: EventTapeEntry[];
+  maxClaims: number;
+};
+
+export type FactClaimPlannerCandidate = {
+  attribute: string;
+  value: string;
+  confidence: number;
+  source: FactClaimSource;
+  sourceEntryIds: string[];
+};
+
+export interface FactClaimPlannerExtractor {
+  extract(input: FactClaimPlannerExtractionInput): Promise<FactClaimPlannerCandidate[]>;
+}
 
 export type PassiveCommitPolicyResult = {
   committedSymbolIds: string[];
@@ -130,12 +184,25 @@ export type PassiveTurnDiagnostics = {
   maxCompactionProposalsConfigured: number;
   fallbackCommitUsed: boolean;
   ignoredModelEventCount: number;
+  factCoverageRate: number;
+  factRequiredCount: number;
+  factMatchedCount: number;
+  factClaimsApplied: number;
+  factClaimsActive: number;
+  plannerHydrationInvoked: boolean;
+  plannerHydrationReason: "none" | "pressure" | "low_coverage" | "previous_mismatch";
+  plannerHydrationFocusedFacts: number;
+  plannerHydrationFocusedEpisodes: number;
+  plannerFactExtractionInvoked: boolean;
+  plannerFactExtractionReason: "none" | "pressure" | "low_coverage" | "previous_mismatch";
+  plannerFactClaimsApplied: number;
 };
 
 export type PassiveKernelOptions = {
   assistantGenerate: AssistantGenerateFn;
   store: SymbolStore;
   embeddingProvider?: EmbeddingProvider;
+  embeddingModel?: string;
   telemetry?: TelemetrySink;
   retrievalStrategy?: RetrievalStrategy;
   now?: () => number;
@@ -149,6 +216,14 @@ export type PassiveKernelOptions = {
   maxCompactionProposals?: number;
   hotWindowOverlapTurns?: number;
   ageBackfillCooldownTurns?: number;
+  plannerHydrationEnabled?: boolean;
+  plannerHydrationHighWatermark?: number;
+  plannerHydrationLowCoverageThreshold?: number;
+  factConfidenceThreshold?: number;
+  factLedgerMinChars?: number;
+  plannerHydrator?: PlannerHydrator;
+  factClaimPlannerExtractor?: FactClaimPlannerExtractor;
+  plannerFactExtractionMaxClaims?: number;
   packBudget?: Partial<PassivePackBudget>;
   maxEventTapeEntriesPerThread?: number;
   compactionDrainTimeoutMs?: number;
@@ -170,6 +245,7 @@ export type PassiveThreadCounters = {
   lastFallbackCommitUsed: boolean;
   lastHistoryWindowTurns: number;
   lastEffectiveHotWindowPairs: number;
+  lastFactMismatch: boolean;
 };
 
 export interface PassiveVirtualContextEngine extends VirtualContextEngine {}

@@ -1,15 +1,28 @@
 import OpenAI from "openai";
+import type { EmbeddingProvider } from "../core/types";
+import { InMemoryEmbeddingCache } from "../symbols/embedding-cache";
 import type { SymbolRecordKind, SymbolStore } from "./passive-contracts";
 import type {
   CompressionExtractor,
   CompressionExtractorInput,
   CompressionProposal,
+  FactClaimPlannerCandidate,
+  FactClaimPlannerExtractionInput,
+  FactClaimPlannerExtractor,
+  PlannerHydrator,
+  PlannerHydrationInput,
+  PlannerHydrationOutput,
   PassiveCommitPolicyResult,
 } from "./passive-contracts";
 
 type ExtractorProvider = "ollama" | "openai_responses";
 
 type ExtractorConfig = {
+  provider: ExtractorProvider;
+  env?: Record<string, string | undefined>;
+};
+
+type PlannerConfig = {
   provider: ExtractorProvider;
   env?: Record<string, string | undefined>;
 };
@@ -31,6 +44,7 @@ const DEFAULT_CONFIDENCE_THRESHOLD = 0.75;
 const DEFAULT_MAX_PROPOSALS = 4;
 const DEFAULT_MAX_EVENTS = 8;
 const DEFAULT_MAX_CONTENT_CHARS = 4_000;
+const DEFAULT_EMBED_TIMEOUT_MS = 120;
 
 function asObject(value: unknown): Record<string, unknown> | null {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
@@ -204,6 +218,53 @@ function buildExtractorPrompt(input: CompressionExtractorInput): string {
   ].join("\n\n");
 }
 
+function buildPlannerPrompt(input: PlannerHydrationInput): string {
+  const facts = input.factCandidates
+    .map((fact) => `${fact.claimId} ${fact.attribute}=${fact.value} confidence=${fact.confidence.toFixed(2)}`)
+    .join("\n");
+  const episodes = input.episodeCandidateIds.join(", ");
+  const required = input.requiredAttributes.join(", ");
+
+  return [
+    "You are a memory hydration planner.",
+    "Return ONLY valid JSON.",
+    "Schema: {\"requiredAttributes\":string[],\"focusedFactIds\":string[],\"focusedEpisodeIds\":string[],\"reasoningTags\":string[]}",
+    `Max focused fact ids: ${input.maxFocusedFacts}`,
+    `Max focused episode ids: ${input.maxFocusedEpisodes}`,
+    "Do not invent IDs. Only return IDs from candidates.",
+    `Query: ${input.queryText || "(empty)"}`,
+    `Pressure ratio hint: ${input.pressureRatioHint.toFixed(3)}`,
+    `Required attributes hint: ${required || "(none)"}`,
+    `Fact candidates:\n${facts || "(none)"}`,
+    `Episode candidate IDs: ${episodes || "(none)"}`,
+  ].join("\n\n");
+}
+
+function buildFactClaimPlannerPrompt(input: FactClaimPlannerExtractionInput): string {
+  const entries = input.entries
+    .map(
+      (entry) =>
+        `entryId=${entry.entryId} role=${entry.role} start=${entry.offsetStart} end=${entry.offsetEnd}\n${entry.content}`,
+    )
+    .join("\n\n");
+  const requiredAttributes = input.requiredAttributes.join(", ");
+
+  return [
+    "You are a fact claim extractor for long-horizon memory.",
+    "Return ONLY valid JSON.",
+    "Schema: {\"claims\":[{\"attribute\":string,\"value\":string,\"confidence\":number,\"sourceEntryIds\":string[]}]}",
+    `Generate at most ${input.maxClaims} claims.`,
+    "Use normalized snake_case attributes.",
+    "Only extract durable claims grounded in supplied entries.",
+    "Do not infer unseen facts.",
+    `Query: ${input.queryText || "(empty)"}`,
+    `Pressure ratio hint: ${input.pressureRatioHint.toFixed(3)}`,
+    `Required attributes hint: ${requiredAttributes || "(none)"}`,
+    "Entries:",
+    entries || "(none)",
+  ].join("\n\n");
+}
+
 function readOpenAIText(response: unknown): string {
   const root = asObject(response);
   if (!root) {
@@ -329,6 +390,267 @@ export function createProviderCompressionExtractor(
   };
 }
 
+function parsePlannerOutput(rawText: string): PlannerHydrationOutput {
+  const parsed = JSON.parse(rawText);
+  const root = asObject(parsed);
+  if (!root) {
+    return {
+      requiredAttributes: [],
+      focusedFactIds: [],
+      focusedEpisodeIds: [],
+      reasoningTags: [],
+    };
+  }
+
+  const asStringArray = (value: unknown): string[] => {
+    if (!Array.isArray(value)) {
+      return [];
+    }
+    return value
+      .map((item) => (typeof item === "string" ? item.trim() : ""))
+      .filter((item) => item.length > 0);
+  };
+
+  return {
+    requiredAttributes: asStringArray(root.requiredAttributes),
+    focusedFactIds: asStringArray(root.focusedFactIds),
+    focusedEpisodeIds: asStringArray(root.focusedEpisodeIds),
+    reasoningTags: asStringArray(root.reasoningTags),
+  };
+}
+
+function parseFactClaimPlannerOutput(rawText: string): FactClaimPlannerCandidate[] {
+  const parsed = JSON.parse(rawText);
+  const root = asObject(parsed);
+  if (!root) {
+    return [];
+  }
+
+  const claimsRaw = root.claims;
+  if (!Array.isArray(claimsRaw)) {
+    return [];
+  }
+
+  const claims: FactClaimPlannerCandidate[] = [];
+  for (const claimRaw of claimsRaw) {
+    const claim = asObject(claimRaw);
+    if (!claim) {
+      continue;
+    }
+
+    const attribute = typeof claim.attribute === "string"
+      ? claim.attribute.trim().toLowerCase().replace(/[^a-z0-9]+/gu, "_").replace(/^_+|_+$/gu, "")
+      : "";
+    const value = typeof claim.value === "string" ? claim.value.trim() : "";
+    const confidence = typeof claim.confidence === "number"
+      ? Math.max(0, Math.min(1, claim.confidence))
+      : 0;
+    const sourceEntryIds = Array.isArray(claim.sourceEntryIds)
+      ? claim.sourceEntryIds.filter((entryId): entryId is string => typeof entryId === "string" && entryId.trim().length > 0)
+      : [];
+
+    if (!attribute || !value || confidence <= 0 || sourceEntryIds.length === 0) {
+      continue;
+    }
+
+    claims.push({
+      attribute,
+      value,
+      confidence,
+      source: "planner_model",
+      sourceEntryIds,
+    });
+  }
+
+  return claims;
+}
+
+export function createProviderHydrationPlanner(
+  config: PlannerConfig,
+): PlannerHydrator {
+  if (config.provider === "openai_responses") {
+    return {
+      async plan(input) {
+        const env = config.env ?? process.env;
+        const apiKey = env.OPENAI_API_KEY;
+        const model = env.VCW_OPENAI_MODEL;
+        if (!apiKey || !model) {
+          return {
+            requiredAttributes: [],
+            focusedFactIds: [],
+            focusedEpisodeIds: [],
+            reasoningTags: [],
+          };
+        }
+
+        const client = new OpenAI({
+          apiKey,
+          baseURL: env.VCW_OPENAI_BASE_URL,
+        });
+
+        const response = await client.responses.create({
+          model,
+          input: buildPlannerPrompt(input),
+          temperature: 0,
+          stream: false,
+        });
+
+        const text = readOpenAIText(response);
+        if (!text.trim()) {
+          return {
+            requiredAttributes: [],
+            focusedFactIds: [],
+            focusedEpisodeIds: [],
+            reasoningTags: [],
+          };
+        }
+
+        return parsePlannerOutput(text);
+      },
+    };
+  }
+
+  return {
+    async plan(input) {
+      const env = config.env ?? process.env;
+      const model = env.VCW_OLLAMA_MODEL;
+      const baseUrl = env.VCW_OLLAMA_BASE_URL ?? "http://127.0.0.1:11434";
+      if (!model) {
+        return {
+          requiredAttributes: [],
+          focusedFactIds: [],
+          focusedEpisodeIds: [],
+          reasoningTags: [],
+        };
+      }
+
+      const response = await fetch(`${baseUrl.replace(/\/$/u, "")}/api/chat`, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({
+          model,
+          stream: false,
+          format: "json",
+          messages: [
+            {
+              role: "system",
+              content: "You plan memory hydration from candidate IDs. Return strict JSON only.",
+            },
+            {
+              role: "user",
+              content: buildPlannerPrompt(input),
+            },
+          ],
+          options: {
+            temperature: 0,
+          },
+        }),
+      });
+
+      if (!response.ok) {
+        return {
+          requiredAttributes: [],
+          focusedFactIds: [],
+          focusedEpisodeIds: [],
+          reasoningTags: [],
+        };
+      }
+
+      const payload = (await response.json()) as Record<string, unknown>;
+      const message = asObject(payload.message);
+      const text =
+        (typeof message?.content === "string" ? message.content : "") ||
+        (typeof payload.response === "string" ? String(payload.response) : "");
+      if (!text.trim()) {
+        return {
+          requiredAttributes: [],
+          focusedFactIds: [],
+          focusedEpisodeIds: [],
+          reasoningTags: [],
+        };
+      }
+
+      return parsePlannerOutput(text);
+    },
+  };
+}
+
+export function createProviderFactClaimExtractor(
+  config: PlannerConfig,
+): FactClaimPlannerExtractor {
+  if (config.provider === "openai_responses") {
+    const env = config.env ?? process.env;
+    const apiKey = env.OPENAI_API_KEY;
+    if (!apiKey) {
+      throw new Error("missing_env:OPENAI_API_KEY");
+    }
+    const baseUrl = env.VCW_OPENAI_BASE_URL;
+    const model = env.VCW_OPENAI_MODEL;
+    if (!model) {
+      throw new Error("missing_env:VCW_OPENAI_MODEL");
+    }
+    const client = new OpenAI({
+      apiKey,
+      ...(baseUrl ? { baseURL: baseUrl } : {}),
+    });
+
+    return {
+      async extract(input) {
+        const response = await client.responses.create({
+          model,
+          input: buildFactClaimPlannerPrompt(input),
+          temperature: 0,
+        });
+
+        const text = readOpenAIText(response).trim();
+        if (!text) {
+          return [];
+        }
+        return parseFactClaimPlannerOutput(text);
+      },
+    };
+  }
+
+  const env = config.env ?? process.env;
+  const baseUrl = env.VCW_OLLAMA_BASE_URL ?? "http://localhost:11434";
+  const model = env.VCW_OLLAMA_MODEL;
+  if (!model) {
+    throw new Error("missing_env:VCW_OLLAMA_MODEL");
+  }
+
+  return {
+    async extract(input) {
+      const response = await fetch(`${baseUrl}/api/generate`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          model,
+          prompt: buildFactClaimPlannerPrompt(input),
+          stream: false,
+          options: {
+            temperature: 0,
+          },
+        }),
+      });
+
+      if (!response.ok) {
+        throw new Error(`ollama_fact_planner_http_${response.status}`);
+      }
+
+      const payload = asObject(await response.json());
+      const text = typeof payload?.response === "string" ? payload.response.trim() : "";
+      if (!text) {
+        return [];
+      }
+      return parseFactClaimPlannerOutput(text);
+    },
+  };
+}
+
 export async function runExtractorWithTimeout(options: {
   extractor: CompressionExtractor;
   input: CompressionExtractorInput;
@@ -385,6 +707,9 @@ export async function applyPassiveCommitPolicy(options: {
   confidenceThreshold?: number;
   maxProposals?: number;
   maxContentChars?: number;
+  embeddingProvider?: EmbeddingProvider;
+  embeddingCache?: InMemoryEmbeddingCache;
+  embeddingModel?: string;
   candidateEntries?: Array<{
     entryId: string;
     offsetStart: number;
@@ -498,6 +823,56 @@ export async function applyPassiveCommitPolicy(options: {
         keyHint: `passive:${proposal.kind}`,
       },
     });
+
+    if (options.embeddingProvider) {
+      const embeddingModel = options.embeddingModel ?? "";
+      const cacheKey = InMemoryEmbeddingCache.symbolKey({
+        threadId: options.threadId,
+        model: embeddingModel || "(default)",
+        symbolId: upsert.symbolId,
+        version: normalizeForComparison(proposal.content),
+      });
+      let embeddingVector = options.embeddingCache?.get(cacheKey);
+      let resolvedEmbeddingModel = embeddingModel;
+
+      if (!embeddingVector || embeddingVector.length === 0) {
+        try {
+          const embedded = await Promise.race([
+            options.embeddingProvider.embed({
+              model: embeddingModel,
+              input: proposal.content,
+              traceId: `${options.threadId}:${upsert.symbolId}`,
+            }),
+            new Promise<never>((_, reject) => {
+              setTimeout(() => reject(new Error("embedding_timeout")), DEFAULT_EMBED_TIMEOUT_MS);
+            }),
+          ]);
+          if (embedded.vector.length > 0) {
+            embeddingVector = embedded.vector;
+            resolvedEmbeddingModel = embedded.model || embeddingModel;
+            options.embeddingCache?.set(cacheKey, embedded.vector);
+          }
+        } catch {
+          // Fail-open; lexical retrieval remains available.
+        }
+      }
+
+      if (embeddingVector && embeddingVector.length > 0) {
+        await options.store.upsert(options.threadId, {
+          symbolId: upsert.symbolId,
+          summary: proposal.summary || truncateSummary(proposal.content),
+          content: proposal.content,
+          kind: proposal.kind,
+          meta: {
+            source: "passive_compressor",
+            keyHint: `passive:${proposal.kind}`,
+          },
+          embeddingModel: resolvedEmbeddingModel || undefined,
+          embeddingVector,
+        });
+      }
+    }
+
     committedSymbolIds.push(upsert.symbolId);
     committedRecords.push({
       symbolId: upsert.symbolId,

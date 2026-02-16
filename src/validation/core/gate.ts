@@ -24,6 +24,9 @@ export type PassiveGateInput = {
 };
 
 const MEMORY_KEYS = [
+  "fact_coverage_rate",
+  "fact_latest_correct_rate",
+  "fact_stale_override_rate",
   "latest_fact_accuracy_rate",
   "required_fact_field_completeness_rate",
   "stale_fact_mismatch_rate",
@@ -39,6 +42,7 @@ const MECHANISM_KEYS = [
   "fallback_commit_success_rate",
   "hydration_precision_at_k",
   "hydration_false_positive_rate",
+  "episode_chatter_symbolization_rate",
   "embedding_query_activation_rate",
   "embedding_fail_open_success_rate",
   "thread_isolation_violation_count",

@@ -20,5 +20,7 @@ export type VirtualContextThreadInspection = {
     recentEntryIds: string[];
     compressedSymbolIds: string[];
     hydratedSymbolIds: string[];
+    activeFactClaimCount?: number;
+    activeFactAttributes?: string[];
   };
 };

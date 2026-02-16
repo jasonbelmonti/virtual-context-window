@@ -19,6 +19,14 @@ import { strictOutputSanitizer } from "../core/output-sanitizer";
 import {
   createDeterministicFallbackExtractor,
 } from "./passive-compressor";
+import {
+  dedupeFactCandidates,
+  extractDeterministicFactCandidates,
+  extractRequestedAttributesFromQuery,
+  normalizeFactAttribute,
+  normalizeFactValueForComparison,
+  toFactClaimUpserts,
+} from "./fact-ledger";
 import type {
   PassiveKernelOptions,
   PassivePackBudget,
@@ -26,6 +34,7 @@ import type {
 } from "./passive-contracts";
 import { InMemoryEventTape } from "./passive-event-tape";
 import { compilePassiveContextPack } from "./passive-pack-compiler";
+import { InMemoryEmbeddingCache } from "../symbols/embedding-cache";
 import {
   createCompactionCoordinator,
   createThreadState,
@@ -35,11 +44,17 @@ import {
   DEFAULT_BUDGET,
   DEFAULT_COMPACTION_DRAIN_TIMEOUT_MS,
   defaultClock,
+  DEFAULT_FACT_CONFIDENCE_THRESHOLD,
+  DEFAULT_FACT_LEDGER_MIN_RATIO,
   DEFAULT_EXTRACTOR_TIMEOUT_MS,
   DEFAULT_HIGH_WATERMARK,
   DEFAULT_HOT_WINDOW_OVERLAP_TURNS,
   DEFAULT_LOW_WATERMARK,
   DEFAULT_MAX_COMPACTION_PROPOSALS,
+  DEFAULT_PLANNER_FACT_EXTRACTION_MAX_CLAIMS,
+  DEFAULT_PLANNER_HYDRATION_ENABLED,
+  DEFAULT_PLANNER_HYDRATION_HIGH_WATERMARK,
+  DEFAULT_PLANNER_HYDRATION_LOW_COVERAGE_THRESHOLD,
   defaultNow,
 } from "./kernel/constants";
 import { selectHydratedCandidates } from "./kernel/retrieval";
@@ -71,6 +86,8 @@ export function createVirtualContextEnginePassive(
   const queryBuilder = options.queryBuilder ?? defaultQueryBuilder;
   const extractor = options.extractor ?? createDeterministicFallbackExtractor();
   const fallbackExtractor = createDeterministicFallbackExtractor();
+  const embeddingCache = new InMemoryEmbeddingCache();
+  const embeddingModel = options.embeddingModel ?? "";
 
   const threadStates = new Map<string, ThreadState>();
 
@@ -92,6 +109,28 @@ export function createVirtualContextEnginePassive(
     1,
     options.maxCompactionProposals ?? DEFAULT_MAX_COMPACTION_PROPOSALS,
   );
+  const plannerHydrationEnabled =
+    options.plannerHydrationEnabled ?? DEFAULT_PLANNER_HYDRATION_ENABLED;
+  const plannerHydrationHighWatermark = normalizeWatermark(
+    options.plannerHydrationHighWatermark ?? DEFAULT_PLANNER_HYDRATION_HIGH_WATERMARK,
+    DEFAULT_PLANNER_HYDRATION_HIGH_WATERMARK,
+  );
+  const plannerHydrationLowCoverageThreshold = normalizeWatermark(
+    options.plannerHydrationLowCoverageThreshold ?? DEFAULT_PLANNER_HYDRATION_LOW_COVERAGE_THRESHOLD,
+    DEFAULT_PLANNER_HYDRATION_LOW_COVERAGE_THRESHOLD,
+  );
+  const factConfidenceThreshold = Math.max(
+    0,
+    Math.min(1, options.factConfidenceThreshold ?? DEFAULT_FACT_CONFIDENCE_THRESHOLD),
+  );
+  const factLedgerMinRatio = Math.max(
+    0,
+    Math.min(1, options.factLedgerMinChars ?? DEFAULT_FACT_LEDGER_MIN_RATIO),
+  );
+  const plannerFactExtractionMaxClaims = Math.max(
+    1,
+    options.plannerFactExtractionMaxClaims ?? DEFAULT_PLANNER_FACT_EXTRACTION_MAX_CLAIMS,
+  );
   const hotWindowOverlapTurns = normalizePositiveInt(
     options.hotWindowOverlapTurns,
     DEFAULT_HOT_WINDOW_OVERLAP_TURNS,
@@ -104,6 +143,15 @@ export function createVirtualContextEnginePassive(
     ...DEFAULT_BUDGET,
     ...options.packBudget,
   };
+  if (options.packBudget?.factLedgerMinChars === undefined) {
+    budget.factLedgerMinChars = Math.floor(budget.totalChars * factLedgerMinRatio);
+  }
+  if (options.packBudget?.episodeMaxChars === undefined) {
+    budget.episodeMaxChars = Math.floor(budget.totalChars * 0.55);
+  }
+  if (options.packBudget?.indexMaxChars === undefined) {
+    budget.indexMaxChars = Math.floor(budget.totalChars * 0.1);
+  }
   const retrievalStrategy = options.retrievalStrategy ?? "hybrid_v2";
 
   function getThreadState(threadId: string): ThreadState {
@@ -126,6 +174,9 @@ export function createVirtualContextEnginePassive(
     fallbackExtractor,
     timeoutMs,
     maxCompactionProposals,
+    embeddingProvider: options.embeddingProvider,
+    embeddingCache,
+    embeddingModel,
     clock,
     waitForCompactionDrain,
     compactionDrainTimeoutMs,
@@ -194,9 +245,14 @@ export function createVirtualContextEnginePassive(
       messages: request.messages,
       trustedSymbolRefsEnabled,
     });
+    const requiredAttributesHint = extractRequestedAttributesFromQuery(query.queryText);
 
     await markStage("InjectContextPack", threadId, executeOptions?.streamEvents);
     const symbolIndex = await options.store.list(threadId);
+    const activeFactClaims = options.store.listActiveFactClaims
+      ? await options.store.listActiveFactClaims(threadId)
+      : [];
+    const previousTurnFactMismatch = state.lastFactMismatch;
     const hydrated = await selectHydratedCandidates({
       threadId,
       queryText: query.queryText,
@@ -204,8 +260,17 @@ export function createVirtualContextEnginePassive(
       retrievalStrategy,
       store: options.store,
       embeddingProvider: options.embeddingProvider,
+      embeddingCache,
+      embeddingModel,
+      plannerHydrator: options.plannerHydrator,
       symbolIndexCount: symbolIndex.length,
       recallK: budget.recallK,
+      pressureRatioHint: state.compactMode ? highWatermark : state.pressurePeak,
+      plannerHydrationEnabled,
+      plannerHydrationHighWatermark,
+      plannerHydrationLowCoverageThreshold,
+      previousTurnFactMismatch,
+      requiredAttributesHint,
     });
 
     const compiled = compilePassiveContextPack({
@@ -215,6 +280,15 @@ export function createVirtualContextEnginePassive(
         symbolId: item.symbolId,
         summary: item.summary,
       })),
+      factLedger: hydrated.focusedFacts.map((claim) => ({
+        claimId: claim.claimId,
+        attribute: claim.attribute,
+        value: claim.value,
+        confidence: claim.confidence,
+      })),
+      factCoverageRate: hydrated.factCoverageRate,
+      factRequiredCount: hydrated.factRequiredCount,
+      factMatchedCount: hydrated.factMatchedCount,
       hydratedFocused: hydrated.focused,
       hydratedRecall: hydrated.recall,
       budget,
@@ -370,13 +444,132 @@ export function createVirtualContextEnginePassive(
     const postModelMs = clock() - postModelStart;
 
     const lastUserText = getLastUserText(request);
-    tape.append(threadId, "user", lastUserText);
-    tape.append(threadId, "assistant", sanitized.content);
+    const userEntry = tape.append(threadId, "user", lastUserText);
+    const assistantEntry = tape.append(threadId, "assistant", sanitized.content);
+    const newEntries = [userEntry, assistantEntry].filter((entry): entry is NonNullable<typeof entry> => Boolean(entry));
+    const deterministicFactCandidates = extractDeterministicFactCandidates(newEntries);
+    const plannerFactExtractionReason = compiled.pressureRatio >= plannerHydrationHighWatermark
+      ? "pressure"
+      : hydrated.factCoverageRate < plannerHydrationLowCoverageThreshold
+        ? "low_coverage"
+        : previousTurnFactMismatch
+          ? "previous_mismatch"
+          : "none";
+    let plannerFactExtractionInvoked = false;
+    let plannerFactClaimsApplied = 0;
+    let plannerFactCandidates: Array<{
+      attribute: string;
+      value: string;
+      confidence: number;
+      source: "planner_model";
+      sourceEntryIds: string[];
+    }> = [];
+    if (
+      plannerFactExtractionReason !== "none" &&
+      options.factClaimPlannerExtractor &&
+      newEntries.length > 0
+    ) {
+      plannerFactExtractionInvoked = true;
+      try {
+        const candidates = await options.factClaimPlannerExtractor.extract({
+          threadId,
+          queryText: query.queryText,
+          requiredAttributes: hydrated.requiredAttributes,
+          pressureRatioHint: compiled.pressureRatio,
+          entries: newEntries,
+          maxClaims: plannerFactExtractionMaxClaims,
+        });
+        const validEntryIds = new Set(newEntries.map((entry) => entry.entryId));
+        plannerFactCandidates = candidates
+          .filter((candidate) => candidate.source === "planner_model")
+          .filter((candidate) => normalizeFactAttribute(candidate.attribute).length > 0)
+          .filter((candidate) => candidate.value.trim().length > 0)
+          .filter((candidate) => candidate.sourceEntryIds.some((entryId) => validEntryIds.has(entryId)))
+          .map((candidate) => ({
+            attribute: normalizeFactAttribute(candidate.attribute),
+            value: candidate.value.trim(),
+            confidence: candidate.confidence,
+            source: "planner_model" as const,
+            sourceEntryIds: candidate.sourceEntryIds.filter((entryId) => validEntryIds.has(entryId)),
+          }));
+      } catch {
+        plannerFactCandidates = [];
+      }
+    }
+
+    const combinedFactCandidates = dedupeFactCandidates([
+      ...deterministicFactCandidates,
+      ...plannerFactCandidates,
+    ]);
+    const deterministicFactUpserts = toFactClaimUpserts(
+      threadId,
+      tape.getTurn(threadId),
+      combinedFactCandidates,
+      factConfidenceThreshold,
+    );
+    let factClaimsApplied = 0;
+    if (options.store.upsertFactClaim) {
+      const activeByAttribute = new Map(
+        (options.store.listActiveFactClaims
+          ? await options.store.listActiveFactClaims(threadId)
+          : []
+        ).filter((claim) => claim.active).map((claim) => [claim.attribute, claim]),
+      );
+      for (const upsert of deterministicFactUpserts) {
+        const attribute = normalizeFactAttribute(upsert.attribute);
+        const existing = activeByAttribute.get(attribute);
+        if (existing) {
+          const sameValue = normalizeFactValueForComparison(existing.value) ===
+            normalizeFactValueForComparison(upsert.value);
+          const overrideAllowed = sameValue ||
+            upsert.confidence >= Math.max(factConfidenceThreshold, existing.confidence - 0.05);
+          if (!overrideAllowed) {
+            continue;
+          }
+        }
+        await options.store.upsertFactClaim(threadId, upsert);
+        factClaimsApplied += 1;
+        if (upsert.source === "planner_model") {
+          plannerFactClaimsApplied += 1;
+        }
+      }
+    }
+    const postModelActiveFactClaims = options.store.listActiveFactClaims
+      ? await options.store.listActiveFactClaims(threadId)
+      : activeFactClaims;
+
+    let factMismatchDetected = false;
+    const requiredAttributesForMismatch = hydrated.requiredAttributes.length > 0
+      ? hydrated.requiredAttributes
+      : requiredAttributesHint;
+    if (requiredAttributesForMismatch.length > 0) {
+      const activeByAttribute = new Map(
+        postModelActiveFactClaims
+          .filter((claim) => claim.active)
+          .map((claim) => [claim.attribute, claim.value.toLowerCase()]),
+      );
+      const assistantClaims = extractDeterministicFactCandidates(
+        assistantEntry ? [assistantEntry] : [],
+      );
+      const assistantByAttribute = new Map(
+        assistantClaims.map((claim) => [claim.attribute, claim.value.toLowerCase()]),
+      );
+      for (const attribute of requiredAttributesForMismatch) {
+        const active = activeByAttribute.get(attribute);
+        const observed = assistantByAttribute.get(attribute);
+        if (active && observed && active !== observed) {
+          factMismatchDetected = true;
+          break;
+        }
+      }
+    }
+    state.lastFactMismatch = factMismatchDetected;
 
     const compactionCandidates = tape.listUnsymbolizedCompactionCandidates(
       threadId,
       effectiveHotWindowPairs,
       6,
+      query.queryText,
     );
     const ageBackfillEligibleCount = compactionCandidates.length;
     const currentTurn = tape.getTurn(threadId);
@@ -457,6 +650,18 @@ export function createVirtualContextEnginePassive(
       maxCompactionProposalsConfigured: maxCompactionProposals,
       fallbackCommitUsed: fallbackCommitUsedThisTurn,
       ignoredModelEventCount,
+      factCoverageRate: compiled.factCoverageRate,
+      factRequiredCount: compiled.factRequiredCount,
+      factMatchedCount: compiled.factMatchedCount,
+      factClaimsApplied,
+      factClaimsActive: postModelActiveFactClaims.filter((claim) => claim.active).length,
+      plannerHydrationInvoked: hydrated.plannerHydrationInvoked,
+      plannerHydrationReason: hydrated.plannerHydrationReason,
+      plannerHydrationFocusedFacts: hydrated.plannerHydrationFocusedFacts,
+      plannerHydrationFocusedEpisodes: hydrated.plannerHydrationFocusedEpisodes,
+      plannerFactExtractionInvoked,
+      plannerFactExtractionReason,
+      plannerFactClaimsApplied,
     };
 
     await markStage("EmitPostTelemetry", threadId, executeOptions?.streamEvents);
@@ -581,6 +786,9 @@ export function createVirtualContextEnginePassive(
       const entries = tape.listEntries(threadId);
       const compressionRecords = tape.listCompressionRecords(threadId);
       const hydrationLeases = tape.listHydrationLeases(threadId);
+      const activeFactClaims = options.store.listActiveFactClaims
+        ? await options.store.listActiveFactClaims(threadId)
+        : [];
       const pendingCandidates = tape.listUnsymbolizedCompactionCandidates(
         threadId,
         state.lastEffectiveHotWindowPairs,
@@ -611,6 +819,10 @@ export function createVirtualContextEnginePassive(
             .slice(-6)
             .map((record) => record.symbolId),
           hydratedSymbolIds: hydrationLeases.map((lease) => lease.symbolId),
+          activeFactClaimCount: activeFactClaims.filter((claim) => claim.active).length,
+          activeFactAttributes: activeFactClaims
+            .filter((claim) => claim.active)
+            .map((claim) => claim.attribute),
         },
       };
     },

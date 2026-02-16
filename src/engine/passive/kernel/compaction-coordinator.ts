@@ -2,12 +2,13 @@ import {
   applyPassiveCommitPolicy,
   runExtractorWithTimeout,
 } from "../passive-compressor";
-import type { SymbolStore } from "../../core/types";
+import type { EmbeddingProvider, SymbolStore } from "../../core/types";
 import type {
   CompressionExtractor,
   EventTapeEntry,
 } from "../passive-contracts";
 import type { InMemoryEventTape } from "../passive-event-tape";
+import type { InMemoryEmbeddingCache } from "../../symbols/embedding-cache";
 import type {
   CompactionScheduleReason,
   CompactionTriggerSource,
@@ -37,6 +38,7 @@ export function createThreadState(defaultHistoryTurns: number, defaultEffectiveH
     lastFallbackCommitUsed: false,
     lastHistoryWindowTurns: defaultHistoryTurns,
     lastEffectiveHotWindowPairs: defaultEffectiveHotWindowPairs,
+    lastFactMismatch: false,
   };
 }
 
@@ -48,6 +50,9 @@ export function createCompactionCoordinator(options: {
   fallbackExtractor: CompressionExtractor;
   timeoutMs: number;
   maxCompactionProposals: number;
+  embeddingProvider?: EmbeddingProvider;
+  embeddingCache?: InMemoryEmbeddingCache;
+  embeddingModel?: string;
   clock: () => number;
   waitForCompactionDrain: boolean;
   compactionDrainTimeoutMs: number;
@@ -92,6 +97,9 @@ export function createCompactionCoordinator(options: {
         store: options.store,
         proposals,
         maxProposals: options.maxCompactionProposals,
+        embeddingProvider: options.embeddingProvider,
+        embeddingCache: options.embeddingCache,
+        embeddingModel: options.embeddingModel,
         candidateEntries: candidates.map((entry) => ({
           entryId: entry.entryId,
           offsetStart: entry.offsetStart,
